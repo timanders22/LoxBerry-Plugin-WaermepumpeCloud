@@ -159,9 +159,29 @@ if ($wp_post && isset($_POST['onecta_code'])) {
 
 /* ================= Geraet und Takt speichern ================= */
 if ($wp_post && isset($_POST['speichern_geraet'])) {
+    $wp_stand_vor = wp_stand();
     $wp_cfg['geraet']   = preg_replace('/[^A-Za-z0-9_\-]/', '', wp_g('geraet'));
     $wp_cfg['gebaeude'] = preg_replace('/[^A-Za-z0-9_\-]/', '', wp_g('gebaeude'));
     $wp_cfg['system']   = preg_replace('/[^A-Za-z0-9_\-]/', '', wp_g('system'));
+
+    // Den MELCloud-Geraetetyp aus der Suche uebernehmen, statt ihn erfragen
+    // zu lassen. Er entscheidet, ob ueberhaupt geschrieben werden darf -
+    // aber niemand kann wissen, ob seine Anlage in der Zaehlweise von
+    // Mitsubishi eine 0 oder eine 1 ist.
+    if ($wp_cfg['hersteller'] === 'melcloud' && $wp_cfg['geraet'] !== '') {
+        $wp_gefunden = false;
+        foreach ($wp_stand_vor['geraete'] as $wp_d) {
+            if ((string) $wp_d['id'] === $wp_cfg['geraet']) {
+                $wp_cfg['geraetetyp'] = isset($wp_d['typ']) ? (int) $wp_d['typ'] : -1;
+                if ($wp_cfg['gebaeude'] === '' && $wp_d['system'] !== '') {
+                    $wp_cfg['gebaeude'] = preg_replace('/[^A-Za-z0-9_\-]/', '', (string) $wp_d['system']);
+                }
+                $wp_gefunden = true;
+                break;
+            }
+        }
+        if (!$wp_gefunden) { $wp_cfg['geraetetyp'] = -1; }
+    }
 
     $takt = (int) wp_g('takt', '300');
     $info = wp_hersteller_info($wp_cfg['hersteller']);

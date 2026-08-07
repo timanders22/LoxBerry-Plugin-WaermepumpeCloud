@@ -82,6 +82,25 @@ function wp_pruefungen()
             sprintf(wp_t('TEST.A_GERAET_OK'), wp_e($cfg['geraet'])));
     }
 
+    /* ---- MELCloud: passt der Geraetetyp zum Schreibbefehl? ---- */
+    if ($cfg['hersteller'] === 'melcloud') {
+        $typen = wp_ml_typen();
+        $typ = (int) $cfg['geraetetyp'];
+        if ($typ === 1) {
+            $z[] = wp_pruefzeile(1, wp_t('TEST.F_GERAETETYP'),
+                sprintf(wp_t('TEST.A_GERAETETYP_OK'), wp_e($typen[1])));
+        } elseif ($typ === -1) {
+            $z[] = wp_pruefzeile(-1, wp_t('TEST.F_GERAETETYP'), wp_t('TEST.A_GERAETETYP_UNBEKANNT'));
+        } else {
+            // Hier wird bewusst NICHT geschrieben. Ein Klimageraet verlangt
+            // einen anderen Endpunkt mit anderen Feldern; ein Schreibbefehl
+            // im falschen Format waere schlimmer als gar keiner.
+            $z[] = wp_pruefzeile(0, wp_t('TEST.F_GERAETETYP'),
+                sprintf(wp_t('TEST.A_GERAETETYP_FALSCH'),
+                        wp_e(isset($typen[$typ]) ? $typen[$typ] : ('Typ ' . $typ))));
+        }
+    }
+
     /* ---- Liegen Daten vor, und wie alt sind sie? ---- */
     if ((int) $stand['zeit'] === 0) {
         $z[] = wp_pruefzeile(0, wp_t('TEST.F_DATEN'), wp_t('TEST.A_DATEN_KEINE'));

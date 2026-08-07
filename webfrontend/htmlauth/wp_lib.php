@@ -169,6 +169,7 @@ function wp_vorgaben()
         'hersteller'   => '',        // myuplink | onecta | melcloud
         'geraet'       => '',        // Geraete-Kennung beim Hersteller
         'gebaeude'     => '',        // nur MELCloud: BuildingID
+        'geraetetyp'   => -1,        // nur MELCloud: 0=Luft/Luft, 1=Luft/Wasser, -1=unbekannt
         'system'       => '',        // nur myUplink: systemId
         'takt'         => 300,       // Sekunden zwischen zwei Abrufen
         'budget_schreiben' => 40,    // nur Onecta: Aufrufe, die fuers Schalten frei bleiben
@@ -213,6 +214,7 @@ function wp_config()
     $cfg['anhebung_4']       = max(0, min(15, (int) $cfg['anhebung_4']));
     $cfg['ww_boost_4']       = empty($cfg['ww_boost_4']) ? 0 : 1;
     $cfg['basis_soll']       = (float) $cfg['basis_soll'];
+    $cfg['geraetetyp']       = (int) $cfg['geraetetyp'];
     $cfg['mqtt_ein']         = empty($cfg['mqtt_ein']) ? 0 : 1;
     $cfg['zuordnung']        = substr((string) $cfg['zuordnung'], 0, WP_ZUORDNUNG_MAX);
 
@@ -244,14 +246,59 @@ function wp_config()
     return $cfg;
 }
 
+/**
+ * Eine JSON-Datei sicher schreiben.
+ *
+ * ZWEI FALLEN, die beide zum Totalverlust fuehren:
+ *
+ * 1. json_encode() liefert bei ungueltigem UTF-8 nicht etwa eine leere
+ *    Zeichenkette, sondern false. Und file_put_contents($pfad, false)
+ *    schreibt daraufhin eine Datei mit NULL Bytes und gibt 0 zurueck - nicht
+ *    false. Eine Pruefung auf === false greift also nie, und die
+ *    Konfiguration ist weg. Bei geheim.json waere das der Verlust des
+ *    Erneuerungsmerkmals und damit eine neue Anmeldung im Browser.
+ *    Ein einziges Zeichen aus einer Latin-1-Zwischenablage im Passwortfeld
+ *    genuegt.
+ *
+ * 2. Wird direkt in die Zieldatei geschrieben und faellt dabei der Strom
+ *    aus, liegt dort eine halbe Datei. Deshalb erst in eine Nebendatei,
+ *    dann umbenennen - rename ist auf demselben Dateisystem unteilbar.
+ *
+ * Die Rechte werden auf der Nebendatei gesetzt, bevor sie an ihren Platz
+ * rueckt: sonst gaebe es einen Augenblick, in dem die Zugangsdaten mit den
+ * Vorgaberechten dastehen.
+ */
+function wp_json_schreiben($pfad, $daten)
+{
+    $js = json_encode($daten, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    if ($js === false || $js === '' || $js === 'null') {
+        wp_log('SCHWERWIEGEND - ' . basename($pfad) . ' NICHT geschrieben, die Daten liessen '
+             . 'sich nicht in JSON wandeln (' . json_last_error_msg() . '). Die bisherige '
+             . 'Datei bleibt unveraendert stehen.');
+        return false;
+    }
+    $neben = $pfad . '.neu';
+    if (@file_put_contents($neben, $js, LOCK_EX) !== strlen($js)) {
+        @unlink($neben);
+        wp_log('SCHWERWIEGEND - ' . basename($pfad) . ' NICHT geschrieben, die Nebendatei '
+             . 'liess sich nicht anlegen. Schreibrechte auf ' . dirname($pfad) . ' pruefen.');
+        return false;
+    }
+    @chmod($neben, 0600);
+    if (!@rename($neben, $pfad)) {
+        @unlink($neben);
+        wp_log('SCHWERWIEGEND - ' . basename($pfad) . ' NICHT geschrieben, das Umbenennen '
+             . 'ist fehlgeschlagen.');
+        return false;
+    }
+    return true;
+}
+
 function wp_config_write($cfg)
 {
     $p = wp_paths();
     @mkdir($p['configdir'], 0775, true);
-    $js = json_encode($cfg, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-    if (@file_put_contents($p['config'], $js) === false) { return false; }
-    @chmod($p['config'], 0600);
-    return true;
+    return wp_json_schreiben($p['config'], $cfg);
 }
 
 /**
@@ -281,10 +328,7 @@ function wp_geheim_write($g)
 {
     $p = wp_paths();
     @mkdir($p['configdir'], 0775, true);
-    $js = json_encode($g, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-    if (@file_put_contents($p['geheim'], $js) === false) { return false; }
-    @chmod($p['geheim'], 0600);
-    return true;
+    return wp_json_schreiben($p['geheim'], $g);
 }
 
 function wp_token($laenge = 32)
@@ -465,7 +509,9 @@ function wp_pfad($daten, $pfad)
             }
         }
     }
-    if ($wert === null || is_array($wert)) { return is_array($wert) ? null : null; }
+    // Ein Zweig, der in einen Teilbaum zeigt statt auf einen Wert, gilt als
+    // nicht gefunden - der Reiter Test meldet das Feld dann als ohne Treffer.
+    if ($wert === null || is_array($wert)) { return null; }
     if (is_bool($wert)) { $wert = $wert ? 1 : 0; }
     if ($faktor !== null && is_numeric($wert)) { $wert = (float) $wert * $faktor; }
     return $wert;
@@ -1114,8 +1160,30 @@ function wp_ml_flags()
     );
 }
 
+/**
+ * MELCloud-Geraetetypen. Nur der Luft/Wasser-Typ wird bedient.
+ *
+ * WARUM NICHT EINFACH DEN TYP DURCHREICHEN: Der Endpunkt /Device/SetAtw ist
+ * fuer Luft/Wasser gebaut. Eine Klimaanlage (Typ 0) verlangt /Device/SetAta
+ * mit voellig anderen Feldern UND anderen EffectiveFlags-Bits. Diese Bits
+ * sind hier nicht belegt, und ein geratenes Bit ist ein Schreibbefehl, von
+ * dem niemand weiss, was er trifft. Deshalb wird abgewiesen statt geraten.
+ */
+function wp_ml_typen()
+{
+    return array(0 => 'Luft/Luft (Klimageraet)', 1 => 'Luft/Wasser (Ecodan)',
+                 3 => 'Lueftung (Lossnay)');
+}
+
 function wp_ml_setzen($cfg, $felder)
 {
+    // Typ -1 heisst: noch nicht gesucht. Dann wird Luft/Wasser angenommen,
+    // denn das ist der Fall, fuer den dieses Plugin gebaut ist - und der
+    // Reiter Test sagt ausdruecklich, dass es eine Annahme ist.
+    $typ = (int) $cfg['geraetetyp'];
+    if ($typ !== 1 && $typ !== -1) {
+        return array(0, 'GERAETETYP_' . $typ);
+    }
     $key = wp_ml_schluessel();
     if ($key === '') { return array(0, 'KEIN_TOKEN'); }
     $flags = wp_ml_flags();
@@ -1317,11 +1385,23 @@ function wp_mqtt_senden($werte)
     if (!$m['gefunden'] || !$m['udpport']) { return false; }
     $sock = @fsockopen('udp://127.0.0.1', (int) $m['udpport'], $en, $es, 2);
     if (!$sock) { return false; }
+    // UDP ist verbindungslos: dass das Gateway die Zeile bekommt, laesst sich
+    // von hier aus nicht feststellen. Was sich feststellen laesst, ist ob sie
+    // ueberhaupt den Rechner verlassen hat - und genau das wurde bisher
+    // weggeworfen. Geht gar nichts hinaus, ist das eine Meldung wert.
+    $raus = 0;
+    $alle = 0;
     foreach ($werte as $name => $wert) {
         $zeile = 'publish ' . $cfg['mqtt_topic'] . '/' . $name . ' ' . $wert . "\n";
-        @fwrite($sock, $zeile);
+        $alle++;
+        if (@fwrite($sock, $zeile) !== false) { $raus++; }
     }
     @fclose($sock);
+    if ($alle > 0 && $raus === 0) {
+        wp_log('MQTT: keine einzige Zeile liess sich absenden (UDP-Eingang '
+             . (int) $m['udpport'] . '). Laeuft das Gateway?', 'mqtt_tot');
+        return false;
+    }
     return true;
 }
 
@@ -1520,6 +1600,23 @@ function wp_abrufen($erzwingen = false)
         wp_log('Tagesbudget aufgebraucht - kein Abruf', 'budget_leer');
         return array(0, 'BUDGET_LEER');
     }
+
+    /* Zufaellige Verzoegerung vor dem tatsaechlichen Abruf.
+     *
+     * Cron startet zur Sekunde 00. Ohne Streuung schlagen alle
+     * Installationen, die gerade faellig sind, in derselben Sekunde beim
+     * Hersteller auf - und nach einer Stoerung, wenn alle zugleich wieder
+     * anlaufen, erst recht. Das beantworten Cloud-Dienste gern mit 502 oder
+     * 504, was hier wie ein eigener Fehler aussieht.
+     *
+     * Die Verzoegerung steht bewusst HIER und nicht am Anfang von
+     * wp_abruf.php: dort wuerde sie jede Minute laufen, auch in den 8 von 9
+     * Durchgaengen, in denen ohnehin nichts abgerufen wird - ein PHP-Prozess,
+     * der jede Minute drei Sekunden lang schlaeft, ohne etwas zu tun.
+     * Beim erzwungenen Abruf ueber den Knopf im Reiter Test entfaellt sie,
+     * dort soll es zuegig gehen.
+     */
+    if (!$erzwingen) { usleep(mt_rand(0, 3000000)); }
 
     $erg = wp_lesen($cfg);
     $stand['ok'] = (int) $erg['ok'];
