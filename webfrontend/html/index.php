@@ -100,6 +100,8 @@ if (isset($_GET['stufe'])) {
 }
 
 $cfg['sg_stufe'] = $stufe;
+// Ab jetzt darf gesetzt werden - vorher hat niemand darum gebeten.
+$cfg['sg_angefordert'] = 1;
 if (!wp_config_write($cfg)) {
     wp_ende(500, 'WP;OK=0;GRUND=NICHT_GESPEICHERT');
 }

@@ -58,8 +58,16 @@ function wp_pruefungen()
         case 'onecta':   $token = wp_oc_token(); break;
         case 'melcloud': $token = wp_ml_schluessel(); break;
     }
-    $z[] = wp_pruefzeile($token !== '' ? 1 : 0, wp_t('TEST.F_ANMELDUNG'),
-        $token !== '' ? wp_t('TEST.A_ANMELDUNG_OK') : wp_t('TEST.A_ANMELDUNG_FEHL'));
+    if ($token !== '') {
+        $z[] = wp_pruefzeile(1, wp_t('TEST.F_ANMELDUNG'), wp_t('TEST.A_ANMELDUNG_OK'));
+    } elseif ($cfg['hersteller'] === 'onecta' && wp_oc_abgelaufen()) {
+        // Wichtiger Unterschied: hier sind die Zugangsdaten in Ordnung, nur
+        // die Anmeldung ist verfallen. Wer jetzt an Client ID und Secret
+        // herumbessert, sucht an der falschen Stelle.
+        $z[] = wp_pruefzeile(0, wp_t('TEST.F_ANMELDUNG'), wp_t('TEST.A_ANMELDUNG_ABGELAUFEN'));
+    } else {
+        $z[] = wp_pruefzeile(0, wp_t('TEST.F_ANMELDUNG'), wp_t('TEST.A_ANMELDUNG_FEHL'));
+    }
 
     /* ---- Geraet gewaehlt? ---- */
     if ($cfg['geraet'] === '') {
@@ -107,6 +115,8 @@ function wp_pruefungen()
     /* ---- SG Ready: echt oder nachgebildet? ---- */
     if (empty($cfg['sg_ein'])) {
         $z[] = wp_pruefzeile(-1, wp_t('TEST.F_SGREADY'), wp_t('TEST.A_SGREADY_AUS'));
+    } elseif (empty($cfg['sg_angefordert'])) {
+        $z[] = wp_pruefzeile(-1, wp_t('TEST.F_SGREADY'), wp_t('TEST.A_SGREADY_WARTET'));
     } elseif (wp_sg_echt($cfg['hersteller'])) {
         // Bei Nibe wird geprueft, ob es die beiden Register wirklich gibt -
         // nicht angenommen, dass die Nummern aus der Modbus-Liste auch in der
@@ -257,6 +267,7 @@ function wp_test_aktion($was, $zusatz = '')
         case 'sg4':
             $stufe = (int) substr($was, 2);
             $cfg['sg_stufe'] = $stufe;
+            $cfg['sg_angefordert'] = 1;   // ein Knopfdruck ist eine Anforderung
             wp_config_write($cfg);
             list($ok, $grund, $getan) = wp_sg_durchsetzen($cfg);
             if (!$ok) {

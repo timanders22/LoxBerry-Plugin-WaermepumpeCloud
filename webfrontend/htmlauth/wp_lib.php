@@ -175,6 +175,9 @@ function wp_vorgaben()
         // SG Ready
         'sg_ein'       => 1,
         'sg_stufe'     => 2,         // zuletzt von Loxone gewuenschter Zustand
+        // Solange dies 0 ist, hat noch NIEMAND einen Zustand angefordert -
+        // und dann wird auch keiner gesetzt. Siehe wp_sg_durchsetzen().
+        'sg_angefordert' => 0,
         'sperre_max'   => WP_SPERRE_MAX,
         'anhebung_3'   => 2,         // Kelvin bei Einschaltempfehlung
         'anhebung_4'   => 5,         // Kelvin bei Anlaufbefehl
@@ -204,6 +207,7 @@ function wp_config()
     $cfg['budget_schreiben'] = max(0, min(150, (int) $cfg['budget_schreiben']));
     $cfg['sg_ein']           = empty($cfg['sg_ein']) ? 0 : 1;
     $cfg['sg_stufe']         = max(1, min(WP_STUFEN, (int) $cfg['sg_stufe']));
+    $cfg['sg_angefordert']   = empty($cfg['sg_angefordert']) ? 0 : 1;
     $cfg['sperre_max']       = max(5, min(720, (int) $cfg['sperre_max']));
     $cfg['anhebung_3']       = max(0, min(15, (int) $cfg['anhebung_3']));
     $cfg['anhebung_4']       = max(0, min(15, (int) $cfg['anhebung_4']));
@@ -807,6 +811,33 @@ function wp_oc_token()
     if (is_array($t) && isset($t['token'], $t['bis']) && $t['bis'] > time() + 60) { return $t['token']; }
     if ($g['refresh_token'] === '') { return ''; }
 
+    /* Nur einer erneuert gleichzeitig.
+     *
+     * Daikin gibt bei jedem Erneuern ein NEUES Erneuerungsmerkmal aus und
+     * entwertet das alte. Erneuern zwei Laeufe gleichzeitig - der Cron und
+     * die Selbstpruefung in der Oberflaeche, die beim Oeffnen der Seite
+     * ebenfalls einen Zugang braucht -, dann gewinnt einer, und der andere
+     * schreibt hinterher ein bereits entwertetes Merkmal in die Datei. Das
+     * Ergebnis ist eine dauerhaft tote Anbindung, die sich nur durch eine
+     * neue Anmeldung im Browser wiederbeleben laesst. Deshalb die Sperre.
+     */
+    $sperrdatei = wp_tmpdir() . '/token_onecta.lock';
+    $sp = @fopen($sperrdatei, 'c');
+    if ($sp !== false) {
+        if (!flock($sp, LOCK_EX)) { fclose($sp); $sp = false; }
+    }
+    if ($sp !== false) {
+        // Waehrend des Wartens hat der andere Lauf vermutlich schon erneuert.
+        clearstatcache(true, $f);
+        $t = is_file($f) ? json_decode((string) @file_get_contents($f), true) : null;
+        if (is_array($t) && isset($t['token'], $t['bis']) && $t['bis'] > time() + 60) {
+            flock($sp, LOCK_UN);
+            fclose($sp);
+            return $t['token'];
+        }
+        $g = wp_geheim();   // koennte inzwischen ein neues Merkmal tragen
+    }
+
     $info = wp_hersteller_info('onecta');
     $a = wp_http('POST', $info['token_url'],
         array('Content-Type: application/x-www-form-urlencoded'),
@@ -818,19 +849,44 @@ function wp_oc_token()
         )), 20);
     $d = wp_json($a);
     if ($a['code'] !== 200 || !isset($d['access_token'])) {
+        // 400 heisst hier fast immer: das Erneuerungsmerkmal ist abgelaufen
+        // oder wurde zurueckgezogen. Dagegen hilft kein Wiederholen - es
+        // braucht die einmalige Anmeldung im Browser noch einmal. Das wird
+        // eigens vermerkt, damit die Selbstpruefung nicht auf die
+        // Zugangsdaten zeigt, an denen nichts falsch ist.
+        if ($a['code'] === 400 || $a['code'] === 401) {
+            @file_put_contents(wp_tmpdir() . '/onecta_abgelaufen.stamp', (string) time());
+        }
         wp_log('Onecta: Erneuern des Zugangs abgelehnt (HTTP ' . $a['code'] . ')', 'oc_token');
+        if ($sp !== false) { flock($sp, LOCK_UN); fclose($sp); }
         return '';
     }
-    // Daikin gibt bei jedem Erneuern ein neues Erneuerungsmerkmal aus. Wer das
-    // alte behaelt, steht beim uebernaechsten Mal ohne Zugang da.
+    @unlink(wp_tmpdir() . '/onecta_abgelaufen.stamp');
+
+    // Das neue Erneuerungsmerkmal MUSS ankommen. Daikin hat das alte in
+    // diesem Augenblick bereits entwertet - geht das Schreiben schief, ist
+    // die Anbindung beim naechsten Lauf tot, und zwar lautlos. Deshalb wird
+    // der Rueckgabewert geprueft und der Fehler ohne Bremse protokolliert.
     if (isset($d['refresh_token']) && $d['refresh_token'] !== '') {
         $g['refresh_token'] = (string) $d['refresh_token'];
-        wp_geheim_write($g);
+        if (!wp_geheim_write($g)) {
+            wp_log('SCHWERWIEGEND - Onecta: das neue Erneuerungsmerkmal konnte nicht '
+                 . 'gespeichert werden. Das alte ist bereits entwertet. Nach Ablauf des '
+                 . 'Zugangs ist eine neue Anmeldung im Browser noetig. Schreibrechte auf '
+                 . wp_paths()['geheim'] . ' pruefen.');
+        }
     }
     $gueltig = isset($d['expires_in']) ? (int) $d['expires_in'] : 3600;
     @file_put_contents($f, json_encode(array('token' => $d['access_token'], 'bis' => time() + $gueltig)));
     @chmod($f, 0600);
+    if ($sp !== false) { flock($sp, LOCK_UN); fclose($sp); }
     return (string) $d['access_token'];
+}
+
+/** Ist die Onecta-Anmeldung abgelaufen (statt nur momentan gestoert)? */
+function wp_oc_abgelaufen()
+{
+    return is_file(wp_tmpdir() . '/onecta_abgelaufen.stamp');
 }
 
 /** Aus dem einmaligen Code das dauerhafte Erneuerungsmerkmal holen. */
@@ -1468,23 +1524,56 @@ function wp_abrufen($erzwingen = false)
     $erg = wp_lesen($cfg);
     $stand['ok'] = (int) $erg['ok'];
     $stand['fehler'] = (string) $erg['fehler'];
+
     if ($erg['ok']) {
         $u = wp_umrechnen($erg['roh'], $cfg);
-        $stand['werte'] = $u['werte'];
-        $stand['wege'] = $u['wege'];
-        $stand['roh'] = $erg['roh'];
-        $stand['zeit'] = time();
 
-        // Den Sollwert im Normalbetrieb einmal merken. Ohne ihn weiss die
-        // Nachbildung nicht, worauf sie nach einer Anhebung zurueckstellen
-        // soll - und wuerde die Anhebung bei jedem Durchlauf aufaddieren.
-        if ((float) $cfg['basis_soll'] <= 0
-            && (int) ($stand['stufe_gesetzt'] ?: 2) === 2
-            && isset($stand['werte']['SOLL']) && (float) $stand['werte']['SOLL'] > 0) {
-            $cfg['basis_soll'] = (float) $stand['werte']['SOLL'];
-            wp_config_write($cfg);
-            wp_log('Sollwert im Normalbetrieb gemerkt: ' . $cfg['basis_soll']);
+        // Rohantwort und Feldwege werden IMMER fortgeschrieben, auch wenn
+        // nichts Brauchbares drinsteht - der Reiter Test lebt davon, dass man
+        // sich ansehen kann, was tatsaechlich gekommen ist.
+        $stand['roh'] = $erg['roh'];
+        $stand['wege'] = $u['wege'];
+
+        if ($u['werte']) {
+            $stand['werte'] = $u['werte'];
+            $stand['zeit'] = time();
+
+            // Den Sollwert im Normalbetrieb einmal merken. Ohne ihn weiss die
+            // Nachbildung nicht, worauf sie nach einer Anhebung zurueckstellen
+            // soll - und wuerde die Anhebung bei jedem Durchlauf aufaddieren.
+            if ((float) $cfg['basis_soll'] <= 0
+                && (int) ($stand['stufe_gesetzt'] ?: 2) === 2
+                && isset($stand['werte']['SOLL']) && (float) $stand['werte']['SOLL'] > 0) {
+                $cfg['basis_soll'] = (float) $stand['werte']['SOLL'];
+                wp_config_write($cfg);
+                wp_log('Sollwert im Normalbetrieb gemerkt: ' . $cfg['basis_soll']);
+            }
+
+        } elseif ($stand['werte']) {
+            // HTTP 200, gueltiges JSON - und trotzdem kein einziger Wert
+            // darin. Das kommt vor: MELCloud antwortet in Stoerfaellen mit
+            // einem gueltigen Objekt, das nur eine ErrorId traegt, und eine
+            // voruebergehend offline gemeldete Anlage liefert eine Huelle
+            // ohne Messwerte.
+            //
+            // Ein solcher Durchlauf darf NICHT als Erfolg zaehlen. Wuerde
+            // hier zeit fortgeschrieben, saehe die Anlage in Loxone taufrisch
+            // aus, waehrend in Wirklichkeit seit Stunden nichts mehr kommt -
+            // und die Ausfallerkennung ueber WP_ALTER, die genau dagegen
+            // gebaut ist, loeste nie aus. Die alten Werte bleiben stehen,
+            // ALTER waechst weiter, und Loxone meldet den Ausfall.
+            $stand['ok'] = 0;
+            $stand['fehler'] = 'LEERE_ANTWORT';
+            $erg['ok'] = 0;
+            $erg['fehler'] = 'LEERE_ANTWORT';
+            wp_log('Antwort ohne verwertbare Werte - alter Stand bleibt stehen, '
+                 . 'Datenalter laeuft weiter', 'leere_antwort');
         }
+        // Sonderfall: noch nie Werte gehabt (erste Einrichtung, Zuordnung
+        // stimmt noch nicht). Dann bleibt es bei ok=1, denn es gibt keinen
+        // alten Stand zu schuetzen - und der Reiter Test soll sagen koennen,
+        // dass die Verbindung steht und nur die Zuordnung fehlt.
+
     } else {
         wp_log('Abruf fehlgeschlagen: ' . $erg['fehler'], 'abruf_' . $erg['fehler']);
     }
@@ -1511,6 +1600,22 @@ function wp_sg_durchsetzen($cfg = null)
 {
     if ($cfg === null) { $cfg = wp_config(); }
     if (empty($cfg['sg_ein'])) { return array(1, 'SG_AUS', ''); }
+
+    /* Nichts schalten, bevor jemand darum gebeten hat.
+     *
+     * sg_stufe traegt als Vorgabe die 2 (Normalbetrieb). Ohne diese Sperre
+     * wuerde der erste Cron-Lauf nach dem Einrichten also ungefragt
+     * "Normalbetrieb" an die Waermepumpe schicken - bei Daikin heisst das
+     * onOffMode=on, und damit liefe ein Heizkreis wieder an, den der
+     * Bewohner womoeglich mit Absicht ausgeschaltet hatte. Ein Plugin, das
+     * beim ersten Start von sich aus die Heizung anwirft, ist ein Plugin,
+     * dem man beim zweiten Mal nicht mehr traut.
+     *
+     * Gesetzt wird die Marke erst, wenn Loxone ueber den Endpunkt oder der
+     * Nutzer ueber die Knoepfe im Reiter Test einen Zustand anfordert.
+     */
+    if (empty($cfg['sg_angefordert'])) { return array(1, 'NIE_ANGEFORDERT', ''); }
+
     $stand = wp_stand();
 
     $wunsch = (int) $cfg['sg_stufe'];
