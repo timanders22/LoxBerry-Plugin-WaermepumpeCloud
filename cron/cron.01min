@@ -1,0 +1,8 @@
+#!/bin/bash
+# Ruft den Abrufdienst jede Minute auf. Ob tatsaechlich eine Anfrage an die
+# Herstellercloud geht, entscheidet das Skript selbst: jeder Hersteller hat
+# einen eigenen Mindesttakt, und Daikin hat ein hartes Tagesbudget.
+#
+# Ueber den Interpreter aufgerufen, nicht ueber die Raute-Zeile: geht beim
+# Entpacken das Ausfuehrungsrecht verloren, laeuft der Abruf trotzdem an.
+/usr/bin/php REPLACELBPBINDIR/wp_abruf.php >/dev/null 2>&1

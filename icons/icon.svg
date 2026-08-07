@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Eigene Zeichnung: Aussengeraet einer Waermepumpe mit Luefterrad und einer
+     Wolke darueber. Bewusst ohne fremde Wortmarken oder Logos. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <rect width="128" height="128" rx="24" fill="#6dac20"/>
+  <!-- Wolke -->
+  <path d="M40 42a13 13 0 0 1 25-5 11 11 0 0 1 17 5 10 10 0 0 1-1 20H41a10 10 0 0 1-1-20z"
+        fill="#ffffff" opacity="0.92"/>
+  <!-- Aussengeraet -->
+  <rect x="26" y="72" width="76" height="38" rx="5" fill="#ffffff"/>
+  <rect x="30" y="76" width="68" height="30" rx="3" fill="none" stroke="#6dac20" stroke-width="2"/>
+  <!-- Luefterrad -->
+  <circle cx="58" cy="91" r="12" fill="none" stroke="#6dac20" stroke-width="3"/>
+  <g stroke="#6dac20" stroke-width="3" stroke-linecap="round">
+    <path d="M58 91l8-7"/><path d="M58 91l2 11"/><path d="M58 91l-10-4"/>
+  </g>
+  <circle cx="58" cy="91" r="2.6" fill="#6dac20"/>
+  <!-- Lamellengitter -->
+  <g stroke="#6dac20" stroke-width="2.4" stroke-linecap="round">
+    <path d="M80 82h12"/><path d="M80 89h12"/><path d="M80 96h12"/>
+  </g>
+  <!-- Verbindung Wolke - Geraet -->
+  <path d="M64 62v10" stroke="#ffffff" stroke-width="3" stroke-linecap="round" stroke-dasharray="4 4"/>
+</svg>

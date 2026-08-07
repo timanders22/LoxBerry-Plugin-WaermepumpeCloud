@@ -1,0 +1,47 @@
+<p>Dieses Plugin bindet die <b>herstellereigene Cloud</b> moderner
+W&auml;rmepumpen an und &uuml;bersetzt <b>SG-Ready-Zust&auml;nde</b> aus Loxone
+dorthin. Gedacht f&uuml;r Anlagen ohne Modbus-Modul, bei denen nur das
+WLAN-Modul des Herstellers verbaut ist.</p>
+
+<p><b>Unterst&uuml;tzt:</b> myUplink (Nibe), Daikin Onecta,
+MELCloud (Mitsubishi Electric).</p>
+
+<p><b>Reihenfolge beim Einrichten:</b></p>
+<ol>
+<li><i>Einstellungen</i> &rarr; Hersteller w&auml;hlen. Die Tabelle dar&uuml;ber
+sagt, worauf man sich bei jedem der drei einl&auml;sst.</li>
+<li>Zugangsdaten eintragen. Bei myUplink und Daikin sind das Kennung und
+Geheimnis einer eigenen Anwendung, die man im Entwicklerportal des Herstellers
+anlegt. Bei MELCloud sind es E-Mail und Passwort des Kontos.</li>
+<li>Bei Daikin zus&auml;tzlich die einmalige Anmeldung &uuml;ber den Browser.</li>
+<li><i>Test</i> &rarr; <b>Ger&auml;te suchen</b>, die Kennung nach
+<i>Einstellungen</i> &uuml;bernehmen und speichern.</li>
+<li><i>Test</i> &rarr; <b>Jetzt abrufen</b>, dann <b>Feldwege zeigen</b>.</li>
+<li><i>SG Ready</i> &rarr; ansehen, was die vier Zust&auml;nde bei diesem
+Hersteller tats&auml;chlich bewirken.</li>
+<li><i>MQTT</i> &rarr; das Abo ins Gateway eintragen.</li>
+<li><i>Einbindung in Loxone</i> &rarr; Vorlagen herunterladen und in Loxone
+Config einlesen.</li>
+</ol>
+
+<p><b>Drei Dinge, die vorher zu wissen sind:</b></p>
+<ul>
+<li><b>myUplink:</b> Lesen ist frei, <b>Schreiben verlangt ein
+kostenpflichtiges Abo</b>. Ohne Abo antwortet die Schnittstelle beim Schalten
+mit einer Ablehnung &mdash; das Plugin meldet das eigens.</li>
+<li><b>Daikin Onecta:</b> <b>200 Aufrufe je Tag.</b> Der Abruftakt wird
+deshalb aus dem Budget gerechnet, nicht frei gew&auml;hlt.</li>
+<li><b>MELCloud:</b> inoffiziell, kann sich jederzeit &auml;ndern.
+<b>Mindesttakt 180 Sekunden</b> &mdash; wer h&auml;ufiger fragt, wird f&uuml;r
+Stunden ausgesperrt.</li>
+</ul>
+
+<p><b>Echtes SG Ready gibt es nur bei Nibe.</b> Bei Daikin und Mitsubishi wird
+es nachgebildet: „Sperre“ hei&szlig;t dort schlicht <i>aus</i>, und <i>aus</i>
+ist nicht dasselbe wie die EVU-Sperre, die eine W&auml;rmepumpe selbst kennt.
+Der Reiter <i>SG Ready</i> sagt je Zustand, was genau geschieht.</p>
+
+<p><b>Wenn ein Wert fehlt:</b> Das Plugin probiert je Feld mehrere Pfade durch
+und sagt im Reiter <i>Test</i>, welcher gegriffen hat. Steht der Wert in der
+Rohantwort, aber nicht in der Tabelle, l&auml;sst er sich dort unten von Hand
+zuordnen.</p>

@@ -1,0 +1,10 @@
+#!/bin/bash
+# Beim Entfernen: Zugangsdaten wirklich loeschen.
+#
+# Sie liegen in $LBPCONFIG, und LoxBerry raeumt das mit auf - aber erst nach
+# diesem Skript. Ein Zugangstoken zur Herstellercloud, das nach dem
+# Deinstallieren noch auf der Karte steht, ist genau das, was niemand erwartet.
+rm -f "$LBPCONFIG/geheim.json" "$LBPCONFIG/geheim.json.vorher" 2>/dev/null
+rm -f "$LBPDATA"/*.json 2>/dev/null
+echo "<OK> Zugangsdaten und Zwischenstaende entfernt."
+exit 0
