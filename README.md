@@ -112,6 +112,125 @@ webfrontend/htmlauth/wp_test.php   Selbstpruefung und Test-Aktionen
 webfrontend/html/index.php         Token-Endpunkt fuer den Miniserver
 ```
 
+## Fassung 0.9.1 — nachgemessen und korrigiert
+
+### Der Plugin-Ordner wird ermittelt, nicht nur geraten
+
+`wp_paths()` nahm `LBPPLUGINDIR` und fiel andernfalls sofort auf den festen
+Namen `waermepumpe` zurück. Hängt LoxBerry bei einer Zweitinstallation einen
+Zähler an (`waermepumpe_01`), zeigten deren Pfade damit auf die **erste**
+Installation — gemeinsame `geheim.json` mit den Erneuerungsmerkmalen dreier
+Herstellerclouds, gemeinsames Protokoll, gemeinsamer Datenordner.
+
+Zwischen beiden steht jetzt der Ablageort dieser Datei: installiert liegt sie
+unter `htmlauth/plugins/<ordner>/`. Der feste Name greift erst, wenn auch das
+nachweislich keinen Plugin-Ordner ergibt.
+
+Dreizehn Punkte aus einer Durchsicht. Sieben trafen zu, drei teilweise, drei
+nicht. Alles wurde nachgestellt, bevor etwas geändert wurde.
+
+### Die Sicherung beim Upgrade wurde nie zurückgespielt
+
+Trifft zu, und zwar deutlicher als beschrieben. `preupgrade.sh` legte
+`geheim.json.vorher` **neben das Original in denselben Ordner**, und
+`postupgrade.sh` löschte die Kopie anschließend nur wieder. Eine Sicherung,
+die angelegt und dann weggeworfen wird, ist keine — sie ist eine zweite
+Ausfertigung der Zugangsdaten, die eine Weile herumliegt. Die
+Hauptkonfiguration `waermepumpe.json` wurde gar nicht erst gesichert.
+
+Jetzt werden beide Dateien gesichert und zurückgespielt, und zwar nur, wenn
+die Datei im Ziel fehlt oder leer ist — eine vorhandene, gefüllte
+Konfiguration ist die aktuellere. Beide Wege nachgestellt (mit und ohne
+Arbeitsordner), Ergebnis jeweils: beide Dateien wiederhergestellt, Rechte
+0600, kein Merker und keine `.vorher`-Altlast übrig.
+
+Zum Sicherungsort eine Berichtigung: der übliche Zusatz, man solle `$1`
+nehmen, das sei der Pfad des Installers, trifft nicht zu. `$1` ist eine
+zehnstellige Zufallskennung (`&generate(10)` in `plugininstall.pl`); der
+absolute Arbeitsordner kommt als **sechstes** Argument.
+
+### `Undefined array key` im Webhook
+
+Trifft zu. Die Prüfschleife arbeitete mit einem Ersatzwert, die Zeile danach
+griff unmittelbar auf `$_GET['k1']` und `$_GET['k2']` zu. Da die Bedingung
+darüber ausdrücklich zulässt, dass nur **eine** Klemme genannt wird, war das
+leicht zu treffen. Gemessen, jeweils bisher gegen jetzt:
+
+| Aufruf | bisher | jetzt |
+|---|---|---|
+| nur `k1=1` | `k1=1 k2=0` + **Notice/Warning** | `k1=1 k2=0`, keine Meldung |
+| nur `k2=1` | `k1=0 k2=1` + **Notice/Warning** | `k1=0 k2=1`, keine Meldung |
+| `k1[]=1` | abgewiesen + **Array to string conversion** | sauber abgewiesen |
+
+Beides landete mitten in der Klartextantwort, die Loxone einliest.
+
+### Weitere zutreffende Punkte
+
+**Keine Log-Rotation.** `wp_log()` hängte unbegrenzt an — bei einem Lauf je
+Minute rund eine halbe Million Zeilen im Jahr. Jetzt wird ab 512 kB auf die
+letzten 300 Zeilen gekürzt.
+
+**Token-Dateien nicht atomar.** Fünf Stellen schrieben mit
+`file_put_contents`, obwohl `wp_json_schreiben()` (temp + rename) daneben
+liegt: die drei Token-Dateien, die MELCloud-Schlüsseldatei und die
+Zustandsdatei. Dazu kam eine, die die Durchsicht nicht nannte — die
+**Budgetliste**. In der steht, wie viele Abrufe des Tagesbudgets verbraucht
+sind; eine halb geschriebene Datei lässt den Zähler auf null zurückfallen,
+und dann wird munter weiter abgerufen, bis der Hersteller sperrt.
+
+**`strlen()` bei UTF-8.** Zählt Bytes; Parameternamen mit Umlauten wurden
+früher abgewiesen, als die Grenze es hergibt. Gezählt wird jetzt mit PCRE
+(`/./us`) — **nicht** mit `mb_strlen`: mbstring ist eine eigene Erweiterung,
+die dieses Plugin nirgends anmeldet und sonst nicht benutzt.
+
+**Unvollständige Bereinigung beim Deinstallieren.** Jetzt geht der ganze
+Datenordner weg (dort liegen auch die erneuerbaren Anmeldemarken der drei
+Herstellerclouds — ohne Passwort ein gültiger Zugang), dazu die
+Arbeitsdateien auf der Ramdisk. Der Hinweis nannte `/tmp/abruf.lock`; die
+Datei liegt tatsächlich in `/run/shm/waermepumpe/` — `wp_tmpdir()` legt seit
+jeher einen eigenen Unterordner an.
+
+**`try ... finally` um die Sperre.** Eingebaut, allerdings mit anderer
+Begründung als angegeben: das Betriebssystem gibt eine Sperre beim
+Prozessende immer frei, auch beim Absturz. Der Block hilft für den Fall, der
+*nicht* das Prozessende ist — seit PHP 7 sind die meisten früheren fatalen
+Fehler `Error`-Ausnahmen, und die laufen durch `finally`.
+
+**`ARCHITECTURE=raspberry,x86`.** Auf `false` gesetzt, weil das Plugin reines
+PHP ist. Die Begründung stimmt allerdings nicht: der aktuelle Installer liest
+`SYSTEM.ARCHITECTURE` zwar aus (`$parch`), benutzt den Wert danach an **keiner
+einzigen Stelle** — eine Installation hat er also nie verhindert. Geändert
+wurde, weil der Eintrag schlicht unwahr war.
+
+### Was nicht zutraf
+
+**Fehlende cURL-Zeitgrenzen.** `CURLOPT_TIMEOUT` und `CURLOPT_CONNECTTIMEOUT`
+sind gesetzt, und der Ersatzweg über `file_get_contents` bekommt `timeout` im
+Stromkontext. Beide Pfade waren schon begrenzt.
+
+**`php-json` in `dpkg/apt` ergänzen.** Seit PHP 8.0 ist JSON fest in den Kern
+eingebaut und nicht mehr abwählbar; ein Paket dieses Namens ist dort
+bestenfalls ein Übergangspaket. Ein Paket zu verlangen, das es auf dem
+Zielsystem womöglich nicht gibt, lässt den ganzen apt-Lauf mit einer Warnung
+enden — für nichts. **`php-curl`** ist dagegen ergänzt: das ist die
+Erweiterung, die `wp_http()` tatsächlich benutzt.
+
+**`TypeError` bei `?form[]=test`.** Es gibt keinen. Gemessen in 7.4 und 8.1:
+es gibt „Array to string conversion" (Notice bzw. Warning), `preg_match`
+liefert 0, und der Reiter fällt korrekt auf Einstellungen zurück. Der
+vorgeschlagene Guss `(string) $_GET['form']` **hilft auch nicht** — eine
+Array-in-Zeichenkette-Umwandlung meldet genau dasselbe. Nur eine
+`is_array()`-Prüfung schweigt; die steht jetzt dort.
+
+### Nebenbefund: Reiter nur mit JavaScript
+
+Die sechs Flächen bekamen `sm-active` ausschließlich vom Skript — ohne
+JavaScript war keine sichtbar, obwohl der Kommentar darüber das Gegenteil
+versprach. Reihenfolge, Positivliste und Beschriftung kommen jetzt aus einem
+einzigen Feld, und der Server setzt die Klasse selbst; alle sechs Reiter sind
+über `?form=…` erreichbar, unbekannte Werte fallen auf *Einstellungen*
+zurück.
+
 ## Lizenz
 
 **GPL-3.0**. Dieses Plugin steht in keiner Verbindung zu Nibe, Daikin Europe

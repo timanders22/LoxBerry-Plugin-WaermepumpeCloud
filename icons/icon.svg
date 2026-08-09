@@ -1,24 +1,64 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- Eigene Zeichnung: Aussengeraet einer Waermepumpe mit Luefterrad und einer
-     Wolke darueber. Bewusst ohne fremde Wortmarken oder Logos. -->
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
-  <rect width="128" height="128" rx="24" fill="#6dac20"/>
-  <!-- Wolke -->
-  <path d="M40 42a13 13 0 0 1 25-5 11 11 0 0 1 17 5 10 10 0 0 1-1 20H41a10 10 0 0 1-1-20z"
-        fill="#ffffff" opacity="0.92"/>
-  <!-- Aussengeraet -->
-  <rect x="26" y="72" width="76" height="38" rx="5" fill="#ffffff"/>
-  <rect x="30" y="76" width="68" height="30" rx="3" fill="none" stroke="#6dac20" stroke-width="2"/>
-  <!-- Luefterrad -->
-  <circle cx="58" cy="91" r="12" fill="none" stroke="#6dac20" stroke-width="3"/>
-  <g stroke="#6dac20" stroke-width="3" stroke-linecap="round">
-    <path d="M58 91l8-7"/><path d="M58 91l2 11"/><path d="M58 91l-10-4"/>
+<svg width="512" height="512" viewBox="0 0 512 512" version="1.1" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <radialGradient id="bg-grad" cx="50%" cy="50%" r="50%" fx="35%" fy="35%">
+      <stop offset="0%" stop-color="#7dc424" />
+      <stop offset="65%" stop-color="#6dac20" />
+      <stop offset="100%" stop-color="#568819" />
+    </radialGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="4" stdDeviation="4" flood-color="#000000" flood-opacity="0.25"/>
+    </filter>
+  </defs>
+
+  <!-- Outer Badge Ring -->
+  <circle cx="256" cy="256" r="246" fill="url(#bg-grad)" />
+  <circle cx="256" cy="256" r="232" fill="none" stroke="#ffffff" stroke-opacity="0.35" stroke-width="3" />
+
+  <g filter="url(#shadow)" fill="#ffffff">
+    <!-- Main Center Icon: Heat Pump Outdoor Unit (Außeneinheit mit Ventilator) -->
+    <!-- Unit Housing -->
+    <rect x="181" y="90" width="150" height="195" rx="16" fill="#ffffff" />
+
+    <!-- Top Display / Status Bar Cutout -->
+    <rect x="197" y="106" width="118" height="18" rx="5" fill="#6dac20" />
+    <circle cx="209" cy="115" r="3" fill="#ffffff" />
+    <circle cx="221" cy="115" r="3" fill="#ffffff" />
+    <rect x="277" y="112" width="26" height="6" rx="2" fill="#ffffff" />
+
+    <!-- Fan Grille Ring Cutout -->
+    <circle cx="256" cy="202" r="58" fill="#6dac20" />
+    <!-- Inner Fan Hub -->
+    <circle cx="256" cy="202" r="14" fill="#ffffff" />
+
+    <!-- 4 Fan Blades -->
+    <path d="M 256 188 C 248 162 264 150 256 148 C 248 150 248 172 256 188 Z" fill="#ffffff" />
+    <path d="M 256 216 C 264 242 248 254 256 256 C 264 254 264 232 256 216 Z" fill="#ffffff" />
+    <path d="M 242 202 C 216 194 204 210 202 202 C 204 194 226 194 242 202 Z" fill="#ffffff" />
+    <path d="M 270 202 C 296 210 308 194 310 202 C 308 210 286 210 270 202 Z" fill="#ffffff" />
+
+    <!-- Feet of Heat Pump -->
+    <rect x="196" y="285" width="28" height="10" rx="3" fill="#ffffff" />
+    <rect x="288" y="285" width="28" height="10" rx="3" fill="#ffffff" />
+
+    <!-- Flanking Left Symbol: Heating / Thermometer -->
+    <g transform="translate(112, 170)">
+      <circle cx="0" cy="0" r="22" fill="#ffffff" />
+      <path d="M -2 -11 L 2 -11 L 2 1 C 5 3 6 7 4 10 C 2 13 -3 13 -5 10 C -7 7 -6 3 -3 1 Z" fill="#6dac20" />
+      <circle cx="-0.5" cy="6.5" r="3.5" fill="#ffffff" />
+    </g>
+
+    <!-- Flanking Right Symbol: Cloud Integration -->
+    <g transform="translate(400, 170)">
+      <circle cx="0" cy="0" r="22" fill="#ffffff" />
+      <path d="M -10 3 A 7 7 0 0 1 -4 -4 A 9 9 0 0 1 10 -2 A 6 6 0 0 1 10 7 L -10 7 A 5 5 0 0 1 -10 3 Z" fill="#6dac20" />
+    </g>
+
+    <!-- Dashed Line -->
+    <path d="M 150 345 L 362 345" stroke="#ffffff" stroke-width="4" stroke-dasharray="6 8" opacity="0.8" />
   </g>
-  <circle cx="58" cy="91" r="2.6" fill="#6dac20"/>
-  <!-- Lamellengitter -->
-  <g stroke="#6dac20" stroke-width="2.4" stroke-linecap="round">
-    <path d="M80 82h12"/><path d="M80 89h12"/><path d="M80 96h12"/>
-  </g>
-  <!-- Verbindung Wolke - Geraet -->
-  <path d="M64 62v10" stroke="#ffffff" stroke-width="3" stroke-linecap="round" stroke-dasharray="4 4"/>
+
+  <!-- Typography -->
+  <text x="256" y="388" text-anchor="middle" fill="#ffffff" font-family="Arial, sans-serif" font-weight="900" font-size="29" letter-spacing="0.5">Wärmepumpe</text>
+  <text x="256" y="424" text-anchor="middle" fill="#ffffff" font-family="Arial, sans-serif" font-weight="bold" font-size="20" letter-spacing="3">LOXBERRY</text>
 </svg>

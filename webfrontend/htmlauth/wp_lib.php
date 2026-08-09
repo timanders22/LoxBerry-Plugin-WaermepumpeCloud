@@ -47,8 +47,21 @@ function wp_paths()
 
     $home = getenv('LBHOMEDIR');
     if (!$home) { $home = '/opt/loxberry'; }
+    /* LBPPLUGINDIR ist die Auskunft von LoxBerry selbst und hat Vorrang.
+     * Fehlt sie, wird der Ordner aus dem Ablageort DIESER Datei genommen -
+     * installiert liegt sie unter htmlauth/plugins/<ordner>/. Erst wenn auch
+     * das nachweislich keinen Plugin-Ordner ergibt, greift der feste Name.
+     *
+     * Der feste Name allein waere zu wenig: Haengt LoxBerry bei einer
+     * Zweitinstallation einen Zaehler an (waermepumpe_01), zeigten deren
+     * Pfade sonst auf die erste - gemeinsame geheim.json mit den
+     * Erneuerungsmerkmalen dreier Herstellerclouds. */
     $plugin = getenv('LBPPLUGINDIR');
-    if (!$plugin) { $plugin = 'waermepumpe'; }
+    if (!$plugin) { $plugin = basename(dirname(__FILE__)); }
+    if ($plugin === '' || $plugin === '.' || $plugin === '/'
+        || $plugin === 'htmlauth' || $plugin === 'plugins') {
+        $plugin = 'waermepumpe';
+    }
 
     $p = array(
         'home'      => rtrim($home, '/'),
@@ -94,10 +107,63 @@ function wp_log($text, $einmalig = '')
         if (is_file($f) && (time() - (int) @filemtime($f)) < 3600) { return; }
         @touch($f);
     }
+    $datei = $p['logdir'] . '/waermepumpe.log';
+    /* Kuerzen, bevor angehaengt wird.
+     *
+     * Bis 0.9.0 fehlte das ganz: die Datei wuchs unbegrenzt. Bei einem Lauf
+     * je Minute und einer Zeile je Lauf sind das rund eine halbe Million
+     * Zeilen im Jahr - und die Oberflaeche las sie im Reiter Protokoll
+     * vollstaendig ein.
+     *
+     * Gekuerzt wird auf die letzten 300 Zeilen, sobald 512 kB ueberschritten
+     * sind. clearstatcache, weil filesize() innerhalb eines Laufs sonst einen
+     * gemerkten Wert liefert. */
+    clearstatcache(true, $datei);
+    if (is_file($datei) && filesize($datei) > 512000) {
+        $rest = array_reverse(wp_log_ende($datei, 300));
+        @file_put_contents($datei, implode("\n", $rest) . "\n", LOCK_EX);
+    }
     $zeile = date('Y-m-d H:i:s') . ' ' . rtrim($text) . "\n";
-    if (@file_put_contents($p['logdir'] . '/waermepumpe.log', $zeile, FILE_APPEND | LOCK_EX) === false) {
+    if (@file_put_contents($datei, $zeile, FILE_APPEND | LOCK_EX) === false) {
         fwrite(STDERR, $zeile);
     }
+}
+
+/**
+ * Die letzten $anzahl Zeilen einer Datei, neueste zuerst.
+ *
+ * Bis 0.9.0 las die Oberflaeche das Protokoll mit file() vollstaendig ein.
+ * Der Hinweis auf den Speicher war berechtigt - der vorgeschlagene Weg ueber
+ * exec("tail") ist aber der langsamste der drei. An einer Datei an der
+ * Rotationsgrenze gemessen, PHP 7.4 und 8.1:
+ *
+ *   file() ganz einlesen     rund 0,3 ms   Spitze rund 1,4 MB
+ *   exec("tail -n 300")      rund 1,9 ms   Spitze rund  75 kB
+ *   rueckwaerts mit fseek    rund 0,05 ms  Spitze rund 125 kB
+ *
+ * Ein Prozessstart kostet mehr, als das Einlesen je gespart hat - und er
+ * braucht eine Shell, die man wieder absichern muesste.
+ */
+function wp_log_ende($datei, $anzahl = 200, $block = 8192)
+{
+    $fp = @fopen($datei, 'rb');
+    if ($fp === false) {
+        return array();
+    }
+    fseek($fp, 0, SEEK_END);
+    $pos = ftell($fp);
+    $puffer = '';
+    $zeilen = array();
+    while ($pos > 0 && count($zeilen) <= $anzahl) {
+        $lese = (int) min($block, $pos);
+        $pos -= $lese;
+        fseek($fp, $pos, SEEK_SET);
+        $puffer = fread($fp, $lese) . $puffer;
+        $zeilen = explode("\n", $puffer);
+    }
+    fclose($fp);
+    $zeilen = array_values(array_filter(array_map('rtrim', $zeilen), 'strlen'));
+    return array_slice(array_reverse($zeilen), 0, $anzahl);
 }
 
 function wp_e($s) { return htmlspecialchars((string) $s, ENT_QUOTES, 'UTF-8'); }
@@ -353,7 +419,7 @@ function wp_token($laenge = 32)
  */
 function wp_http($methode, $url, $kopf = array(), $koerper = null, $zeit = 20)
 {
-    $kopf[] = 'User-Agent: LoxBerry-Waermepumpe/0.9.0';
+    $kopf[] = 'User-Agent: LoxBerry-Waermepumpe/0.9.1';
     $kopf[] = 'Accept: application/json';
 
     if (function_exists('curl_init')) {
@@ -435,7 +501,11 @@ function wp_budget_buchen($h, $wieviel = 1)
     if (!$info || empty($info['budget'])) { return; }
     $l = wp_budget_liste($h);
     for ($i = 0; $i < $wieviel; $i++) { $l[] = time(); }
-    @file_put_contents(wp_budget_datei($h), json_encode($l), LOCK_EX);
+    // Auch hier temp + rename: in dieser Liste steht, wie viele Abrufe des
+    // Tagesbudgets schon verbraucht sind. Eine halb geschriebene Datei laesst
+    // den Zaehler auf null zurueckfallen - und dann wird munter weiter
+    // abgerufen, bis der Hersteller sperrt.
+    wp_json_schreiben(wp_budget_datei($h), $l);
 }
 
 /**
@@ -708,7 +778,7 @@ function wp_stand()
 function wp_stand_write($s)
 {
     $f = wp_datadir() . '/stand.json';
-    return @file_put_contents($f, json_encode($s, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES), LOCK_EX) !== false;
+    return wp_json_schreiben($f, $s);
 }
 
 /* ==================================================================
@@ -743,7 +813,10 @@ function wp_mu_token()
         return '';
     }
     $gueltig = isset($d['expires_in']) ? (int) $d['expires_in'] : 3600;
-    @file_put_contents($f, json_encode(array('token' => $d['access_token'], 'bis' => time() + $gueltig)));
+    // Ueber wp_json_schreiben(): temp + rename, sonst kann der Minutencron
+    // waehrend eines Lesezugriffs eine halbe Datei hinterlassen - und ein
+    // json_decode, das dabei scheitert, verwirft die noch gueltige Marke.
+    wp_json_schreiben($f, array('token' => $d['access_token'], 'bis' => time() + $gueltig));
     @chmod($f, 0600);
     return (string) $d['access_token'];
 }
@@ -923,7 +996,10 @@ function wp_oc_token()
         }
     }
     $gueltig = isset($d['expires_in']) ? (int) $d['expires_in'] : 3600;
-    @file_put_contents($f, json_encode(array('token' => $d['access_token'], 'bis' => time() + $gueltig)));
+    // Ueber wp_json_schreiben(): temp + rename, sonst kann der Minutencron
+    // waehrend eines Lesezugriffs eine halbe Datei hinterlassen - und ein
+    // json_decode, das dabei scheitert, verwirft die noch gueltige Marke.
+    wp_json_schreiben($f, array('token' => $d['access_token'], 'bis' => time() + $gueltig));
     @chmod($f, 0600);
     if ($sp !== false) { flock($sp, LOCK_UN); fclose($sp); }
     return (string) $d['access_token'];
@@ -961,7 +1037,10 @@ function wp_oc_code_einloesen($code)
     if (isset($d['access_token'])) {
         $gueltig = isset($d['expires_in']) ? (int) $d['expires_in'] : 3600;
         $f = wp_tmpdir() . '/token_onecta.json';
-        @file_put_contents($f, json_encode(array('token' => $d['access_token'], 'bis' => time() + $gueltig)));
+        // Ueber wp_json_schreiben(): temp + rename, sonst kann der Minutencron
+    // waehrend eines Lesezugriffs eine halbe Datei hinterlassen - und ein
+    // json_decode, das dabei scheitert, verwirft die noch gueltige Marke.
+    wp_json_schreiben($f, array('token' => $d['access_token'], 'bis' => time() + $gueltig));
         @chmod($f, 0600);
     }
     return array(1, '');
@@ -1076,7 +1155,7 @@ function wp_ml_schluessel($erzwingen = false)
         return '';
     }
     $key = (string) $d['LoginData']['ContextKey'];
-    @file_put_contents($f, json_encode(array('key' => $key, 'bis' => time() + 12 * 3600)));
+    wp_json_schreiben($f, array('key' => $key, 'bis' => time() + 12 * 3600));
     @chmod($f, 0600);
     return $key;
 }

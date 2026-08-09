@@ -22,11 +22,28 @@ if (file_exists($p['home'] . '/libs/phplib/loxberry_system.php')) {
    gleicher id) und diese Positivliste. Fehlt ein Name hier, ist der Reiter
    sichtbar und anklickbar - aber nach jedem Absenden springt die Seite
    zurueck auf Einstellungen. */
-$wp_muster = '/^tab-(settings|sgready|mqtt|loxone|test|log)$/';
+/* EINE Quelle fuer Reihenfolge, Positivliste und Beschriftung. Die Namen
+ * standen bis 0.9.0 an drei Stellen: in diesem Muster, in der Reiterleiste
+ * und in den sechs Flaechen-ids. Wer einen Reiter ergaenzt und eine davon
+ * vergisst, bekommt keinen Fehler, sondern eine Seite, die nach jedem
+ * Absenden auf Einstellungen zurueckspringt. */
+$wp_reiter_ids = array('settings', 'sgready', 'mqtt', 'loxone', 'test', 'log');
+$wp_muster = '/^tab-(' . implode('|', $wp_reiter_ids) . ')$/';
 $wp_tab = preg_match($wp_muster, (string) (isset($_POST['activetab']) ? $_POST['activetab'] : ''))
     ? (string) $_POST['activetab'] : 'tab-settings';
-if (isset($_GET['form']) && preg_match($wp_muster, 'tab-' . $_GET['form'])) {
-    $wp_tab = 'tab-' . $_GET['form'];
+/* is_array() vor der Umwandlung, nicht nur (string).
+ *
+ * Mit ?form[]=test liefert $_GET['form'] ein Array. Nachgemessen: es gibt
+ * KEINEN TypeError, wie manchmal vermutet - es gibt "Array to string
+ * conversion" (7.4 Notice, 8.1 Warning), und preg_match liefert 0, der
+ * Reiter faellt also richtig auf Einstellungen zurueck. Die Meldung steht
+ * aber in der Seite.
+ *
+ * Ein blosses (string) davor hilft NICHT: eine Array-in-Zeichenkette-
+ * Umwandlung meldet genau dasselbe. Nur die Typpruefung schweigt. */
+if (isset($_GET['form']) && !is_array($_GET['form'])
+    && preg_match($wp_muster, 'tab-' . (string) $_GET['form'])) {
+    $wp_tab = 'tab-' . (string) $_GET['form'];
 }
 
 $wp_post = (isset($_SERVER['REQUEST_METHOD']) ? $_SERVER['REQUEST_METHOD'] : '') === 'POST';
@@ -254,7 +271,16 @@ if ($wp_post && isset($_POST['speichern_sg'])) {
 if ($wp_post && isset($_POST['speichern_zuordnung'])) {
     $text = isset($_POST['zuordnung']) ? (string) $_POST['zuordnung'] : '';
     $text = preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/', '', $text);
-    if (strlen($text) > WP_ZUORDNUNG_MAX) {
+    /* Zeichen zaehlen, nicht Bytes. strlen() zaehlt Bytes, und ein Umlaut
+     * belegt in UTF-8 zwei davon - Parameternamen mit Umlauten wurden damit
+     * frueher abgewiesen, als die Grenze es hergibt.
+     *
+     * Bewusst ohne mb_strlen: mbstring ist eine eigene Erweiterung, dieses
+     * Plugin meldet sie nirgends an und benutzt sie sonst nicht. PCRE mit /u
+     * kann dasselbe ohne zusaetzliches Paket. */
+    $wp_zeichen = preg_match_all('/./us', $text);
+    if ($wp_zeichen === false) { $wp_zeichen = strlen($text); }
+    if ($wp_zeichen > WP_ZUORDNUNG_MAX) {
         $wp_fehler[] = sprintf(wp_t('TEST.FEHLER_ZUORDNUNG_LANG'), WP_ZUORDNUNG_MAX);
     } else {
         $bekannt = array_keys(wp_felder());
@@ -388,17 +414,21 @@ if (class_exists('LBWeb', false)) {
 <!-- Reiterleiste: echte Links, JavaScript faengt den Klick ab. Der Link
      traegt die Adresse - jeder Reiter ist verlinkbar, die Zurueck-Taste tut
      das Erwartete, und faellt das Skript aus, bleibt die Seite bedienbar. -->
+<?php
+$wp_beschriftung = array(
+    'settings' => 'REITER.EINSTELLUNGEN', 'sgready' => 'REITER.SGREADY',
+    'mqtt'     => 'REITER.MQTT',          'loxone'  => 'REITER.LOXONE',
+    'test'     => 'REITER.TEST',          'log'     => 'REITER.LOG',
+);
+?>
 <div class="sm-tabs">
-	<a class="sm-tab" data-ziel="tab-settings" href="index.php?form=settings"><?= wp_e(wp_t('REITER.EINSTELLUNGEN')) ?></a>
-	<a class="sm-tab" data-ziel="tab-sgready"  href="index.php?form=sgready"><?= wp_e(wp_t('REITER.SGREADY')) ?></a>
-	<a class="sm-tab" data-ziel="tab-mqtt"     href="index.php?form=mqtt"><?= wp_e(wp_t('REITER.MQTT')) ?></a>
-	<a class="sm-tab" data-ziel="tab-loxone"   href="index.php?form=loxone"><?= wp_e(wp_t('REITER.LOXONE')) ?></a>
-	<a class="sm-tab" data-ziel="tab-test"     href="index.php?form=test"><?= wp_e(wp_t('REITER.TEST')) ?></a>
-	<a class="sm-tab" data-ziel="tab-log"      href="index.php?form=log"><?= wp_e(wp_t('REITER.LOG')) ?></a>
+<?php foreach ($wp_reiter_ids as $wp_r) { ?>
+	<a class="sm-tab<?= $wp_tab === 'tab-' . $wp_r ? ' sm-active' : '' ?>" data-ziel="tab-<?= $wp_r ?>" href="index.php?form=<?= $wp_r ?>"><?= wp_e(wp_t($wp_beschriftung[$wp_r])) ?></a>
+<?php } ?>
 </div>
 
 <!-- ================= Reiter: Einstellungen ================= -->
-<div class="sm-seite" id="tab-settings">
+<div class="sm-seite<?= $wp_tab === 'tab-settings' ? ' sm-active' : '' ?>" id="tab-settings">
 
 <div class="sm-kacheln">
   <div class="sm-kachel"><?= wp_e(wp_t('KACHEL.HERSTELLER')) ?>
@@ -581,7 +611,7 @@ if (class_exists('LBWeb', false)) {
 </div>
 
 <!-- ================= Reiter: SG Ready ================= -->
-<div class="sm-seite" id="tab-sgready">
+<div class="sm-seite<?= $wp_tab === 'tab-sgready' ? ' sm-active' : '' ?>" id="tab-sgready">
 <h2><?= wp_e(wp_t('SG.H_TITEL')) ?></h2>
 <div class="sm-step"><?= wp_t('SG.ERKLAERUNG') ?></div>
 
@@ -656,7 +686,7 @@ if (class_exists('LBWeb', false)) {
 </div>
 
 <!-- ================= Reiter: MQTT ================= -->
-<div class="sm-seite" id="tab-mqtt">
+<div class="sm-seite<?= $wp_tab === 'tab-mqtt' ? ' sm-active' : '' ?>" id="tab-mqtt">
 <h2><?= wp_e(wp_t('MQTT.H_TITEL')) ?></h2>
 <?php $wp_m = wp_mqtt_zustand(); ?>
 <?php if (!$wp_m['gefunden']) { ?>
@@ -684,7 +714,7 @@ if (class_exists('LBWeb', false)) {
 </div>
 
 <!-- ================= Reiter: Einbindung in Loxone ================= -->
-<div class="sm-seite" id="tab-loxone">
+<div class="sm-seite<?= $wp_tab === 'tab-loxone' ? ' sm-active' : '' ?>" id="tab-loxone">
 <h2><?= wp_e(wp_t('LOX.H_TITEL')) ?></h2>
 <div class="sm-step"><b>1.</b> <?= wp_t('LOX.S1') ?></div>
 <div class="sm-step"><b>2.</b> <?= wp_t('LOX.S2') ?>
@@ -745,7 +775,7 @@ if (class_exists('LBWeb', false)) {
 </div>
 
 <!-- ================= Reiter: Test ================= -->
-<div class="sm-seite" id="tab-test">
+<div class="sm-seite<?= $wp_tab === 'tab-test' ? ' sm-active' : '' ?>" id="tab-test">
 <h2><?= wp_e(wp_t('TEST.H_SELBSTTEST')) ?></h2>
 <div class="sm-hilfe"><?= wp_t('TEST.SELBSTTEST_TEXT') ?></div>
 <?php
@@ -821,12 +851,14 @@ foreach ($wp_pr as $wp_z) { if ($wp_z[0] === 0) { $wp_schlecht++; } }
 </div>
 
 <!-- ================= Reiter: Logdateien ================= -->
-<div class="sm-seite" id="tab-log">
+<div class="sm-seite<?= $wp_tab === 'tab-log' ? ' sm-active' : '' ?>" id="tab-log">
 <h2><?= wp_e(wp_t('LOG.H_TITEL')) ?></h2>
 <div class="sm-hilfe"><?= wp_t('LOG.MASKE_HINWEIS') ?></div>
 <?php
 $wp_logdatei = $p['logdir'] . '/waermepumpe.log';
-$wp_zeilen = is_file($wp_logdatei) ? array_slice(file($wp_logdatei), -200) : array();
+// Rueckwaerts lesen statt die ganze Datei einlesen - siehe wp_log_ende().
+// array_reverse, weil die Anzeige hier aelteste zuerst erwartet.
+$wp_zeilen = is_file($wp_logdatei) ? array_reverse(wp_log_ende($wp_logdatei, 200)) : array();
 if (!$wp_zeilen) { ?>
 <div class="sm-hinweis"><?= wp_e(wp_t('LOG.LEER')) ?></div>
 <?php } else { ?>

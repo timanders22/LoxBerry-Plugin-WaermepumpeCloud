@@ -46,10 +46,25 @@ if ($cfg['hersteller'] === '') {
 /* Erst schalten, dann lesen. Andersherum zeigte der Abruf noch den Zustand
    von vor dem Schaltbefehl, und die Statuszeile in Loxone haette eine Minute
    lang das Gegenteil dessen behauptet, was gerade angewiesen wurde. */
-wp_sg_durchsetzen($cfg);
-
-list($ok, $grund) = wp_abrufen($modus === 'jetzt');
-
-flock($fh, LOCK_UN);
-fclose($fh);
+/* try/finally um die eigentliche Arbeit.
+ *
+ * Das Betriebssystem gibt eine Sperre frei, sobald der Prozess endet - auch
+ * bei einem Absturz. Das ist richtig und der Grund, warum hier nie etwas
+ * haengen geblieben ist. Der Block ist trotzdem da, und zwar fuer den Fall,
+ * der NICHT das Prozessende ist: seit PHP 7 sind die meisten frueheren
+ * fatalen Fehler Error-Ausnahmen. Die laufen durch finally, das Skript kann
+ * danach noch etwas tun - und ohne finally waere die Sperre bis zum
+ * Prozessende gehalten, obwohl die Arbeit laengst abgebrochen ist.
+ *
+ * Ausserdem sagt der Block dem naechsten Leser, dass zwischen Sperren und
+ * Entsperren nichts hinzukommen darf, was daran vorbeifuehrt. */
+$ok = false;
+try {
+    /* Erst schalten, dann lesen - siehe oben. */
+    wp_sg_durchsetzen($cfg);
+    list($ok, $grund) = wp_abrufen($modus === 'jetzt');
+} finally {
+    flock($fh, LOCK_UN);
+    fclose($fh);
+}
 exit($ok ? 0 : 1);

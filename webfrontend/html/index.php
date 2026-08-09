@@ -88,13 +88,31 @@ if (isset($_GET['stufe'])) {
     }
     $stufe = (int) $roh;
 } elseif (isset($_GET['k1']) || isset($_GET['k2'])) {
+    /* Die Werte EINMAL einlesen und danach nur noch die Variablen benutzen.
+     *
+     * Bis 0.9.0 pruefte die Schleife mit einem Ersatzwert, die Zeile danach
+     * griff aber unmittelbar auf $_GET['k1'] und $_GET['k2'] zu. Wird nur
+     * eine der beiden Klemmen uebergeben - was zulaessig ist, die Bedingung
+     * oben laesst es ausdruecklich zu -, meldet PHP:
+     *     7.4  Notice:  Undefined index: k2
+     *     8.1  Warning: Undefined array key "k2"
+     * Beides landet mitten in der Klartextantwort, die Loxone einliest. */
+    $klemmen = array();
     foreach (array('k1', 'k2') as $k) {
+        if (isset($_GET[$k]) && is_array($_GET[$k])) {
+            // ?k1[]=1 ist keine Klemmenangabe, sondern Unfug - und ohne diese
+            // Zeile eine "Array to string conversion" mitten in der Antwort.
+            wp_ende(400, 'WP;OK=0;GRUND=KLEMME_UNGUELTIG');
+        }
+        // Nicht uebergeben heisst 0 - die Bedingung oben laesst ausdruecklich
+        // zu, dass nur eine der beiden Klemmen genannt wird.
         $v = isset($_GET[$k]) ? (string) $_GET[$k] : '0';
         if (!preg_match('/^[01]$/', $v)) {
             wp_ende(400, 'WP;OK=0;GRUND=KLEMME_UNGUELTIG');
         }
+        $klemmen[$k] = (int) $v;
     }
-    $stufe = wp_sg_stufe_aus_klemmen((int) $_GET['k1'], (int) $_GET['k2']);
+    $stufe = wp_sg_stufe_aus_klemmen($klemmen['k1'], $klemmen['k2']);
 } else {
     wp_ende(400, 'WP;OK=0;GRUND=STUFE_FEHLT');
 }

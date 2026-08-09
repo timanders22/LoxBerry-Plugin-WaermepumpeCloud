@@ -1,1 +1,15 @@
+# Diese Pakete installiert LoxBerry mit "apt-get -y install".
+#
+# curl: das Kommandozeilenwerkzeug. Es wird nicht vom Plugin aufgerufen, ist
+#       aber fuer die Fehlersuche von Hand das erste, wonach man greift.
 curl
+# php-curl: DIE ERWEITERUNG, die wp_http() benutzt. Fehlt sie, faellt das
+#       Plugin auf file_get_contents mit Stromkontext zurueck - das
+#       funktioniert, kennt aber weder eigene Kopfzeilen bei Umleitungen noch
+#       eine getrennte Zeitgrenze fuer den Verbindungsaufbau.
+php-curl
+# php-json wird BEWUSST NICHT aufgefuehrt. Seit PHP 8.0 ist JSON fest in den
+# Kern eingebaut und laesst sich nicht mehr abwaehlen; ein Paket dieses
+# Namens ist dort bestenfalls ein Uebergangspaket. Ein Paket zu verlangen,
+# das es auf dem Zielsystem womoeglich nicht gibt, laesst den ganzen
+# apt-Lauf mit einer Warnung enden - fuer nichts.

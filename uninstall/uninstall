@@ -1,10 +1,57 @@
 #!/bin/bash
+# Waermepumpe Cloud - uninstall
+#
 # Beim Entfernen: Zugangsdaten wirklich loeschen.
 #
 # Sie liegen in $LBPCONFIG, und LoxBerry raeumt das mit auf - aber erst nach
 # diesem Skript. Ein Zugangstoken zur Herstellercloud, das nach dem
-# Deinstallieren noch auf der Karte steht, ist genau das, was niemand erwartet.
-rm -f "$LBPCONFIG/geheim.json" "$LBPCONFIG/geheim.json.vorher" 2>/dev/null
-rm -f "$LBPDATA"/*.json 2>/dev/null
-echo "<OK> Zugangsdaten und Zwischenstaende entfernt."
+# Deinstallieren noch auf der Karte steht, ist genau das, was niemand
+# erwartet.
+#
+# Neu in 0.9.1: es wird nicht mehr Datei fuer Datei geloescht, sondern der
+# ganze Datenordner samt Unterordnern, und dazu die Arbeitsdateien auf der
+# Ramdisk. Die lagen bis 0.9.0 unberuehrt herum - die Sperrdatei, die
+# Zeitstempel, die Zwischenstaende.
+
+PFOLDER="${3:-waermepumpecloud}"
+BASE="${5:-$LBHOMEDIR}"
+[ -n "$BASE" ] && [ -d "$BASE" ] || BASE="/opt/loxberry"
+CFGDIR="${LBPCONFIG:-$BASE/config/plugins/$PFOLDER}"
+DATADIR="${LBPDATA:-$BASE/data/plugins/$PFOLDER}"
+
+# ---------------------------------------------------------------
+# 1. Zugangsdaten - ueberschreiben, dann entfernen
+# ---------------------------------------------------------------
+# Nur unlink liesse den Inhalt auf der Karte stehen, bis der Platz neu
+# vergeben wird.
+for f in "$CFGDIR/geheim.json" "$CFGDIR/geheim.json.vorher"; do
+    if [ -f "$f" ]; then
+        LAENGE=$(stat -c %s "$f" 2>/dev/null || echo 0)
+        [ "$LAENGE" -gt 0 ] && dd if=/dev/zero of="$f" bs=1 count="$LAENGE" \
+            conv=notrunc >/dev/null 2>&1
+        rm -f "$f"
+    fi
+done
+# Der Sicherungsordner eines abgebrochenen Upgrades - dort liegt eine Kopie.
+rm -rf "$CFGDIR/.upgrade" 2>/dev/null
+rm -f "$CFGDIR/.upgrade_pfad" 2>/dev/null
+
+# ---------------------------------------------------------------
+# 2. Datenordner vollstaendig
+# ---------------------------------------------------------------
+# Darin liegen die Zwischenstaende UND die erneuerbaren Anmeldemarken der
+# drei Herstellerclouds (token_onecta.json, token_myuplink.json,
+# token_melcloud.json). Die sind auch ohne Passwort ein gueltiger Zugang.
+rm -rf "$DATADIR" 2>/dev/null
+
+# ---------------------------------------------------------------
+# 3. Arbeitsdateien auf der Ramdisk
+# ---------------------------------------------------------------
+# wp_tmpdir() zeigt auf /run/shm/waermepumpe, mit Rueckfall auf den
+# Systemtempordner. Dort liegen die Sperrdatei des Abrufdienstes, die
+# Zeitstempel der gebremsten Meldungen und der Merker fuer den abgelaufenen
+# Onecta-Zugang.
+rm -rf /run/shm/waermepumpe "${TMPDIR:-/tmp}/waermepumpe" /tmp/waermepumpe 2>/dev/null
+
+echo "<OK> Zugangsdaten, Anmeldemarken, Zwischenstaende und Arbeitsdateien entfernt."
 exit 0
