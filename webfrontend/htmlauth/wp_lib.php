@@ -216,7 +216,78 @@ function wp_hersteller()
             'basis'       => 'https://app.melcloud.com/Mitsubishi.Wifi.Client',
             'portal'      => 'https://app.melcloud.com/',
         ),
+        'vaillant' => array(
+            'name'        => 'myVAILLANT (Vaillant, Saunier Duval, Bulex, Glow-worm, DemirDoekuem)',
+            'sg_echt'     => 0,     // nachgebildet
+            // 300 s ist keine Grenze des Anbieters, sondern eine des Geraets:
+            // der sensoCOMFORT meldet Aenderungen ohnehin nur alle fuenf
+            // Minuten. Ein schnellerer Takt liefert dieselben Zahlen und
+            // kostet nur Anfragen.
+            'mindesttakt' => 300,
+            'budget'      => 0,     // keine veroeffentlichte Tagesgrenze
+            'basis'       => 'https://api.vaillant-group.com/service-connected-control',
+            'auth_basis'  => 'https://identity.vaillant-group.com/auth/realms',
+            'portal'      => 'https://www.vaillant.de/heizung/produkte/app-myvaillant-1/',
+        ),
     );
+}
+
+/* ==================================================================
+ * myVAILLANT - Marken und Laender
+ *
+ * Der Anmeldebereich (Realm) heisst  <marke>-<land>-b2c , bei drei Marken
+ * ohne Land nur  <marke>-b2c . Wer hier das falsche Land waehlt, bekommt
+ * keine verstaendliche Fehlermeldung, sondern eine Anmeldeseite, auf der
+ * sein Konto nicht existiert - deshalb steht die Liste vollstaendig hier
+ * und wird nicht frei eingetippt.
+ * ================================================================== */
+
+function wp_va_marken()
+{
+    return array(
+        'vaillant'    => 'Vaillant',
+        'sdbg'        => 'Saunier Duval',
+        'bulex'       => 'Bulex',
+        'glow-worm'   => 'Glow-worm',
+        'demirdokum'  => 'DemirDoekuem',
+    );
+}
+
+/** Marken ohne Landesteil im Realm. */
+function wp_va_marken_ohne_land()
+{
+    return array('bulex', 'glow-worm', 'demirdokum');
+}
+
+function wp_va_laender($marke = 'vaillant')
+{
+    $vaillant = array(
+        'albania' => 'Albanien', 'austria' => 'Oesterreich', 'belgium' => 'Belgien',
+        'bosnia' => 'Bosnien und Herzegowina', 'bulgaria' => 'Bulgarien',
+        'croatia' => 'Kroatien', 'cyprus' => 'Zypern', 'czechrepublic' => 'Tschechien',
+        'denmark' => 'Daenemark', 'estonia' => 'Estland', 'finland' => 'Finnland',
+        'france' => 'Frankreich', 'georgia' => 'Georgien', 'germany' => 'Deutschland',
+        'greece' => 'Griechenland', 'hungary' => 'Ungarn', 'ireland' => 'Irland',
+        'italy' => 'Italien', 'kosovo' => 'Kosovo', 'latvia' => 'Lettland',
+        'lithuania' => 'Litauen', 'luxembourg' => 'Luxemburg', 'moldavia' => 'Moldau',
+        'netherlands' => 'Niederlande', 'new-zealand' => 'Neuseeland',
+        'north-macedonia' => 'Nordmazedonien', 'norway' => 'Norwegen',
+        'poland' => 'Polen', 'portugal' => 'Portugal', 'romania' => 'Rumaenien',
+        'serbia' => 'Serbien', 'slovakia' => 'Slowakei', 'slovenia' => 'Slowenien',
+        'spain' => 'Spanien', 'sweden' => 'Schweden', 'switzerland' => 'Schweiz',
+        'turkiye' => 'Tuerkei', 'ukraine' => 'Ukraine',
+        'unitedkingdom' => 'Vereinigtes Koenigreich', 'uzbekistan' => 'Usbekistan',
+    );
+    if ($marke === 'sdbg') {
+        $nur = array('austria', 'czechrepublic', 'finland', 'france', 'greece',
+                     'hungary', 'italy', 'lithuania', 'luxembourg', 'poland',
+                     'portugal', 'romania', 'slovakia', 'spain');
+        return array_intersect_key($vaillant, array_flip($nur));
+    }
+    if (in_array($marke, wp_va_marken_ohne_land(), true)) {
+        return array();
+    }
+    return $vaillant;
 }
 
 function wp_hersteller_info($schluessel)
@@ -232,11 +303,21 @@ function wp_hersteller_info($schluessel)
 function wp_vorgaben()
 {
     return array(
-        'hersteller'   => '',        // myuplink | onecta | melcloud
+        'hersteller'   => '',        // myuplink | onecta | melcloud | vaillant
         'geraet'       => '',        // Geraete-Kennung beim Hersteller
         'gebaeude'     => '',        // nur MELCloud: BuildingID
         'geraetetyp'   => -1,        // nur MELCloud: 0=Luft/Luft, 1=Luft/Wasser, -1=unbekannt
-        'system'       => '',        // nur myUplink: systemId
+        'system'       => '',        // myUplink: systemId, myVAILLANT: systemId
+        // nur myVAILLANT
+        'marke'        => 'vaillant',
+        'land'         => 'germany',
+        'regler'       => '',        // tli | vrc700, leer = beim Abruf selbst ermitteln
+        'zone'         => 0,         // Index der Heizzone
+        'dhw'          => 255,       // Index des Warmwasserkreises (Vaillant zaehlt ab 255)
+        'veto_stunden' => 3,         // Laufzeit der Schnellabweichung, siehe wp_va_veto()
+        // COP
+        'cop_ein'      => 1,
+        'cop_tage'     => 30,        // Fenster fuer die mittlere Arbeitszahl
         'takt'         => 300,       // Sekunden zwischen zwei Abrufen
         'budget_schreiben' => 40,    // nur Onecta: Aufrufe, die fuers Schalten frei bleiben
         // SG Ready
@@ -383,10 +464,11 @@ function wp_geheim()
     return array_merge(array(
         'client_id'     => '',
         'client_secret' => '',
-        'benutzer'      => '',    // MELCloud: E-Mail
-        'passwort'      => '',    // MELCloud
+        'benutzer'      => '',    // MELCloud und myVAILLANT: E-Mail
+        'passwort'      => '',    // MELCloud und myVAILLANT
         'refresh_token' => '',    // Onecta
         'redirect_uri'  => '',    // Onecta
+        'va_refresh'    => '',    // myVAILLANT: eigenes Erneuerungsmerkmal
     ), $g);
 }
 
@@ -419,7 +501,7 @@ function wp_token($laenge = 32)
  */
 function wp_http($methode, $url, $kopf = array(), $koerper = null, $zeit = 20)
 {
-    $kopf[] = 'User-Agent: LoxBerry-Waermepumpe/0.9.1';
+    $kopf[] = 'User-Agent: LoxBerry-Waermepumpe/0.9.2';
     $kopf[] = 'Accept: application/json';
 
     if (function_exists('curl_init')) {
@@ -650,56 +732,92 @@ function wp_felder()
             'onecta'   => array('managementPoints[embeddedId=climateControl].sensoryData.value.outdoorTemperature.value',
                                 'managementPoints[embeddedId=climateControl].sensoryData.value.outdoorTemperature'),
             'melcloud' => array('OutdoorTemperature'),
+            'vaillant' => array('state.system.outdoorTemperature'),
         )),
         'VORLAUF' => array(1, -20, 100, 'FELD.VORLAUF', array(
             'myuplink' => array('#40008', '~vorlauf|supply line|BT2'),
             'onecta'   => array('managementPoints[embeddedId=climateControl].sensoryData.value.leavingWaterTemperature.value'),
             'melcloud' => array('FlowTemperature', 'SetHeatFlowTemperatureZone1'),
+            // Der Kreis zuerst, die Anlage als Rueckfall: bei mehreren Kreisen
+            // ist der Kreiswert der aussagekraeftige.
+            'vaillant' => array('state.circuits.0.currentCircuitFlowTemperature',
+                                'state.system.systemFlowTemperature'),
+        )),
+        'VLSOLL' => array(1, -20, 100, 'FELD.VLSOLL', array(
+            'myuplink' => array(),
+            'onecta'   => array(),
+            'melcloud' => array('SetHeatFlowTemperatureZone1'),
+            'vaillant' => array('state.circuits.0.heatingCircuitFlowSetpoint'),
+        )),
+        'HEIZKURVE' => array(1, 0, 5, 'FELD.HEIZKURVE', array(
+            'myuplink' => array(),
+            'onecta'   => array(),
+            'melcloud' => array(),
+            // Die Heizkurve steht in der Einstellung, nicht im Zustand.
+            'vaillant' => array('configuration.circuits.0.heatingCurve',
+                                'state.circuits.0.heatingCurve'),
         )),
         'RUECKLAUF' => array(1, -20, 100, 'FELD.RUECKLAUF', array(
             'myuplink' => array('#40012', '~ruecklauf|return line|BT3'),
             'onecta'   => array('managementPoints[embeddedId=climateControl].sensoryData.value.leavingWaterTemperature.value'),
             'melcloud' => array('ReturnTemperature'),
+            // myVAILLANT gibt keine Ruecklauftemperatur heraus. Bewusst leer -
+            // ein naheliegender, aber falscher Pfad waere schlimmer als nichts.
+            'vaillant' => array(),
         )),
         'RAUM' => array(1, -20, 60, 'FELD.RAUM', array(
             'myuplink' => array('#40033', '~raumtemp|room temp|BT50'),
             'onecta'   => array('managementPoints[embeddedId=climateControl].sensoryData.value.roomTemperature.value'),
             'melcloud' => array('RoomTemperatureZone1'),
+            'vaillant' => array('state.zones.0.currentRoomTemperature'),
         )),
         'SOLL' => array(1, -20, 60, 'FELD.SOLL', array(
             'myuplink' => array('#47398', '~raum soll|room setpoint'),
             'onecta'   => array('managementPoints[embeddedId=climateControl].temperatureControl.value.operationModes.heating.setpoints.roomTemperature.value'),
             'melcloud' => array('SetTemperatureZone1'),
+            'vaillant' => array('state.zones.0.desiredRoomTemperatureSetpoint',
+                                'configuration.zones.0.heating.manualModeSetpointHeating'),
         )),
         'WW' => array(1, 0, 100, 'FELD.WW', array(
             'myuplink' => array('#40014', '~warmwasser|hot water|BT7'),
             'onecta'   => array('managementPoints[embeddedId=domesticHotWaterTank].sensoryData.value.tankTemperature.value'),
             'melcloud' => array('TankWaterTemperature'),
+            'vaillant' => array('state.dhw.0.currentDhwTemperature',
+                                'state.system.cylinderTemperatureSensorTopDHW'),
         )),
         'WWSOLL' => array(1, 0, 100, 'FELD.WWSOLL', array(
             'myuplink' => array('#47041', '~warmwasser soll|hot water setpoint'),
             'onecta'   => array('managementPoints[embeddedId=domesticHotWaterTank].temperatureControl.value.operationModes.heating.setpoints.domesticHotWaterTemperature.value'),
             'melcloud' => array('SetTankWaterTemperature'),
+            'vaillant' => array('configuration.dhw.0.tappingSetpoint'),
         )),
         'LEISTUNG' => array(1, 0, 30000, 'FELD.LEISTUNG', array(
             'myuplink' => array('#2305', '~leistungsaufnahme|power consumption'),
             'onecta'   => array(),   // Onecta liefert keine Momentanleistung
             'melcloud' => array(),   // MELCloud auch nicht
+            // Nur, wenn die Anlage einen Energiemanager meldet. Fehlt der
+            // Zweig, bleibt das Feld leer - das ist der Normalfall.
+            'vaillant' => array('_currentSystem.primaryHeatGenerator.mpc.currentPower'),
         )),
         'KOMPRESSOR' => array(0, 0, 1, 'FELD.KOMPRESSOR', array(
             'myuplink' => array('#44064', '~verdichter|compressor'),
             'onecta'   => array(),
             'melcloud' => array(),
+            'vaillant' => array(),
         )),
         'WWZWANG' => array(0, 0, 1, 'FELD.WWZWANG', array(
             'myuplink' => array(),
             'onecta'   => array('managementPoints[embeddedId=domesticHotWaterTank].powerfulMode.value'),
             'melcloud' => array('ForcedHotWaterMode'),
+            // Ein Text, keine Eins: CYLINDER_BOOST heisst "laeuft gerade".
+            // wp_umrechnen reicht Texte unveraendert durch.
+            'vaillant' => array('state.dhw.0.currentSpecialFunction'),
         )),
         'EIN' => array(0, 0, 1, 'FELD.EIN', array(
             'myuplink' => array(),
             'onecta'   => array('managementPoints[embeddedId=climateControl].onOffMode.value'),
             'melcloud' => array('Power'),
+            'vaillant' => array(),
         )),
     );
 }
@@ -1287,6 +1405,604 @@ function wp_ml_setzen($cfg, $felder)
 }
 
 /* ==================================================================
+ * myVAILLANT
+ *
+ * Die Schnittstelle hinter der myVAILLANT-App ist nicht veroeffentlicht.
+ * Alles hier ist der Python-Bibliothek myPyllant entnommen
+ * (github.com/signalkraft/myPyllant, MIT) - Anmeldefluss, Adressen,
+ * Kopfzeilen und Feldnamen. Nichts davon ist geraten; wo etwas geraten
+ * waere, steht es nicht drin.
+ *
+ * Die Anmeldung ist ein OpenID-Connect-Fluss mit PKCE gegen einen
+ * Keycloak, aber ohne Browser - deshalb in drei Schritten:
+ *
+ *   1. GET  .../protocol/openid-connect/auth?...     liefert die
+ *      Anmeldeseite als HTML. Darin steht die Adresse des Formulars.
+ *   2. POST auf genau diese Adresse mit Benutzer und Passwort. Die
+ *      Antwort ist eine Umleitung, in deren Adresse der Code steht.
+ *   3. POST .../protocol/openid-connect/token mit Code und Pruefwort.
+ *
+ * ZWEI DINGE, DIE DABEI LEICHT SCHIEFGEHEN und deshalb hier stehen:
+ *
+ *   Kekse.  Schritt 1 setzt Sitzungskekse, und Schritt 2 gelingt nur mit
+ *   ihnen. Ohne Keksglas antwortet der Keycloak mit einer neuen
+ *   Anmeldeseite statt mit einer Umleitung - was von aussen wie ein
+ *   falsches Passwort aussieht. Deshalb braucht dieser Weg curl: die
+ *   Rueckfallebene ueber Datenstroeme in wp_http() fuehrt keine Kekse.
+ *
+ *   Umleitungen. Der Code steht in der Kopfzeile Location. Wer curl
+ *   folgen laesst, sieht ihn nie - CURLOPT_FOLLOWLOCATION bleibt aus.
+ * ================================================================== */
+
+/** Der Anmeldebereich: <marke>-<land>-b2c, bei drei Marken ohne Land. */
+function wp_va_realm($marke, $land)
+{
+    $marke = (string) $marke;
+    if (in_array($marke, wp_va_marken_ohne_land(), true) || (string) $land === '') {
+        return $marke . '-b2c';
+    }
+    return $marke . '-' . $land . '-b2c';
+}
+
+/**
+ * Pruefwort und Pruefwert fuer PKCE.
+ * 128 Zeichen, dann SHA-256, dann Base64 in der URL-Schreibweise ohne
+ * Fuellzeichen - genau so, wie es myPyllant erzeugt.
+ */
+function wp_va_pkce()
+{
+    $zeichen = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+    $roh = function_exists('random_bytes') ? random_bytes(128) : openssl_random_pseudo_bytes(128);
+    $verifier = '';
+    for ($i = 0; $i < 128; $i++) {
+        $verifier .= $zeichen[ord($roh[$i]) % strlen($zeichen)];
+    }
+    $challenge = rtrim(strtr(base64_encode(hash('sha256', $verifier, true)), '+/', '-_'), '=');
+    return array($verifier, $challenge);
+}
+
+/** Das Keksglas der laufenden Anmeldung. Liegt im fluechtigen Ordner. */
+function wp_va_keksglas()
+{
+    return wp_tmpdir() . '/va_kekse.txt';
+}
+
+/**
+ * Eine Anfrage mit Keksglas und ohne Umleitungsverfolgung.
+ *
+ * Rueckgabe: array('code'=>int, 'text'=>string, 'ort'=>string, 'fehler'=>string).
+ * 'ort' ist der Inhalt der Kopfzeile Location - dort steht in Schritt 2 der Code.
+ */
+function wp_va_http($methode, $url, $kopf = array(), $koerper = null, $zeit = 25)
+{
+    if (!function_exists('curl_init')) {
+        return array('code' => 0, 'text' => '', 'ort' => '',
+                     'fehler' => 'Die PHP-Erweiterung curl fehlt. Der myVAILLANT-Anmeldefluss '
+                               . 'braucht ein Keksglas; der Rueckfallweg ueber Datenstroeme kann das nicht.');
+    }
+    $kopf[] = 'User-Agent: okhttp/4.9.2';
+    $ch = curl_init($url);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_CUSTOMREQUEST, $methode);
+    curl_setopt($ch, CURLOPT_HTTPHEADER, $kopf);
+    curl_setopt($ch, CURLOPT_TIMEOUT, $zeit);
+    curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, min(10, $zeit));
+    curl_setopt($ch, CURLOPT_FOLLOWLOCATION, false);
+    curl_setopt($ch, CURLOPT_COOKIEJAR, wp_va_keksglas());
+    curl_setopt($ch, CURLOPT_COOKIEFILE, wp_va_keksglas());
+    if ($koerper !== null) {
+        curl_setopt($ch, CURLOPT_POSTFIELDS, $koerper);
+    }
+    $ort = '';
+    curl_setopt($ch, CURLOPT_HEADERFUNCTION, function ($unused, $zeile) use (&$ort) {
+        if (stripos($zeile, 'Location:') === 0) {
+            $ort = trim(substr($zeile, 9));
+        }
+        return strlen($zeile);
+    });
+    $text = curl_exec($ch);
+    $code = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $fehler = curl_error($ch);
+    curl_close($ch);
+    @chmod(wp_va_keksglas(), 0600);
+    return array('code' => $code, 'text' => (string) $text, 'ort' => $ort, 'fehler' => $fehler);
+}
+
+/**
+ * Vollstaendige Anmeldung. Rueckgabe: array(ok, Grund).
+ * Bei Erfolg liegen Zugriffsmerkmal und Ablaufzeit im fluechtigen Ordner,
+ * das Erneuerungsmerkmal in der Geheimnisdatei.
+ */
+function wp_va_anmelden()
+{
+    $g = wp_geheim();
+    $cfg = wp_config();
+    if ($g['benutzer'] === '' || $g['passwort'] === '') {
+        return array(0, 'KEINE_ZUGANGSDATEN');
+    }
+    $info = wp_hersteller_info('vaillant');
+    $realm = wp_va_realm($cfg['marke'], $cfg['land']);
+    $basis = $info['auth_basis'] . '/' . rawurlencode($realm);
+
+    @unlink(wp_va_keksglas());   // jede Anmeldung faengt mit leerem Glas an
+    list($verifier, $challenge) = wp_va_pkce();
+
+    /* Schritt 1: die Anmeldeseite holen. */
+    $frage = http_build_query(array(
+        'response_type'         => 'code',
+        'client_id'             => 'myvaillant',
+        'code'                  => 'code_challenge',
+        'redirect_uri'          => 'enduservaillant.page.link://login',
+        'code_challenge_method' => 'S256',
+        'code_challenge'        => $challenge,
+    ));
+    $a = wp_va_http('GET', $basis . '/protocol/openid-connect/auth?' . $frage);
+    if ($a['fehler'] !== '') { return array(0, 'NETZ: ' . $a['fehler']); }
+    if ($a['code'] === 404) {
+        // Der haeufigste Einrichtungsfehler: falsches Land oder falsche Marke.
+        return array(0, 'REALM_UNBEKANNT_' . $realm);
+    }
+
+    $code = '';
+    if ($a['ort'] !== '') {
+        // Eine bestehende Sitzung - dann kommt der Code sofort.
+        $code = wp_va_code_aus_adresse($a['ort']);
+    }
+
+    if ($code === '') {
+        /* Schritt 2: die Adresse des Anmeldeformulars aus dem HTML holen.
+         *
+         * Gesucht wird die Adresse von login-actions/authenticate samt ihrer
+         * Parameter. Sie steht im action-Attribut und ist dort HTML-maskiert
+         * (&amp; statt &) - ohne das Aufloesen laeuft der POST ins Leere. */
+        $muster = '#' . preg_quote($basis . '/login-actions/authenticate', '#') . '\?[^"\']*#';
+        if (!preg_match($muster, $a['text'], $m)) {
+            return array(0, 'KEINE_ANMELDEADRESSE');
+        }
+        $adresse = html_entity_decode($m[0], ENT_QUOTES, 'UTF-8');
+
+        $b = wp_va_http('POST', $adresse,
+            array('Content-Type: application/x-www-form-urlencoded'),
+            http_build_query(array(
+                'username'     => $g['benutzer'],
+                'password'     => $g['passwort'],
+                'credentialId' => '',
+            )));
+        if ($b['fehler'] !== '') { return array(0, 'NETZ: ' . $b['fehler']); }
+        if ($b['ort'] === '') {
+            /* Keine Umleitung heisst: der Keycloak hat die Anmeldeseite noch
+             * einmal geschickt. Das ist so gut wie immer ein falsches Passwort
+             * - und genau das gehoert gemeldet, statt eines nackten HTTP 200. */
+            return array(0, 'ZUGANGSDATEN_ABGELEHNT');
+        }
+        $code = wp_va_code_aus_adresse($b['ort']);
+        if ($code === '') { return array(0, 'KEIN_CODE'); }
+    }
+
+    /* Schritt 3: Code gegen die Merkmale tauschen. */
+    $c = wp_va_http('POST', $basis . '/protocol/openid-connect/token',
+        array('Content-Type: application/x-www-form-urlencoded'),
+        http_build_query(array(
+            'grant_type'    => 'authorization_code',
+            'client_id'     => 'myvaillant',
+            'code'          => $code,
+            'code_verifier' => $verifier,
+            'redirect_uri'  => 'enduservaillant.page.link://login',
+        )));
+    return wp_va_merkmale_ablegen($c);
+}
+
+/** Den Parameter code aus einer Umleitungsadresse holen. */
+function wp_va_code_aus_adresse($ort)
+{
+    $teil = parse_url($ort, PHP_URL_QUERY);
+    if (!$teil) { return ''; }
+    $p = array();
+    parse_str($teil, $p);
+    return isset($p['code']) ? (string) $p['code'] : '';
+}
+
+/** Die Antwort des Token-Endpunkts auswerten und ablegen. */
+function wp_va_merkmale_ablegen($antwort)
+{
+    $d = json_decode($antwort['text'], true);
+    if (!is_array($d) || !isset($d['access_token'])) {
+        $grund = isset($d['error']) ? (string) $d['error'] : ('HTTP_' . $antwort['code']);
+        return array(0, 'TOKEN_ABGELEHNT_' . $grund);
+    }
+    $gueltig = isset($d['expires_in']) ? (int) $d['expires_in'] : 300;
+    // Eine Minute Sicherheitsabstand: ein Merkmal, das waehrend des Abrufs
+    // ablaeuft, erzeugt einen 401 mitten in der Runde.
+    wp_json_schreiben(wp_tmpdir() . '/token_vaillant.json', array(
+        'access' => (string) $d['access_token'],
+        'bis'    => time() + max(60, $gueltig - 60),
+    ));
+    @chmod(wp_tmpdir() . '/token_vaillant.json', 0600);
+
+    if (isset($d['refresh_token'])) {
+        $g = wp_geheim();
+        $g['va_refresh'] = (string) $d['refresh_token'];
+        wp_geheim_write($g);
+    }
+    return array(1, '');
+}
+
+/** Nur das Erneuerungsmerkmal einloesen. Rueckgabe: array(ok, Grund). */
+function wp_va_erneuern()
+{
+    $g = wp_geheim();
+    if ($g['va_refresh'] === '') { return array(0, 'KEIN_REFRESH'); }
+    $cfg = wp_config();
+    $info = wp_hersteller_info('vaillant');
+    $basis = $info['auth_basis'] . '/' . rawurlencode(wp_va_realm($cfg['marke'], $cfg['land']));
+    $a = wp_va_http('POST', $basis . '/protocol/openid-connect/token',
+        array('Content-Type: application/x-www-form-urlencoded'),
+        http_build_query(array(
+            'grant_type'    => 'refresh_token',
+            'client_id'     => 'myvaillant',
+            'refresh_token' => $g['va_refresh'],
+        )));
+    return wp_va_merkmale_ablegen($a);
+}
+
+/**
+ * Ein gueltiges Zugriffsmerkmal besorgen.
+ *
+ * Reihenfolge: gemerktes Merkmal, sonst erneuern, sonst voll anmelden. Die
+ * volle Anmeldung ist der teuerste Weg und steht deshalb hinten - sie holt
+ * eine HTML-Seite und schickt das Passwort.
+ */
+function wp_va_token($erzwingen = false)
+{
+    $f = wp_tmpdir() . '/token_vaillant.json';
+    if (!$erzwingen) {
+        $t = is_file($f) ? json_decode((string) @file_get_contents($f), true) : null;
+        if (is_array($t) && isset($t['access'], $t['bis']) && $t['bis'] > time()) {
+            return (string) $t['access'];
+        }
+    }
+    list($ok, $grund) = wp_va_erneuern();
+    if (!$ok) {
+        list($ok, $grund) = wp_va_anmelden();
+        if (!$ok) {
+            wp_log('myVAILLANT: Anmeldung fehlgeschlagen (' . $grund . ')', 'va_login');
+            return '';
+        }
+    }
+    $t = json_decode((string) @file_get_contents($f), true);
+    return is_array($t) && isset($t['access']) ? (string) $t['access'] : '';
+}
+
+/**
+ * Die Kopfzeilen der Datenanfragen.
+ *
+ * Der Abonnementschluessel ist kein Geheimnis des Nutzers, sondern der der
+ * App - er steht so in myPyllant und ist fuer alle gleich. Er gehoert
+ * deshalb NICHT in die Geheimnisdatei.
+ */
+function wp_va_kopf($token)
+{
+    return array(
+        'Authorization: Bearer ' . $token,
+        'x-app-identifier: VAILLANT',
+        'x-idm-identifier: KEYCLOAK',
+        'x-client-locale: de-DE',
+        'Accept-Language: de-DE',
+        'Accept: application/json, text/plain, */*',
+        'ocp-apim-subscription-key: 1e0a2f3511fb4c5bbb1c7f9fedd20b1c',
+    );
+}
+
+/** Die Grundadresse je Reglerart. */
+function wp_va_api($regler)
+{
+    $info = wp_hersteller_info('vaillant');
+    return $info['basis'] . (((string) $regler === 'vrc700')
+        ? '/vrc700/v1' : '/end-user-app-api/v1');
+}
+
+/** Die Adresse eines Systems - bei tli haengt ein /tli hinten dran. */
+function wp_va_systembasis($system, $regler)
+{
+    $b = wp_va_api($regler) . '/systems/' . rawurlencode($system);
+    return ((string) $regler === 'vrc700') ? $b : ($b . '/tli');
+}
+
+/**
+ * Eine Datenanfrage. Bei 401 wird genau einmal neu angemeldet.
+ * Rueckgabe: array(code, daten|null, fehler).
+ */
+function wp_va_abfrage($methode, $url, $koerper = null)
+{
+    $token = wp_va_token();
+    if ($token === '') { return array(0, null, 'KEIN_TOKEN'); }
+    $kopf = wp_va_kopf($token);
+    if ($koerper !== null) { $kopf[] = 'Content-Type: application/json'; }
+    $a = wp_va_http($methode, $url, $kopf, $koerper);
+    if ($a['code'] === 401) {
+        $token = wp_va_token(true);
+        if ($token === '') { return array(401, null, 'KEIN_TOKEN'); }
+        $kopf = wp_va_kopf($token);
+        if ($koerper !== null) { $kopf[] = 'Content-Type: application/json'; }
+        $a = wp_va_http($methode, $url, $kopf, $koerper);
+    }
+    if ($a['fehler'] !== '') { return array(0, null, 'NETZ: ' . $a['fehler']); }
+    $d = json_decode($a['text'], true);
+    return array($a['code'], is_array($d) ? $d : null, '');
+}
+
+/** Welche Reglerart hat dieses System? Rueckgabe: 'tli', 'vrc700' oder ''. */
+function wp_va_regler_ermitteln($system)
+{
+    list($code, $d) = wp_va_abfrage('GET', wp_va_api('tli') . '/systems/'
+        . rawurlencode($system) . '/meta-info/control-identifier');
+    if ($code === 200 && isset($d['controlIdentifier'])) {
+        return (string) $d['controlIdentifier'];
+    }
+    return '';
+}
+
+/** Die Anlagen des Kontos. Gleiche Form wie bei den anderen Herstellern. */
+function wp_va_geraete()
+{
+    list($code, $d, $fehler) = wp_va_abfrage('GET', wp_va_api('tli') . '/homes');
+    if ($code !== 200 || !is_array($d)) {
+        wp_log('myVAILLANT: Anlagenliste fehlgeschlagen (' . ($fehler !== '' ? $fehler : 'HTTP ' . $code) . ')',
+               'va_homes');
+        return array();
+    }
+    $out = array();
+    foreach ($d as $h) {
+        if (!is_array($h) || empty($h['systemId'])) { continue; }
+        $name = '';
+        if (!empty($h['homeName'])) { $name = (string) $h['homeName']; }
+        if (!empty($h['nomenclature'])) {
+            $name = trim($name . ' ' . (string) $h['nomenclature']);
+        }
+        $out[] = array(
+            'id'     => (string) $h['systemId'],
+            'name'   => $name !== '' ? $name : 'myVAILLANT',
+            'system' => (string) $h['systemId'],
+            'typ'    => -1,
+        );
+    }
+    return $out;
+}
+
+/**
+ * Den Zustand lesen.
+ *
+ * Geliefert wird die Antwort des Systemendpunkts, ergaenzt um currentSystem
+ * unter dem Schluessel _currentSystem. Beides in einem Objekt, damit die
+ * Feldzuordnung wie bei den anderen Herstellern mit einem Pfad auskommt.
+ */
+function wp_va_lesen($cfg)
+{
+    if ($cfg['system'] === '') {
+        return array('ok' => 0, 'fehler' => 'KEIN_GERAET', 'roh' => null);
+    }
+    $regler = (string) $cfg['regler'];
+    if ($regler === '') {
+        $regler = wp_va_regler_ermitteln($cfg['system']);
+        if ($regler !== '') {
+            $neu = wp_config();
+            $neu['regler'] = $regler;
+            wp_config_write($neu);
+            wp_log('myVAILLANT: Reglerart ermittelt: ' . $regler);
+        } else {
+            // Nicht raten. tli ist zwar der haeufige Fall, aber ein falsch
+            // geratener Zweig liefert 404 und sieht aus wie ein Netzfehler.
+            return array('ok' => 0, 'fehler' => 'REGLERART_UNBEKANNT', 'roh' => null);
+        }
+    }
+
+    list($code, $d, $fehler) = wp_va_abfrage('GET', wp_va_systembasis($cfg['system'], $regler));
+    if ($code !== 200 || !is_array($d)) {
+        return array('ok' => 0,
+                     'fehler' => $fehler !== '' ? $fehler : ('HTTP_' . $code),
+                     'roh' => null);
+    }
+
+    /* VRC700 nennt den Warmwasserkreis domesticHotWater, tli nennt ihn dhw.
+     * Damit eine einzige Feldzuordnung fuer beide reicht, wird der laengere
+     * Name zusaetzlich unter dem kuerzeren abgelegt. Kopiert, nicht
+     * umbenannt - wer den Originalnamen sucht, findet ihn weiterhin. */
+    foreach (array('state', 'configuration', 'properties') as $teil) {
+        if (isset($d[$teil]['domesticHotWater']) && !isset($d[$teil]['dhw'])) {
+            $d[$teil]['dhw'] = $d[$teil]['domesticHotWater'];
+        }
+    }
+
+    // currentSystem bringt die Geraete samt Kennungen - die braucht die
+    // Arbeitszahl. Ein Fehlschlag hier macht den Abruf nicht ungueltig.
+    list($c2, $d2) = wp_va_abfrage('GET', wp_va_api($regler) . '/emf/v2/'
+        . rawurlencode($cfg['system']) . '/currentSystem');
+    if ($c2 === 200 && is_array($d2)) {
+        $d['_currentSystem'] = $d2;
+    }
+    return array('ok' => 1, 'fehler' => '', 'roh' => $d);
+}
+
+/* ---------------- Arbeitszahl ----------------
+ *
+ * Die Energiewerte kommen nicht aus dem Zustand, sondern aus eigenen
+ * Endpunkten: currentSystem nennt die Geraete und je Geraet, welche
+ * Zaehlreihen es ueberhaupt gibt (operationMode und energyType). Zu jeder
+ * Reihe laesst sich dann ein Zeitraum abrufen.
+ *
+ * Die Arbeitszahl ist der Quotient aus abgegebener Waerme und aufgenommenem
+ * Strom:  HEAT_GENERATED / CONSUMED_ELECTRICAL_ENERGY. Genauso rechnet die
+ * offizielle Home-Assistant-Anbindung (EfficiencySensor in sensor.py).
+ *
+ * WICHTIG UND UNGEPRUEFT: ob die eigene Anlage BEIDE Reihen liefert, sagt
+ * erst das Geraet. Liefert sie nur den Stromverbrauch, gibt es keine
+ * Arbeitszahl - dann wird nichts gerechnet und nichts gesendet, statt eine
+ * Zahl zu erfinden. Der Reiter Test fuehrt das als eigene Zeile.
+ * ---------------------------------------------------------------- */
+
+/** Die Zaehlreihen aus currentSystem: Liste aus Geraet, Modus, Energieart. */
+function wp_va_reihen($roh)
+{
+    $out = array();
+    $cs = isset($roh['_currentSystem']) && is_array($roh['_currentSystem'])
+        ? $roh['_currentSystem'] : array();
+    $sammeln = function ($knoten) use (&$sammeln, &$out) {
+        if (!is_array($knoten)) { return; }
+        if (isset($knoten['deviceUuid']) && isset($knoten['data']) && is_array($knoten['data'])) {
+            foreach ($knoten['data'] as $r) {
+                if (!is_array($r) || empty($r['operationMode'])) { continue; }
+                $out[] = array(
+                    'geraet' => (string) $knoten['deviceUuid'],
+                    'name'   => isset($knoten['productName']) ? (string) $knoten['productName'] : '',
+                    'modus'  => (string) $r['operationMode'],
+                    'art'    => isset($r['valueType']) ? (string) $r['valueType']
+                              : (isset($r['energyType']) ? (string) $r['energyType'] : ''),
+                );
+            }
+            return;
+        }
+        foreach ($knoten as $v) { if (is_array($v)) { $sammeln($v); } }
+    };
+    $sammeln($cs);
+    return $out;
+}
+
+/** Eine Zaehlreihe ueber einen Zeitraum summieren. Rueckgabe: float|null. */
+function wp_va_reihe_summe($cfg, $reihe, $von, $bis)
+{
+    $frage = http_build_query(array(
+        'resolution'    => 'DAY',
+        'operationMode' => $reihe['modus'],
+        'energyType'    => $reihe['art'],
+        'startDate'     => gmdate('Y-m-d\TH:i:s.000\Z', $von),
+        'endDate'       => gmdate('Y-m-d\TH:i:s.000\Z', $bis),
+    ));
+    list($code, $d) = wp_va_abfrage('GET', wp_va_api($cfg['regler']) . '/emf/v2/'
+        . rawurlencode($cfg['system']) . '/devices/' . rawurlencode($reihe['geraet'])
+        . '/buckets?' . $frage);
+    if ($code !== 200 || !is_array($d) || !isset($d['data']) || !is_array($d['data'])) {
+        return null;
+    }
+    $summe = 0.0;
+    $hatte = false;
+    foreach ($d['data'] as $eimer) {
+        if (is_array($eimer) && isset($eimer['value']) && is_numeric($eimer['value'])) {
+            $summe += (float) $eimer['value'];
+            $hatte = true;
+        }
+    }
+    return $hatte ? $summe : null;
+}
+
+/**
+ * Arbeitszahl fuer einen Zeitraum.
+ * Rueckgabe: array('strom'=>Wh|null, 'waerme'=>Wh|null, 'cop'=>float|null, 'grund'=>string)
+ */
+function wp_va_cop($cfg, $roh, $tage)
+{
+    $leer = array('strom' => null, 'waerme' => null, 'cop' => null, 'grund' => '');
+    $reihen = wp_va_reihen($roh);
+    if (!$reihen) {
+        $leer['grund'] = 'KEINE_ZAEHLREIHEN';
+        return $leer;
+    }
+    $bis = time();
+    $von = $bis - max(1, (int) $tage) * 86400;
+
+    $strom = null;
+    $waerme = null;
+    $abgefragt = 0;
+    foreach ($reihen as $r) {
+        if ($r['art'] !== 'CONSUMED_ELECTRICAL_ENERGY' && $r['art'] !== 'HEAT_GENERATED') {
+            continue;
+        }
+        if (++$abgefragt > 12) {
+            // Harte Obergrenze: eine Anlage mit vielen Geraeten und Modi
+            // koennte sonst Dutzende Anfragen je Durchlauf ausloesen.
+            wp_log('myVAILLANT: mehr als 12 Zaehlreihen - der Rest bleibt fuer '
+                 . 'die Arbeitszahl unberuecksichtigt.', 'va_reihen_viele');
+            break;
+        }
+        $s = wp_va_reihe_summe($cfg, $r, $von, $bis);
+        if ($s === null) { continue; }
+        if ($r['art'] === 'CONSUMED_ELECTRICAL_ENERGY') {
+            $strom = ($strom === null ? 0.0 : $strom) + $s;
+        } else {
+            $waerme = ($waerme === null ? 0.0 : $waerme) + $s;
+        }
+    }
+
+    $erg = array('strom' => $strom, 'waerme' => $waerme, 'cop' => null, 'grund' => '');
+    if ($strom === null || $waerme === null) {
+        // Eine der beiden Reihen fehlt. Kein Quotient - und der Grund dazu.
+        $erg['grund'] = ($strom === null && $waerme === null) ? 'KEINE_WERTE'
+                      : ($strom === null ? 'KEIN_STROM' : 'KEINE_WAERME');
+        return $erg;
+    }
+    if ($strom <= 0) {
+        $erg['grund'] = 'STROM_NULL';
+        return $erg;
+    }
+    $erg['cop'] = round($waerme / $strom, 2);
+    return $erg;
+}
+
+/* ---------------- Schreiben ---------------- */
+
+/**
+ * Schnellabweichung fuer die Heizzone (Quick Veto).
+ *
+ * Bewusst NICHT der Handbetriebs-Sollwert: die Schnellabweichung laeuft von
+ * selbst ab. Bleibt der Miniserver haengen, waehrend gerade angehoben ist,
+ * faellt die Anlage nach der eingestellten Laufzeit von allein zurueck - die
+ * Heizung ueberheizt das Haus also nicht unbegrenzt weiter. Genau dieselbe
+ * Ueberlegung steht hinter wp_sg_sperre_abgelaufen().
+ *
+ * Erster Aufruf ist ein POST, ein bereits laufender Veto wird per PATCH
+ * geaendert - deshalb wird bei 409 einmal auf PATCH gewechselt.
+ */
+function wp_va_veto($cfg, $temperatur, $stunden)
+{
+    $url = wp_va_systembasis($cfg['system'], $cfg['regler'])
+         . '/zones/' . (int) $cfg['zone'] . '/quick-veto';
+    $koerper = json_encode(array(
+        'desiredRoomTemperatureSetpoint' => round((float) $temperatur, 1),
+        'duration' => max(0.5, min(24, (float) $stunden)),
+    ));
+    list($code, $unused, $fehler) = wp_va_abfrage('POST', $url, $koerper);
+    if ($code === 409 || $code === 400) {
+        list($code, $unused, $fehler) = wp_va_abfrage('PATCH', $url, $koerper);
+    }
+    if ($code >= 200 && $code < 300) { return array(1, ''); }
+    return array(0, $fehler !== '' ? $fehler : ('HTTP_' . $code));
+}
+
+/** Eine laufende Schnellabweichung beenden. */
+function wp_va_veto_ende($cfg)
+{
+    list($code, $unused, $fehler) = wp_va_abfrage('DELETE',
+        wp_va_systembasis($cfg['system'], $cfg['regler'])
+        . '/zones/' . (int) $cfg['zone'] . '/quick-veto');
+    // 404 heisst: es lief gar keine Abweichung. Das ist kein Fehler.
+    if (($code >= 200 && $code < 300) || $code === 404) { return array(1, ''); }
+    return array(0, $fehler !== '' ? $fehler : ('HTTP_' . $code));
+}
+
+/** Warmwasser-Schnellaufheizung ein oder aus. */
+function wp_va_ww_boost($cfg, $ein)
+{
+    $url = wp_va_systembasis($cfg['system'], $cfg['regler'])
+         . '/domestic-hot-water/' . (int) $cfg['dhw'] . '/boost';
+    if ($ein) {
+        list($code, $unused, $fehler) = wp_va_abfrage('POST', $url, '{}');
+    } else {
+        list($code, $unused, $fehler) = wp_va_abfrage('DELETE', $url);
+    }
+    if (($code >= 200 && $code < 300) || (!$ein && $code === 404)) { return array(1, ''); }
+    return array(0, $fehler !== '' ? $fehler : ('HTTP_' . $code));
+}
+
+/* ==================================================================
  * Gemeinsame Klammer
  * ================================================================== */
 
@@ -1296,6 +2012,7 @@ function wp_geraete_suchen($hersteller)
         case 'myuplink': return wp_mu_geraete();
         case 'onecta':   return wp_oc_geraete();
         case 'melcloud': return wp_ml_geraete();
+        case 'vaillant': return wp_va_geraete();
     }
     return array();
 }
@@ -1306,6 +2023,7 @@ function wp_lesen($cfg)
         case 'myuplink': return wp_mu_lesen($cfg);
         case 'onecta':   return wp_oc_lesen($cfg);
         case 'melcloud': return wp_ml_lesen($cfg);
+        case 'vaillant': return wp_va_lesen($cfg);
     }
     return array('ok' => 0, 'fehler' => 'KEIN_HERSTELLER', 'roh' => null);
 }
@@ -1418,6 +2136,54 @@ function wp_sg_anwenden($cfg, $stufe, $stand = null)
             $t = array();
             foreach ($felder as $k => $v) { $t[] = $k . '=' . (is_bool($v) ? ($v ? 'true' : 'false') : $v); }
             return array($ok, $grund, implode(' ', $t));
+
+        case 'vaillant':
+            /* Nachgebildet. myVAILLANT kennt keinen SG-Ready-Eingang.
+             *
+             * Bewusst OHNE Ausschalten: die Anlage laesst sich ueber diese
+             * Schnittstelle zwar in den Betriebsmodus OFF bringen, aber das
+             * ist keine EVU-Sperre. Der Frostschutz und die Legionellen-
+             * schaltung laufen dann nicht in gleicher Weise weiter, und im
+             * Januar ist das kein Schoenheitsfehler. Die Sperre beendet
+             * deshalb nur, was dieses Plugin selbst angehoben hat, und
+             * schreibt sonst nichts.
+             *
+             * WER WIRKLICH SPERREN WILL, nimmt die beiden Klemmen am Geraet.
+             * Bei dieser Anlage ist ohnehin der Multifunktionseingang der
+             * vorgesehene Weg (Klemme S21 an der Hydraulikstation, im
+             * sensoCOMFORT auf "Photovoltaik" gestellt).
+             */
+            $getan = array();
+            if ($stufe === 1 || $stufe === 2) {
+                list($ok, $grund) = wp_va_veto_ende($cfg);
+                $getan[] = 'Schnellabweichung beendet';
+                if ($ok && $cfg['ww_boost_4']) {
+                    list($ok2, $grund2) = wp_va_ww_boost($cfg, false);
+                    $getan[] = 'Warmwasser-Aufheizung aus';
+                    if (!$ok2) { return array(0, $grund2, implode(' ', $getan)); }
+                }
+                if ($stufe === 1) {
+                    $getan[] = 'KEINE Sperre gesendet - dafuer die Klemme';
+                }
+                return array($ok, $grund, implode(' ', $getan));
+            }
+
+            // Stufe 3 und 4: anheben. Ohne gemerkten Grundsollwert wird nicht
+            // angehoben - sonst addiert sich die Anhebung bei jedem Durchlauf.
+            if ($basis <= 0) {
+                return array(0, 'KEIN_GRUNDSOLLWERT', '');
+            }
+            $soll = $basis + ($stufe === 3 ? $cfg['anhebung_3'] : $cfg['anhebung_4']);
+            list($ok, $grund) = wp_va_veto($cfg, $soll, $cfg['veto_stunden']);
+            $getan[] = 'Schnellabweichung ' . $soll . ' Grad fuer '
+                     . (float) $cfg['veto_stunden'] . ' h';
+            if (!$ok) { return array(0, $grund, implode(' ', $getan)); }
+
+            if ($cfg['ww_boost_4']) {
+                list($ok, $grund) = wp_va_ww_boost($cfg, $stufe === 4);
+                $getan[] = 'Warmwasser-Aufheizung ' . ($stufe === 4 ? 'ein' : 'aus');
+            }
+            return array($ok, $grund, implode(' ', $getan));
     }
     return array(0, 'KEIN_HERSTELLER', '');
 }
@@ -1515,6 +2281,12 @@ function wp_statusfelder()
     foreach (wp_felder() as $name => $d) {
         $out[$name] = array($d[0], $d[1], $d[2], $d[3]);
     }
+    /* Die Arbeitszahl steht hinten, weil sie nicht aus dem Zustand kommt,
+     * sondern aus den Energiezaehlern - und nur bei Herstellern, die beide
+     * Reihen liefern. Wo sie fehlt, wird nichts gesendet statt einer Null. */
+    $out['COP']    = array(1, 0, 10, 'FELD.COP');
+    $out['STROM']  = array(1, 0, 100000, 'FELD.STROM');
+    $out['WAERME'] = array(1, 0, 400000, 'FELD.WAERME');
     return $out;
 }
 
@@ -1749,6 +2521,44 @@ function wp_abrufen($erzwingen = false)
         // stimmt noch nicht). Dann bleibt es bei ok=1, denn es gibt keinen
         // alten Stand zu schuetzen - und der Reiter Test soll sagen koennen,
         // dass die Verbindung steht und nur die Zuordnung fehlt.
+
+        /* Arbeitszahl - hoechstens einmal je Stunde.
+         *
+         * Sie braucht je Zaehlreihe eine eigene Anfrage, und die Zahlen
+         * aendern sich im Tagesraster ohnehin kaum. Sie im Abruftakt zu
+         * holen waere ein Vielfaches an Anfragen fuer denselben Wert. */
+        if (!empty($cfg['cop_ein']) && $cfg['hersteller'] === 'vaillant' && $erg['ok']) {
+            $faellig = ((int) (isset($stand['cop_zeit']) ? $stand['cop_zeit'] : 0)) + 3600 <= time();
+            if ($faellig || $erzwingen) {
+                /* Frisch einlesen: wp_va_lesen() kann die Reglerart eben erst
+                 * ermittelt und geschrieben haben. Die Kopie hier oben waere
+                 * dann noch leer, und die Energieadresse zeigte ins Leere. */
+                $cfg = wp_config();
+                $c = wp_va_cop($cfg, $erg['roh'], (int) $cfg['cop_tage']);
+                $stand['cop_zeit']  = time();
+                $stand['cop_grund'] = $c['grund'];
+                if ($c['cop'] !== null) {
+                    $stand['werte']['COP'] = $c['cop'];
+                }
+                if ($c['strom'] !== null)  { $stand['werte']['STROM']  = round($c['strom'], 1); }
+                if ($c['waerme'] !== null) { $stand['werte']['WAERME'] = round($c['waerme'], 1); }
+                if ($c['cop'] === null && $c['grund'] !== '') {
+                    wp_log('Arbeitszahl nicht gerechnet: ' . $c['grund'], 'cop_' . $c['grund']);
+                }
+            } elseif (isset($stand['werte'])) {
+                // Nicht faellig: die zuletzt gerechneten Werte stehen lassen,
+                // damit sie nicht jede Runde aus dem Abbild verschwinden.
+                foreach (array('COP', 'STROM', 'WAERME') as $f) {
+                    if (isset($stand['werte_cop'][$f])) {
+                        $stand['werte'][$f] = $stand['werte_cop'][$f];
+                    }
+                }
+            }
+            $stand['werte_cop'] = array();
+            foreach (array('COP', 'STROM', 'WAERME') as $f) {
+                if (isset($stand['werte'][$f])) { $stand['werte_cop'][$f] = $stand['werte'][$f]; }
+            }
+        }
 
     } else {
         wp_log('Abruf fehlgeschlagen: ' . $erg['fehler'], 'abruf_' . $erg['fehler']);

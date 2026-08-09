@@ -4,7 +4,8 @@ dorthin. Gedacht f&uuml;r Anlagen ohne Modbus-Modul, bei denen nur das
 WLAN-Modul des Herstellers verbaut ist.</p>
 
 <p><b>Unterst&uuml;tzt:</b> myUplink (Nibe), Daikin Onecta,
-MELCloud (Mitsubishi Electric).</p>
+MELCloud (Mitsubishi Electric), myVAILLANT (Vaillant, Saunier Duval, Bulex,
+Glow-worm, DemirD&ouml;k&uuml;m).</p>
 
 <p><b>Reihenfolge beim Einrichten:</b></p>
 <ol>
@@ -12,7 +13,10 @@ MELCloud (Mitsubishi Electric).</p>
 sagt, worauf man sich bei jedem der drei einl&auml;sst.</li>
 <li>Zugangsdaten eintragen. Bei myUplink und Daikin sind das Kennung und
 Geheimnis einer eigenen Anwendung, die man im Entwicklerportal des Herstellers
-anlegt. Bei MELCloud sind es E-Mail und Passwort des Kontos.</li>
+anlegt. Bei MELCloud und myVAILLANT sind es E-Mail und Passwort des Kontos.</li>
+<li>Bei myVAILLANT zus&auml;tzlich <b>Marke und Land</b> w&auml;hlen. Beides
+zusammen bestimmt den Anmeldebereich; ein falsches Land meldet kein falsches
+Passwort, sondern ein unbekanntes Konto.</li>
 <li>Bei Daikin zus&auml;tzlich die einmalige Anmeldung &uuml;ber den Browser.</li>
 <li><i>Test</i> &rarr; <b>Ger&auml;te suchen</b>, die Kennung nach
 <i>Einstellungen</i> &uuml;bernehmen und speichern.</li>
@@ -23,6 +27,28 @@ Hersteller tats&auml;chlich bewirken.</li>
 <li><i>Einbindung in Loxone</i> &rarr; Vorlagen herunterladen und in Loxone
 Config einlesen.</li>
 </ol>
+
+<h3>myVAILLANT</h3>
+<ul>
+<li><b>Keine offene Schnittstelle.</b> Angemeldet wird mit den Zugangsdaten der
+App. Alles dazu stammt aus der quelloffenen Bibliothek
+<span class="sm-mono">myPyllant</span> &mdash; nichts ist geraten, aber
+Vaillant kann es jederzeit &auml;ndern. Wenn m&ouml;glich: in der App ein
+zweites Konto mit Freigabe anlegen und dieses hinterlegen.</li>
+<li><b>Der Warmwasserkreis z&auml;hlt ab 255</b>, nicht ab 0. Bleibt die
+Warmwasser-Aufheizung wirkungslos, ist dieser Index der erste Verd&auml;chtige.</li>
+<li><b>Angehoben wird &uuml;ber die Schnellabweichung</b>, nicht &uuml;ber den
+Handbetriebs-Sollwert &mdash; sie l&auml;uft von selbst ab. Bleibt der
+Miniserver h&auml;ngen, f&auml;llt die Anlage nach der eingestellten Zeit von
+allein zur&uuml;ck.</li>
+<li><b>Gesperrt wird nicht.</b> Zustand 1 beendet nur eine laufende Anhebung.
+Die Anlage liesse sich zwar ausschalten, aber <i>aus</i> ist keine EVU-Sperre.
+Wer wirklich sperren will, nimmt die beiden Klemmen am Ger&auml;t.</li>
+<li><b>Arbeitszahl</b> aus den Energiez&auml;hlern: abgegebene W&auml;rme
+geteilt durch aufgenommenen Strom. Liefert die Anlage nur eine der beiden
+Reihen, wird <b>nichts</b> gerechnet &mdash; der Grund steht im Reiter
+Einstellungen.</li>
+</ul>
 
 <p><b>Drei Dinge, die vorher zu wissen sind:</b></p>
 <ul>

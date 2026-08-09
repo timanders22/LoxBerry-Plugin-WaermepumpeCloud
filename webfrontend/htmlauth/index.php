@@ -85,7 +85,32 @@ if ($wp_post && isset($_POST['speichern_zugang'])) {
         $wp_cfg['hersteller'] = $h;
     }
 
-    if ($h === 'melcloud') {
+    if ($h === 'vaillant') {
+        // Marke und Land bestimmen den Anmeldebereich. Ein falsches Land
+        // liefert keine verstaendliche Meldung, sondern eine Anmeldeseite, auf
+        // der das Konto nicht existiert - deshalb wird gegen die Liste
+        // geprueft und nicht gegen ein Muster.
+        $mk = wp_g('marke');
+        // isset() nimmt nur Variablen, nicht das Ergebnis eines Aufrufs -
+        // isset(wp_va_marken()[$mk]) waere ein Fehler beim Uebersetzen.
+        $wp_marken = wp_va_marken();
+        if (!isset($wp_marken[$mk])) {
+            $wp_fehler[] = wp_t('EINST.FEHLER_MARKE');
+        } else {
+            $wp_cfg['marke'] = $mk;
+            $ld = wp_g('land');
+            $erlaubt = wp_va_laender($mk);
+            if (!$erlaubt) {
+                $wp_cfg['land'] = '';     // diese Marke kennt kein Land
+            } elseif (!isset($erlaubt[$ld])) {
+                $wp_fehler[] = wp_t('EINST.FEHLER_LAND');
+            } else {
+                $wp_cfg['land'] = $ld;
+            }
+        }
+    }
+
+    if ($h === 'melcloud' || $h === 'vaillant') {
         $b = wp_g('benutzer');
         if ($b !== '') {
             if (!filter_var($b, FILTER_VALIDATE_EMAIL)) {
@@ -198,6 +223,41 @@ if ($wp_post && isset($_POST['speichern_geraet'])) {
             }
         }
         if (!$wp_gefunden) { $wp_cfg['geraetetyp'] = -1; }
+    }
+
+    if ($wp_cfg['hersteller'] === 'vaillant') {
+        /* Zone, Warmwasserkreis, Laufzeit der Schnellabweichung und das
+         * Fenster der Arbeitszahl. Was ausserhalb liegt, wird abgewiesen -
+         * eine still gekappte Zahl waere spaeter nicht wiederzufinden. */
+        foreach (array(
+            'zone'         => array(0, 10),
+            'dhw'          => array(0, 255),
+            'veto_stunden' => array(1, 24),
+            'cop_tage'     => array(1, 365),
+        ) as $wp_f => $wp_gr) {
+            $wp_w = trim(wp_g($wp_f, (string) $wp_cfg[$wp_f]));
+            if (!preg_match('/^[0-9]+$/', $wp_w)) {
+                $wp_fehler[] = sprintf(wp_t('EINST.FEHLER_ZAHL'), wp_t('EINST.L_' . strtoupper($wp_f)));
+                continue;
+            }
+            if ((int) $wp_w < $wp_gr[0] || (int) $wp_w > $wp_gr[1]) {
+                $wp_fehler[] = sprintf(wp_t('EINST.FEHLER_BEREICH'),
+                    wp_t('EINST.L_' . strtoupper($wp_f)), $wp_gr[0], $wp_gr[1]);
+                continue;
+            }
+            $wp_cfg[$wp_f] = (int) $wp_w;
+        }
+        $wp_cfg['cop_ein'] = isset($_POST['cop_ein']) ? 1 : 0;
+
+        /* Wechselt das System, ist die gemerkte Reglerart nicht mehr
+         * zwingend die richtige - sie wird beim naechsten Abruf neu
+         * ermittelt, statt weiter auf das alte System zu zeigen.
+         * Die gespeicherte Fassung liegt noch auf der Platte; geschrieben
+         * wird erst am Ende dieses Zweiges. */
+        $wp_alt = wp_config();
+        if ((string) $wp_alt['system'] !== (string) $wp_cfg['system']) {
+            $wp_cfg['regler'] = '';
+        }
     }
 
     $takt = (int) wp_g('takt', '300');
@@ -475,11 +535,36 @@ $wp_beschriftung = array(
   </select>
 </div>
 
-<?php if ($wp_cfg['hersteller'] === 'melcloud') { ?>
+<?php if ($wp_cfg['hersteller'] === 'vaillant') { ?>
+<div class="sm-feld">
+  <label for="wp_marke"><?= wp_e(wp_t('EINST.L_MARKE')) ?></label>
+  <select data-role="none" name="marke" id="wp_marke">
+<?php foreach (wp_va_marken() as $wp_k => $wp_n) { ?>
+    <option value="<?= wp_e($wp_k) ?>"<?= $wp_cfg['marke'] === $wp_k ? ' selected' : '' ?>><?= wp_e($wp_n) ?></option>
+<?php } ?>
+  </select>
+</div>
+<?php $wp_laender = wp_va_laender($wp_cfg['marke']); if ($wp_laender) { ?>
+<div class="sm-feld">
+  <label for="wp_land"><?= wp_e(wp_t('EINST.L_LAND')) ?></label>
+  <select data-role="none" name="land" id="wp_land">
+<?php foreach ($wp_laender as $wp_k => $wp_n) { ?>
+    <option value="<?= wp_e($wp_k) ?>"<?= $wp_cfg['land'] === $wp_k ? ' selected' : '' ?>><?= wp_e($wp_n) ?></option>
+<?php } ?>
+  </select>
+  <div class="sm-hilfe"><?= sprintf(wp_t('EINST.H_LAND'),
+      wp_e(wp_va_realm($wp_cfg['marke'], $wp_cfg['land']))) ?></div>
+</div>
+<?php } ?>
+<div class="sm-hinweis"><?= wp_t('EINST.VAILLANT_TEXT') ?></div>
+<?php } ?>
+
+<?php if ($wp_cfg['hersteller'] === 'melcloud' || $wp_cfg['hersteller'] === 'vaillant') { ?>
 <div class="sm-feld">
   <label for="wp_benutzer"><?= wp_e(wp_t('EINST.L_BENUTZER')) ?></label>
   <input data-role="none" type="email" name="benutzer" id="wp_benutzer" value="<?= wp_e($wp_geh['benutzer']) ?>" size="40">
-  <div class="sm-hilfe"><?= wp_t('EINST.H_BENUTZER') ?></div>
+  <div class="sm-hilfe"><?= wp_t($wp_cfg['hersteller'] === 'vaillant'
+      ? 'EINST.H_BENUTZER_VA' : 'EINST.H_BENUTZER') ?></div>
 </div>
 <div class="sm-feld">
   <label for="wp_passwort"><?= wp_e(wp_t('EINST.L_PASSWORT')) ?></label>
@@ -567,12 +652,46 @@ $wp_beschriftung = array(
   <div class="sm-hilfe"><?= wp_t('EINST.H_GEBAEUDE') ?></div>
 </div>
 <?php } ?>
-<?php if ($wp_cfg['hersteller'] === 'myuplink') { ?>
+<?php if ($wp_cfg['hersteller'] === 'myuplink' || $wp_cfg['hersteller'] === 'vaillant') { ?>
 <div class="sm-feld">
   <label for="wp_system"><?= wp_e(wp_t('EINST.L_SYSTEM')) ?></label>
   <input data-role="none" type="text" name="system" id="wp_system" value="<?= wp_e($wp_cfg['system']) ?>" size="44">
-  <div class="sm-hilfe"><?= wp_t('EINST.H_SYSTEM') ?></div>
+  <div class="sm-hilfe"><?= wp_t($wp_cfg['hersteller'] === 'vaillant'
+      ? 'EINST.H_SYSTEM_VA' : 'EINST.H_SYSTEM') ?></div>
 </div>
+<?php } ?>
+
+<?php if ($wp_cfg['hersteller'] === 'vaillant') { ?>
+<div class="sm-feld">
+  <label for="wp_zone"><?= wp_e(wp_t('EINST.L_ZONE')) ?></label>
+  <input data-role="none" type="number" name="zone" id="wp_zone" value="<?= (int) $wp_cfg['zone'] ?>" min="0" max="10">
+  <div class="sm-hilfe"><?= wp_t('EINST.H_ZONE') ?></div>
+</div>
+<div class="sm-feld">
+  <label for="wp_dhw"><?= wp_e(wp_t('EINST.L_DHW')) ?></label>
+  <input data-role="none" type="number" name="dhw" id="wp_dhw" value="<?= (int) $wp_cfg['dhw'] ?>" min="0" max="255">
+  <div class="sm-hilfe"><?= wp_t('EINST.H_DHW') ?></div>
+</div>
+<div class="sm-feld">
+  <label for="wp_veto"><?= wp_e(wp_t('EINST.L_VETO_STUNDEN')) ?></label>
+  <input data-role="none" type="number" name="veto_stunden" id="wp_veto"
+         value="<?= wp_e($wp_cfg['veto_stunden']) ?>" min="1" max="24" step="1">
+  <div class="sm-hilfe"><?= wp_t('EINST.H_VETO') ?></div>
+</div>
+<div class="sm-feld">
+  <label style="font-weight:400;"><input data-role="none" type="checkbox" name="cop_ein" value="1"<?= $wp_cfg['cop_ein'] ? ' checked' : '' ?>>
+    <?= wp_e(wp_t('EINST.L_COP')) ?></label>
+  <div class="sm-hilfe"><?= wp_t('EINST.H_COP') ?></div>
+</div>
+<div class="sm-feld">
+  <label for="wp_coptage"><?= wp_e(wp_t('EINST.L_COP_TAGE')) ?></label>
+  <input data-role="none" type="number" name="cop_tage" id="wp_coptage"
+         value="<?= (int) $wp_cfg['cop_tage'] ?>" min="1" max="365" step="1">
+  <div class="sm-hilfe"><?= wp_t('EINST.H_COP_TAGE') ?></div>
+</div>
+<?php if (!empty($wp_stand['cop_grund'])) { ?>
+<div class="sm-warnung"><?= sprintf(wp_t('EINST.COP_GRUND'), wp_e(wp_t('COPGRUND.' . $wp_stand['cop_grund']))) ?></div>
+<?php } ?>
 <?php } ?>
 
 <div class="sm-feld">

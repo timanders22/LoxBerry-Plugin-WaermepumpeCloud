@@ -12,6 +12,7 @@ Wärmepumpe vorbeiregelt.
 | **myUplink** (Nibe) | offiziell, OAuth2 (`client_credentials`) | **echt** | Lesen frei, **Schreiben verlangt ein kostenpflichtiges myUplink-Abo** |
 | **Daikin Onecta** | offiziell, OAuth2 (Autorisierungscode) | nachgebildet | **200 Aufrufe je Tag**, gleitendes Fenster |
 | **MELCloud** (Mitsubishi) | inoffiziell, ContextKey | nachgebildet | **Mindesttakt 180 s** — häufiger sperrt das Konto für Stunden |
+| **myVAILLANT** (Vaillant, Saunier Duval, Bulex, Glow-worm, DemirDöküm) | inoffiziell, OpenID Connect mit PKCE | nachgebildet | **Anmeldung mit den App-Zugangsdaten**, kein API-Schlüssel; der sensoCOMFORT meldet ohnehin nur alle 5 min |
 
 ## Was das Plugin ehrlich nicht kann
 
@@ -39,6 +40,72 @@ Kontingent wäre vor dem Abend leer, und dann ließe sich auch nichts mehr
 schalten. Das Plugin führt deshalb eine Aufrufbuchhaltung über ein gleitendes
 24-Stunden-Fenster, hält eine einstellbare Zahl Aufrufe fürs Schalten zurück
 und rechnet den kleinstmöglichen Abruftakt daraus aus.
+
+## myVAILLANT im Einzelnen
+
+**Es gibt keine offene Schnittstelle.** Angemeldet wird mit denselben
+Zugangsdaten wie in der App, über einen OpenID-Connect-Fluss mit PKCE gegen
+einen Keycloak unter `identity.vaillant-group.com`. Alles, was das Plugin
+dafür tut, ist der quelloffenen Bibliothek
+[myPyllant](https://github.com/signalkraft/myPyllant) entnommen — Adressen,
+Kopfzeilen, Feldnamen. Nichts davon ist geraten, und Vaillant kann es
+jederzeit ändern.
+
+Der Anmeldefluss läuft in drei Schritten, und zwei Fallstricke stehen als
+Kommentar im Quelltext, weil sie beide lautlos scheitern:
+
+* **Kekse.** Der erste Schritt setzt Sitzungskekse, der zweite gelingt nur mit
+  ihnen. Ohne Keksglas antwortet der Keycloak mit einer neuen Anmeldeseite
+  statt mit einer Umleitung — was von außen wie ein falsches Passwort
+  aussieht. Deshalb braucht dieser Weg `curl`; der Rückfallweg über
+  Datenströme führt keine Kekse.
+* **Umleitungen.** Der Code steht in der Kopfzeile `Location`. Wer curl folgen
+  lässt, sieht ihn nie.
+
+**Marke und Land bestimmen den Anmeldebereich** (`vaillant-germany-b2c` und so
+fort). Ein falsches Land meldet kein falsches Passwort, sondern ein
+unbekanntes Konto — deshalb sind beide Listen vollständig hinterlegt und
+werden nicht frei eingetippt.
+
+**Der Warmwasserkreis zählt ab 255**, nicht ab 0. Das ist kein Tippfehler und
+der erste Verdächtige, wenn die Warmwasser-Aufheizung wirkungslos bleibt.
+
+### Angehoben wird über die Schnellabweichung, nicht über den Sollwert
+
+Für die Zustände 3 und 4 setzt das Plugin eine *Schnellabweichung* (Quick
+Veto) mit Laufzeit, keinen Handbetriebs-Sollwert. Der Unterschied ist eine
+dritte Sicherung neben den beiden weiter unten: **die Schnellabweichung läuft
+von selbst ab.** Bleibt der Miniserver hängen, während gerade angehoben ist,
+fällt die Anlage nach der eingestellten Zeit von allein zurück, statt das Haus
+unbegrenzt weiterzuheizen. Das Zeitprogramm der Anlage bleibt unangetastet.
+
+### Gesperrt wird nicht
+
+Zustand 1 beendet nur, was das Plugin selbst angehoben hat, und schreibt sonst
+**nichts**. Die Anlage ließe sich über diese Schnittstelle zwar ausschalten,
+aber *aus* ist keine EVU-Sperre: Frostschutz und Legionellenschaltung laufen
+dann nicht in gleicher Weise weiter. Wer wirklich sperren will, nimmt die
+beiden Klemmen am Gerät — bei einer aroTHERM plus ist ohnehin der
+Multifunktionseingang der vom Hersteller vorgesehene Weg.
+
+### Arbeitszahl
+
+Aus den Energiezählern der Anlage: **abgegebene Wärme geteilt durch
+aufgenommenen Strom**, also `HEAT_GENERATED / CONSUMED_ELECTRICAL_ENERGY`.
+Genauso rechnet die offizielle Home-Assistant-Anbindung. Der Zeitraum ist
+einstellbar — 1 Tag ist die Tagesarbeitszahl, 365 kommt der Jahresarbeitszahl
+nahe.
+
+Gerechnet wird höchstens **einmal je Stunde**, weil jede Zählreihe eine eigene
+Anfrage kostet und sich Tageswerte ohnehin kaum bewegen. Und: **liefert die
+Anlage nur eine der beiden Reihen, wird nichts gerechnet.** Der Grund steht
+dann im Reiter Einstellungen im Klartext. Eine erfundene Zahl wäre schlimmer
+als keine — sie stünde in Loxone und sähe richtig aus.
+
+> **Nicht gemessen:** ob eine bestimmte Anlage beide Reihen überhaupt
+> herausgibt. Das entscheidet das Gerät, nicht das Plugin. Der erste Handgriff
+> nach dem Einrichten ist deshalb ein Blick in den Reiter Einstellungen: steht
+> dort eine Arbeitszahl, gibt es beide Reihen.
 
 ## Zwei Sicherungen gegen eine kalte Wohnung
 
@@ -111,6 +178,27 @@ webfrontend/htmlauth/wp_lib.php    Konfiguration, drei Hersteller-Adapter,
 webfrontend/htmlauth/wp_test.php   Selbstpruefung und Test-Aktionen
 webfrontend/html/index.php         Token-Endpunkt fuer den Miniserver
 ```
+
+## Fassung 0.9.2 — myVAILLANT als vierter Hersteller
+
+Neu: **myVAILLANT** mit Anmeldung, Zustand, SG-Ready-Nachbildung über die
+Schnellabweichung und **Arbeitszahl** aus den Energiezählern. Dazu zwei neue
+Messwerte für alle Hersteller, sofern sie sie liefern: **Vorlauf-Sollwert**
+und **Heizkurve**.
+
+Geprüft wurde ohne Anlage, gegen die echten PHP-Parser 7.4 und 8.2:
+Anmeldebereiche für alle fünf Marken, PKCE (128 Zeichen, Prüfwert
+nachgerechnet, URL-sicher), das Herauslösen des Codes aus der App-Umleitung
+`enduservaillant.page.link://login?code=…` — ein eigenes Schema mit Punkten,
+an dem eine naive Zerlegung scheitert —, die Feldzuordnung gegen eine
+nachgebaute Antwort, die Erkennung der Zählreihen und die Oberfläche einmal je
+Reiter ohne JavaScript. Dass Passwort und Erneuerungsmerkmal in **keiner**
+Ausgabe auftauchen, ist eine eigene Prüfzeile.
+
+**Was damit nicht geprüft ist:** alles, was eine Anlage braucht. Ob die
+Anmeldung durchgeht, ob die Pfade zu *dieser* Antwort passen und ob die
+Zählreihen vorhanden sind, sagt erst das Gerät. Genau dafür führt der Reiter
+Test je Feld auf, welcher Kandidat gegriffen hat.
 
 ## Fassung 0.9.1 — nachgemessen und korrigiert
 
