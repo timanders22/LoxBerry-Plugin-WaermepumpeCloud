@@ -110,7 +110,31 @@ if ($wp_post && isset($_POST['speichern_zugang'])) {
         }
     }
 
-    if ($h === 'melcloud' || $h === 'vaillant') {
+    if ($h === 'emsesp') {
+        /* Die Adresse des Gateways. Geprueft wird die Form, nicht der Inhalt -
+         * ob dort wirklich ein Gateway steht, sagt der Reiter Test. Wer
+         * "ems-esp.local" ohne http:// eintraegt, bekommt es gesagt: sonst
+         * schlaegt jeder Abruf fehl und niemand sieht, warum. */
+        $u = trim(wp_g('ems_url'));
+        if ($u !== '' && !preg_match('#^https?://#i', $u)) {
+            $wp_fehler[] = sprintf(wp_t('EINST.FEHLER_EMS_URL'), wp_e($u));
+        } else {
+            $wp_cfg['ems_url'] = rtrim($u, '/');
+        }
+        $tk = wp_g('ems_token');
+        if ($tk !== '') {
+            /* Ein JWT hat drei durch Punkte getrennte Teile. Wer aus der
+             * Weboberflaeche des Gateways versehentlich den Benutzernamen
+             * kopiert, merkt es sonst erst beim ersten Schaltversuch. */
+            if (substr_count($tk, '.') !== 2 || strlen($tk) < 40) {
+                $wp_fehler[] = wp_t('EINST.FEHLER_EMS_TOKEN');
+            } else {
+                $neu['ems_token'] = $tk;
+            }
+        }
+        if (!empty($_POST['ems_token_loeschen'])) { $neu['ems_token'] = ''; }
+
+    } elseif ($h === 'melcloud' || $h === 'vaillant') {
         $b = wp_g('benutzer');
         if ($b !== '') {
             if (!filter_var($b, FILTER_VALIDATE_EMAIL)) {
@@ -129,7 +153,7 @@ if ($wp_post && isset($_POST['speichern_zugang'])) {
         if ($neu['passwort'] !== '' && $neu['benutzer'] === '') {
             $wp_fehler[] = wp_t('EINST.FEHLER_PW_OHNE_BENUTZER');
         }
-    } else {
+    } elseif ($h !== 'emsesp') {
         $ci = wp_g('client_id');
         if ($ci !== '') {
             // Beide Anbieter geben eine GUID aus. Ist die Form erkennbar
@@ -275,6 +299,40 @@ if ($wp_post && isset($_POST['speichern_geraet'])) {
             $wp_fehler[] = sprintf(wp_t('EINST.FEHLER_RESERVE'), (int) $info['budget'] - 10);
         } else {
             $wp_cfg['budget_schreiben'] = $res;
+        }
+    }
+
+    if ($wp_cfg['hersteller'] === 'emsesp') {
+        $hc = (int) wp_g('ems_hc', '1');
+        if ($hc < 1 || $hc > 8) {
+            $wp_fehler[] = sprintf(wp_t('EINST.FEHLER_BEREICH'), wp_e(wp_t('EINST.L_EMS_HC')), 1, 8);
+        } else {
+            $wp_cfg['ems_hc'] = $hc;
+        }
+        $wp_cfg['ems_thermostat'] = !empty($_POST['ems_thermostat']) ? 1 : 0;
+
+        $art = wp_g('ems_sg_art', 'nachbildung');
+        $wp_cfg['ems_sg_art'] = $art === 'klemmen' ? 'klemmen' : 'nachbildung';
+        foreach (array('ems_gpio1', 'ems_gpio4') as $wp_gf) {
+            $v = (int) wp_g($wp_gf, '0');
+            if ($v < 0 || $v > 48) {
+                $wp_fehler[] = sprintf(wp_t('EINST.FEHLER_BEREICH'),
+                    wp_e(wp_t('EINST.L_' . strtoupper($wp_gf))), 0, 48);
+            } else {
+                $wp_cfg[$wp_gf] = $v;
+            }
+        }
+        /* Der Weg ueber die Klemmen ohne Pins waere ein eingeschalteter
+         * Schalter, der nichts tut. Lieber jetzt beanstanden als spaeter
+         * suchen lassen, warum die Sperre nicht ankommt. */
+        if ($wp_cfg['ems_sg_art'] === 'klemmen'
+            && ((int) $wp_cfg['ems_gpio1'] <= 0 || (int) $wp_cfg['ems_gpio4'] <= 0)) {
+            $wp_fehler[] = wp_t('EINST.FEHLER_EMS_GPIO');
+        }
+        if ($wp_cfg['ems_sg_art'] === 'klemmen'
+            && (int) $wp_cfg['ems_gpio1'] === (int) $wp_cfg['ems_gpio4']
+            && (int) $wp_cfg['ems_gpio1'] > 0) {
+            $wp_fehler[] = wp_t('EINST.FEHLER_EMS_GPIO_GLEICH');
         }
     }
 
@@ -520,6 +578,12 @@ $wp_beschriftung = array(
 <tr><td>MELCloud (Mitsubishi)</td><td><?= wp_e(wp_t('EINST.ART_INOFFIZIELL')) ?></td>
     <td><?= wp_e(wp_t('EINST.SG_NACHGEBILDET')) ?></td>
     <td><?= wp_t('EINST.GRENZE_MELCLOUD') ?></td></tr>
+<tr><td>myVAILLANT (Vaillant u. a.)</td><td><?= wp_e(wp_t('EINST.ART_INOFFIZIELL')) ?></td>
+    <td><?= wp_e(wp_t('EINST.SG_NACHGEBILDET')) ?></td>
+    <td><?= wp_t('EINST.GRENZE_VAILLANT') ?></td></tr>
+<tr><td>EMS-ESP (Bosch, Buderus u. a.)</td><td><?= wp_e(wp_t('EINST.ART_LOKAL')) ?></td>
+    <td><?= wp_e(wp_t('EINST.SG_EMS')) ?></td>
+    <td><?= wp_t('EINST.GRENZE_EMS') ?></td></tr>
 </table>
 
 <form action="index.php" method="post">
@@ -574,7 +638,7 @@ $wp_beschriftung = array(
   <label style="font-weight:400;"><input data-role="none" type="checkbox" name="passwort_loeschen" value="1">
     <?= wp_e(wp_t('EINST.L_PW_LOESCHEN')) ?></label>
 </div>
-<?php } elseif ($wp_cfg['hersteller'] !== '') { ?>
+<?php } elseif ($wp_cfg['hersteller'] !== '' && $wp_cfg['hersteller'] !== 'emsesp') { ?>
 <div class="sm-feld">
   <label for="wp_client_id"><?= wp_e(wp_t('EINST.L_CLIENTID')) ?></label>
   <input data-role="none" type="text" name="client_id" id="wp_client_id" value="<?= wp_e($wp_geh['client_id']) ?>" size="44">
@@ -587,6 +651,24 @@ $wp_beschriftung = array(
   <div class="sm-hilfe"><?= wp_t('EINST.H_SECRET') ?></div>
   <label style="font-weight:400;"><input data-role="none" type="checkbox" name="secret_loeschen" value="1">
     <?= wp_e(wp_t('EINST.L_SECRET_LOESCHEN')) ?></label>
+</div>
+<?php } ?>
+
+<?php if ($wp_cfg['hersteller'] === 'emsesp') { ?>
+<div class="sm-hinweis"><?= wp_t('EINST.EMS_TEXT') ?></div>
+<div class="sm-feld">
+  <label for="wp_ems_url"><?= wp_e(wp_t('EINST.L_EMS_URL')) ?></label>
+  <input data-role="none" type="text" name="ems_url" id="wp_ems_url" size="44"
+         value="<?= wp_e($wp_cfg['ems_url']) ?>" placeholder="http://ems-esp.local">
+  <div class="sm-hilfe"><?= wp_t('EINST.H_EMS_URL') ?></div>
+</div>
+<div class="sm-feld">
+  <label for="wp_ems_token"><?= wp_e(wp_t('EINST.L_EMS_TOKEN')) ?></label>
+  <input data-role="none" type="password" name="ems_token" id="wp_ems_token" value="" size="44"
+         placeholder="<?= wp_e($wp_geh['ems_token'] !== '' ? wp_t('EINST.P_GESETZT') : wp_t('EINST.P_LEER')) ?>">
+  <div class="sm-hilfe"><?= wp_t('EINST.H_EMS_TOKEN') ?></div>
+  <label style="font-weight:400;"><input data-role="none" type="checkbox" name="ems_token_loeschen" value="1">
+    <?= wp_e(wp_t('EINST.L_EMS_TOKEN_LOESCHEN')) ?></label>
 </div>
 <?php } ?>
 
@@ -694,6 +776,42 @@ $wp_beschriftung = array(
 </div>
 <?php if (!empty($wp_stand['cop_grund'])) { ?>
 <div class="sm-warnung"><?= sprintf(wp_t('EINST.COP_GRUND'), wp_e(wp_t('COPGRUND.' . $wp_stand['cop_grund']))) ?></div>
+<?php } ?>
+<?php } ?>
+
+<?php if ($wp_cfg['hersteller'] === 'emsesp') { ?>
+<div class="sm-feld">
+  <label for="wp_ems_hc"><?= wp_e(wp_t('EINST.L_EMS_HC')) ?></label>
+  <input data-role="none" type="number" name="ems_hc" id="wp_ems_hc"
+         value="<?= (int) $wp_cfg['ems_hc'] ?>" min="1" max="8" step="1">
+  <div class="sm-hilfe"><?= wp_t('EINST.H_EMS_HC') ?></div>
+</div>
+<div class="sm-feld">
+  <label style="font-weight:400;"><input data-role="none" type="checkbox" name="ems_thermostat" value="1"<?= $wp_cfg['ems_thermostat'] ? ' checked' : '' ?>>
+    <?= wp_e(wp_t('EINST.L_EMS_THERMOSTAT')) ?></label>
+  <div class="sm-hilfe"><?= wp_t('EINST.H_EMS_THERMOSTAT') ?></div>
+</div>
+<div class="sm-feld">
+  <label for="wp_ems_sg_art"><?= wp_e(wp_t('EINST.L_EMS_SG_ART')) ?></label>
+  <select data-role="none" name="ems_sg_art" id="wp_ems_sg_art">
+    <option value="nachbildung"<?= $wp_cfg['ems_sg_art'] === 'nachbildung' ? ' selected' : '' ?>><?= wp_e(wp_t('EINST.O_EMS_NACHBILDUNG')) ?></option>
+    <option value="klemmen"<?= $wp_cfg['ems_sg_art'] === 'klemmen' ? ' selected' : '' ?>><?= wp_e(wp_t('EINST.O_EMS_KLEMMEN')) ?></option>
+  </select>
+  <div class="sm-hilfe"><?= wp_t('EINST.H_EMS_SG_ART') ?></div>
+</div>
+<?php if ($wp_cfg['ems_sg_art'] === 'klemmen') { ?>
+<div class="sm-warnung"><?= wp_t('EINST.EMS_KLEMMEN_WARNUNG') ?></div>
+<div class="sm-feld">
+  <label for="wp_ems_gpio1"><?= wp_e(wp_t('EINST.L_EMS_GPIO1')) ?></label>
+  <input data-role="none" type="number" name="ems_gpio1" id="wp_ems_gpio1"
+         value="<?= (int) $wp_cfg['ems_gpio1'] ?>" min="0" max="48" step="1">
+</div>
+<div class="sm-feld">
+  <label for="wp_ems_gpio4"><?= wp_e(wp_t('EINST.L_EMS_GPIO4')) ?></label>
+  <input data-role="none" type="number" name="ems_gpio4" id="wp_ems_gpio4"
+         value="<?= (int) $wp_cfg['ems_gpio4'] ?>" min="0" max="48" step="1">
+  <div class="sm-hilfe"><?= wp_t('EINST.H_EMS_GPIO') ?></div>
+</div>
 <?php } ?>
 <?php } ?>
 
@@ -923,6 +1041,7 @@ foreach ($wp_pr as $wp_z) { if ($wp_z[0] === 0) { $wp_schlecht++; } }
 
 <h2><?= wp_e(wp_t('TEST.H_KNOEPFE')) ?></h2>
 <div class="sm-legende">
+<span><i class="sm-punkt sm-b-lesen"></i><?= wp_t('LEGENDE.LESEN') ?></span>
 <span><i class="sm-punkt sm-b-technik"></i><?= wp_t('LEGENDE.TECHNIK') ?></span>
 <span><i class="sm-punkt sm-b-aktion"></i><?= wp_t('LEGENDE.AKTION') ?></span>
 </div>
@@ -935,7 +1054,12 @@ foreach ($wp_pr as $wp_z) { if ($wp_z[0] === 0) { $wp_schlecht++; } }
 <?php } ?>
 </div>
 <div class="sm-knopfreihe">
-<?php foreach (array('wege', 'roh') as $wp_a) { ?>
+<?php
+$wp_technik = array('wege', 'roh');
+// Die Befehlsliste gibt es nur beim Gateway - es ist der einzige Weg in
+// diesem Plugin, bei dem die Gegenstelle selbst sagen kann, was sie annimmt.
+if ($wp_cfg['hersteller'] === 'emsesp') { $wp_technik[] = 'befehle'; }
+foreach ($wp_technik as $wp_a) { ?>
 <form action="index.php" method="post" style="margin:0;"><input data-role="none" type="hidden" name="activetab" value="tab-test">
   <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="test" value="<?= $wp_a ?>"><?= wp_e(wp_t('TEST.K_' . strtoupper($wp_a))) ?></button>
 </form>

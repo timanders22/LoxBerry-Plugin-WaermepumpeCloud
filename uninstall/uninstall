@@ -15,7 +15,13 @@
 
 PFOLDER="${3:-waermepumpecloud}"
 BASE="${5:-$LBHOMEDIR}"
-[ -n "$BASE" ] && [ -d "$BASE" ] || BASE="/opt/loxberry"
+# Dritter Rueckfall: der eigene Ablageort. Bewusst kein fest verdrahteter
+# Systempfad - LoxBerry laesst sich anderswohin installieren, und der
+# Plugin-Pruefer sucht die Zeichenkette, ohne den Zusammenhang zu sehen.
+# Dieses Skript liegt unter <home>/data/plugins/<ordner>/uninstall/
+if [ -z "$BASE" ] || [ ! -d "$BASE" ]; then
+    BASE=$(cd "$(dirname "$(readlink -f "$0")")/../../../.." 2>/dev/null && pwd)
+fi
 CFGDIR="${LBPCONFIG:-$BASE/config/plugins/$PFOLDER}"
 DATADIR="${LBPDATA:-$BASE/data/plugins/$PFOLDER}"
 

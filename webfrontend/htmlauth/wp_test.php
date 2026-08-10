@@ -30,7 +30,21 @@ function wp_pruefungen()
         sprintf(wp_t('TEST.A_HERSTELLER_OK'), wp_e($info['name'])));
 
     /* ---- Zugangsdaten hinterlegt? Form pruefen, Wert nie zeigen. ---- */
-    if ($cfg['hersteller'] === 'melcloud') {
+    if ($cfg['hersteller'] === 'emsesp') {
+        /* EMS-ESP braucht zum LESEN gar nichts. Ohne Zugriffsmerkmal laeuft
+         * die Anzeige vollstaendig; nur Schreiben geht nicht. Deshalb ist ein
+         * fehlendes Merkmal hier kein Kreuz, sondern ein Hinweis - solange
+         * SG Ready ausgeschaltet ist. */
+        $hat = trim((string) $g['ems_token']) !== '';
+        if ($hat) {
+            $z[] = wp_pruefzeile(1, wp_t('TEST.F_ZUGANG'),
+                sprintf(wp_t('TEST.A_ZUGANG_EMS'), wp_e(wp_maske($g['ems_token']))));
+        } else {
+            $z[] = wp_pruefzeile(empty($cfg['sg_ein']) ? -1 : 0, wp_t('TEST.F_ZUGANG'),
+                wp_t(empty($cfg['sg_ein']) ? 'TEST.A_ZUGANG_EMS_LESEN'
+                                           : 'TEST.A_ZUGANG_EMS_FEHLT'));
+        }
+    } elseif ($cfg['hersteller'] === 'melcloud' || $cfg['hersteller'] === 'vaillant') {
         $da = $g['benutzer'] !== '' && $g['passwort'] !== '';
         $z[] = wp_pruefzeile($da ? 1 : 0, wp_t('TEST.F_ZUGANG'),
             $da ? sprintf(wp_t('TEST.A_ZUGANG_MELCLOUD'), wp_e($g['benutzer']),
@@ -52,11 +66,26 @@ function wp_pruefungen()
     }
 
     /* ---- Antwortet die Cloud? ---- */
+    if ($cfg['hersteller'] === 'emsesp') {
+        /* Kein Anmeldeschritt - stattdessen die Frage, die hier zaehlt:
+         * antwortet das Gateway ueberhaupt? */
+        list($d, $grund) = wp_ems_holen($cfg, 'system/info');
+        if (is_array($d)) {
+            $fassung = isset($d['version']) ? (string) $d['version'] : '?';
+            $z[] = wp_pruefzeile(1, wp_t('TEST.F_GATEWAY'),
+                sprintf(wp_t('TEST.A_GATEWAY_OK'), wp_e($fassung)));
+        } else {
+            $z[] = wp_pruefzeile(0, wp_t('TEST.F_GATEWAY'),
+                sprintf(wp_t('TEST.A_GATEWAY_FEHL'), wp_e(wp_meld($grund))));
+        }
+    } else {
+
     $token = '';
     switch ($cfg['hersteller']) {
         case 'myuplink': $token = wp_mu_token(); break;
         case 'onecta':   $token = wp_oc_token(); break;
         case 'melcloud': $token = wp_ml_schluessel(); break;
+        case 'vaillant': $token = wp_va_token(); break;
     }
     if ($token !== '') {
         $z[] = wp_pruefzeile(1, wp_t('TEST.F_ANMELDUNG'), wp_t('TEST.A_ANMELDUNG_OK'));
@@ -69,8 +98,21 @@ function wp_pruefungen()
         $z[] = wp_pruefzeile(0, wp_t('TEST.F_ANMELDUNG'), wp_t('TEST.A_ANMELDUNG_FEHL'));
     }
 
+    }   /* Ende: alles ausser EMS-ESP */
+
     /* ---- Geraet gewaehlt? ---- */
-    if ($cfg['geraet'] === '') {
+    if ($cfg['hersteller'] === 'emsesp') {
+        /* Bei EMS-ESP gibt es nichts auszuwaehlen - gelesen wird immer
+         * boiler, und der Heizkreis ist eine Zahl, keine Kennung. Gefragt
+         * wird deshalb, ob unter boiler tatsaechlich etwas steht. */
+        list($d, $grund) = wp_ems_holen($cfg, 'boiler/values');
+        if (is_array($d) && $d) {
+            $z[] = wp_pruefzeile(1, wp_t('TEST.F_GERAET'),
+                sprintf(wp_t('TEST.A_GERAET_EMS'), count($d), (int) $cfg['ems_hc']));
+        } else {
+            $z[] = wp_pruefzeile(0, wp_t('TEST.F_GERAET'), wp_t('TEST.A_GERAET_EMS_LEER'));
+        }
+    } elseif ($cfg['geraet'] === '') {
         $z[] = wp_pruefzeile(0, wp_t('TEST.F_GERAET'), wp_t('TEST.A_GERAET_KEINS'));
     } elseif ($cfg['hersteller'] === 'melcloud' && $cfg['gebaeude'] === '') {
         // MELCloud braucht beides. Fehlt die Gebaeudekennung, antwortet der
@@ -151,6 +193,24 @@ function wp_pruefungen()
             $z[] = wp_pruefzeile(0, wp_t('TEST.F_SGREADY'),
                 sprintf(wp_t('TEST.A_SGREADY_REGISTER_FEHLT'), $r['frei'], $r['zustand']));
         }
+    } elseif ($cfg['hersteller'] === 'emsesp' && $cfg['ems_sg_art'] === 'klemmen') {
+        /* Der Weg ueber die Klemmen steht und faellt mit zwei Dingen: den
+         * beiden GPIO-Nummern und dem Zugriffsmerkmal. Fehlt eines davon,
+         * wird nichts geschaltet - und zwar still, denn ein POST ohne
+         * Merkmal beantwortet das Gateway mit 401, und das sieht in der
+         * Zusammenfassung aus wie ein Netzproblem. */
+        $p1 = (int) $cfg['ems_gpio1'];
+        $p4 = (int) $cfg['ems_gpio4'];
+        if ($p1 <= 0 || $p4 <= 0) {
+            $z[] = wp_pruefzeile(0, wp_t('TEST.F_SGREADY'), wp_t('TEST.A_SGREADY_EMS_GPIO_FEHLT'));
+        } elseif (trim((string) $g['ems_token']) === '') {
+            $z[] = wp_pruefzeile(0, wp_t('TEST.F_SGREADY'), wp_t('TEST.A_SGREADY_EMS_TOKEN'));
+        } else {
+            $z[] = wp_pruefzeile(1, wp_t('TEST.F_SGREADY'),
+                sprintf(wp_t('TEST.A_SGREADY_EMS_KLEMMEN'), $p1, $p4));
+        }
+    } elseif ($cfg['hersteller'] === 'emsesp') {
+        $z[] = wp_pruefzeile(-1, wp_t('TEST.F_SGREADY'), wp_t('TEST.A_SGREADY_EMS_NACHBILDUNG'));
     } else {
         $z[] = wp_pruefzeile(-1, wp_t('TEST.F_SGREADY'),
             sprintf(wp_t('TEST.A_SGREADY_NACHGEBILDET'), wp_e($info['name'])));
@@ -279,6 +339,32 @@ function wp_test_aktion($was, $zusatz = '')
             $js = json_encode($stand['roh'], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
             if (strlen($js) > 20000) { $js = substr($js, 0, 20000) . "\n... (gekuerzt)"; }
             return array(1, '<div class="sm-pre"><pre>' . wp_e($js) . '</pre></div>');
+
+        case 'befehle':
+            /* Fragt das Gateway, WAS es schreiben kann - statt es zu raten.
+             *
+             * Das ist der Vorteil dieser Anbindung gegenueber den drei
+             * Wolken: die Liste kommt vom Geraet selbst und stimmt deshalb
+             * auch bei einem Modell, das dieses Plugin nie gesehen hat. Wer
+             * einen anderen Hebel fuer die SG-Ready-Nachbildung braucht,
+             * findet ihn hier und nicht in einem Forum. */
+            if ($cfg['hersteller'] !== 'emsesp') {
+                return array(0, wp_t('TEST.M_BEFEHLE_NUR_EMS'));
+            }
+            $t = array();
+            $summe = 0;
+            foreach (array('boiler', 'thermostat') as $ger) {
+                list($liste, $grund) = wp_ems_befehle($cfg, $ger);
+                if (!$liste) {
+                    $t[] = '<b>' . wp_e($ger) . '</b>: ' . wp_e(wp_meld($grund));
+                    continue;
+                }
+                $summe += count($liste);
+                $t[] = '<b>' . wp_e($ger) . '</b> (' . count($liste) . '):<br><span class="sm-mono">'
+                     . wp_e(implode(', ', $liste)) . '</span>';
+            }
+            if ($summe === 0) { return array(0, implode('<br>', $t)); }
+            return array(1, sprintf(wp_t('TEST.M_BEFEHLE_OK'), $summe) . '<br>' . implode('<br>', $t));
 
         case 'sg1':
         case 'sg2':

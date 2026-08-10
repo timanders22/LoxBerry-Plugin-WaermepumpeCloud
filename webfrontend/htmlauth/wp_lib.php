@@ -40,13 +40,42 @@ define('WP_ZUORDNUNG_MAX', 4000);
  * Pfade
  * ================================================================== */
 
+
+/* Den LoxBerry-Wurzelordner ohne festen Systempfad bestimmen.
+ *
+ * Vom eigenen Ablageort aufwaerts, bis ein Verzeichnis gefunden ist, das
+ * config/plugins UND webfrontend enthaelt. Das trifft die uebliche
+ * Installation genauso wie eine an einem anderen Ort - und es trifft auch
+ * den Fall, dass das Plugin noch als entpacktes Archiv daliegt (dann findet
+ * es nichts und gibt einen Leerstring zurueck, was der Aufrufer ohnehin
+ * abfangen muss).
+ *
+ * Der Name traegt kein Plugin-Kuerzel und ist deshalb abgesichert: zwei
+ * Bibliotheken landen nie im selben Prozess, aber die Pruefung kostet nichts.
+ */
+if (!function_exists('lb_wurzel_ermitteln')) {
+    function lb_wurzel_ermitteln()
+    {
+        $d = __DIR__;
+        for ($i = 0; $i < 8; $i++) {
+            if (is_dir($d . '/config/plugins') && is_dir($d . '/webfrontend')) {
+                return $d;
+            }
+            $eltern = dirname($d);
+            if ($eltern === $d) { break; }
+            $d = $eltern;
+        }
+        return '';
+    }
+}
+
 function wp_paths()
 {
     static $p = null;
     if ($p !== null) { return $p; }
 
     $home = getenv('LBHOMEDIR');
-    if (!$home) { $home = '/opt/loxberry'; }
+    if (!$home) { $home = lb_wurzel_ermitteln(); }
     /* LBPPLUGINDIR ist die Auskunft von LoxBerry selbst und hat Vorrang.
      * Fehlt sie, wird der Ordner aus dem Ablageort DIESER Datei genommen -
      * installiert liegt sie unter htmlauth/plugins/<ordner>/. Erst wenn auch
@@ -98,11 +127,40 @@ function wp_datadir()
  * Dazu eine Bremse - dieselbe Zeile fruehestens nach einer Stunde erneut.
  * Ohne sie schreibt ein Minutentakt eine unlesbare Logdatei voll.
  */
+/**
+ * Die eingestellte Ausfuehrlichkeit des Protokolls.
+ *
+ * CUSTOM_LOGLEVELS in der plugin.cfg blendet in der Plugin-Verwaltung einen
+ * Waehler ein. Der wirkt aber nur, wenn das Plugin den gewaehlten Wert auch
+ * LIEST - bis 0.9.3 tat es das nicht, und der Waehler war ein Bedienelement
+ * ohne Wirkung. Das ist schlimmer als keines: der Anwender stellt etwas ein
+ * und sucht dann, warum sich nichts aendert.
+ *
+ * Gebraucht wird der Wert an genau einer Stelle, siehe wp_log(): bei 7
+ * (Debug) faellt die Bremse weg, die dieselbe Meldung nur einmal je Stunde
+ * durchlaesst. Genau die steht bei der Fehlersuche im Weg.
+ *
+ * 6 ist die Vorgabe von LoxBerry (Notice) und gilt ueberall dort, wo es die
+ * SDK-Klasse nicht gibt - etwa im Pruefaufbau.
+ */
+function wp_loglevel()
+{
+    static $stufe = null;
+    if ($stufe === null) {
+        $stufe = 6;
+        if (class_exists('LBSystem', false) && method_exists('LBSystem', 'pluginloglevel')) {
+            $v = LBSystem::pluginloglevel();
+            if (is_numeric($v)) { $stufe = (int) $v; }
+        }
+    }
+    return $stufe;
+}
+
 function wp_log($text, $einmalig = '')
 {
     $p = wp_paths();
     if (!is_dir($p['logdir'])) { @mkdir($p['logdir'], 0755, true); }
-    if ($einmalig !== '') {
+    if ($einmalig !== '' && wp_loglevel() < 7) {
         $f = wp_tmpdir() . '/log_' . md5($einmalig) . '.stamp';
         if (is_file($f) && (time() - (int) @filemtime($f)) < 3600) { return; }
         @touch($f);
@@ -216,6 +274,22 @@ function wp_hersteller()
             'basis'       => 'https://app.melcloud.com/Mitsubishi.Wifi.Client',
             'portal'      => 'https://app.melcloud.com/',
         ),
+        'emsesp' => array(
+            'name'        => 'EMS-ESP (Bosch, Buderus, Junkers, Nefit, Worcester, Sieger)',
+            // Nachgebildet - siehe die lange Begruendung ueber wp_ems_lesen().
+            // Mit zwei Relais am Gateway waeren es echte Klemmen; das ist eine
+            // Einstellung, keine Eigenschaft des Herstellers, und steht
+            // deshalb nicht hier.
+            'sg_echt'     => 0,
+            // Das Gateway steht im eigenen Netz. Es gibt keinen fremden
+            // Dienst, der aussperren koennte - die Untergrenze schuetzt nur
+            // den EMS-Bus, der langsam ist und nichts davon hat, oefter
+            // gefragt zu werden.
+            'mindesttakt' => 60,
+            'budget'      => 0,     // kein Tagesbudget, es ist das eigene Geraet
+            'basis'       => '',    // die Adresse steht in der Konfiguration
+            'portal'      => 'https://bbqkees-electronics.nl/',
+        ),
         'vaillant' => array(
             'name'        => 'myVAILLANT (Vaillant, Saunier Duval, Bulex, Glow-worm, DemirDoekuem)',
             'sg_echt'     => 0,     // nachgebildet
@@ -315,6 +389,13 @@ function wp_vorgaben()
         'zone'         => 0,         // Index der Heizzone
         'dhw'          => 255,       // Index des Warmwasserkreises (Vaillant zaehlt ab 255)
         'veto_stunden' => 3,         // Laufzeit der Schnellabweichung, siehe wp_va_veto()
+        // nur EMS-ESP
+        'ems_url'      => '',        // http://ems-esp.local oder die IP
+        'ems_hc'       => 1,         // Heizkreis, den das Plugin bedient
+        'ems_thermostat' => 1,       // Thermostatwerte mitlesen
+        'ems_sg_art'   => 'nachbildung',   // nachbildung | klemmen
+        'ems_gpio1'    => 0,         // GPIO fuer Klemme 1, 0 = nicht benutzt
+        'ems_gpio4'    => 0,         // GPIO fuer Klemme 4, 0 = nicht benutzt
         // COP
         'cop_ein'      => 1,
         'cop_tage'     => 30,        // Fenster fuer die mittlere Arbeitszahl
@@ -364,6 +445,24 @@ function wp_config()
     $cfg['geraetetyp']       = (int) $cfg['geraetetyp'];
     $cfg['mqtt_ein']         = empty($cfg['mqtt_ein']) ? 0 : 1;
     $cfg['zuordnung']        = substr((string) $cfg['zuordnung'], 0, WP_ZUORDNUNG_MAX);
+
+    /* EMS-ESP. Die Adresse wird NICHT durch einen Zeichenfilter gedreht -
+     * sie ist eine Adresse und keine Kennung. Geprueft wird stattdessen die
+     * Form; was nicht passt, wird beim Speichern beanstandet und landet gar
+     * nicht erst hier. */
+    $cfg['ems_url'] = trim((string) $cfg['ems_url']);
+    if ($cfg['ems_url'] !== '' && !preg_match('#^https?://#i', $cfg['ems_url'])) {
+        $cfg['ems_url'] = '';
+    }
+    $cfg['ems_hc']         = max(1, min(8, (int) $cfg['ems_hc']));
+    $cfg['ems_thermostat'] = empty($cfg['ems_thermostat']) ? 0 : 1;
+    if (!in_array($cfg['ems_sg_art'], array('nachbildung', 'klemmen'), true)) {
+        $cfg['ems_sg_art'] = 'nachbildung';
+    }
+    // 0 heisst "nicht benutzt". Negative oder unsinnig hohe Nummern gaebe es
+    // an keinem ESP32 - sie wuerden am Gateway stillschweigend verpuffen.
+    $cfg['ems_gpio1'] = max(0, min(48, (int) $cfg['ems_gpio1']));
+    $cfg['ems_gpio4'] = max(0, min(48, (int) $cfg['ems_gpio4']));
 
     $cfg['mqtt_topic'] = preg_replace('#[^A-Za-z0-9_/\-]#', '', (string) $cfg['mqtt_topic']);
     if ($cfg['mqtt_topic'] === '') { $cfg['mqtt_topic'] = 'waermepumpe'; }
@@ -469,6 +568,7 @@ function wp_geheim()
         'refresh_token' => '',    // Onecta
         'redirect_uri'  => '',    // Onecta
         'va_refresh'    => '',    // myVAILLANT: eigenes Erneuerungsmerkmal
+        'ems_token'     => '',    // EMS-ESP: Zugriffsmerkmal (JWT) fuers Schreiben
     ), $g);
 }
 
@@ -733,6 +833,10 @@ function wp_felder()
                                 'managementPoints[embeddedId=climateControl].sensoryData.value.outdoorTemperature'),
             'melcloud' => array('OutdoorTemperature'),
             'vaillant' => array('state.system.outdoorTemperature'),
+            // dampedoutdoortemp ist die getraegte Kurve des Thermostats -
+            // als Rueckfall brauchbar, als erster Kandidat nicht: sie
+            // hinkt der Wirklichkeit um Stunden hinterher.
+            'emsesp'   => array('boiler.outdoortemp', 'thermostat.dampedoutdoortemp'),
         )),
         'VORLAUF' => array(1, -20, 100, 'FELD.VORLAUF', array(
             'myuplink' => array('#40008', '~vorlauf|supply line|BT2'),
@@ -742,12 +846,14 @@ function wp_felder()
             // ist der Kreiswert der aussagekraeftige.
             'vaillant' => array('state.circuits.0.currentCircuitFlowTemperature',
                                 'state.system.systemFlowTemperature'),
+            'emsesp'   => array('boiler.curflowtemp'),
         )),
         'VLSOLL' => array(1, -20, 100, 'FELD.VLSOLL', array(
             'myuplink' => array(),
             'onecta'   => array(),
             'melcloud' => array('SetHeatFlowTemperatureZone1'),
             'vaillant' => array('state.circuits.0.heatingCircuitFlowSetpoint'),
+            'emsesp'   => array('thermostat.hc.targetflowtemp', 'boiler.selflowtemp'),
         )),
         'HEIZKURVE' => array(1, 0, 5, 'FELD.HEIZKURVE', array(
             'myuplink' => array(),
@@ -756,6 +862,11 @@ function wp_felder()
             // Die Heizkurve steht in der Einstellung, nicht im Zustand.
             'vaillant' => array('configuration.circuits.0.heatingCurve',
                                 'state.circuits.0.heatingCurve'),
+            // Bosch fuehrt keine Heizkurvenzahl. Es gibt Auslegungs- und
+            // Normaussentemperatur, aus denen sich die Kurve ergibt - aber
+            // keinen Wert, der "die Heizkurve" waere. Bewusst leer: ein
+            // naheliegender falscher Pfad ist schlimmer als kein Wert.
+            'emsesp'   => array(),
         )),
         'RUECKLAUF' => array(1, -20, 100, 'FELD.RUECKLAUF', array(
             'myuplink' => array('#40012', '~ruecklauf|return line|BT3'),
@@ -764,12 +875,14 @@ function wp_felder()
             // myVAILLANT gibt keine Ruecklauftemperatur heraus. Bewusst leer -
             // ein naheliegender, aber falscher Pfad waere schlimmer als nichts.
             'vaillant' => array(),
+            'emsesp'   => array('boiler.rettemp', 'boiler.hptc0'),
         )),
         'RAUM' => array(1, -20, 60, 'FELD.RAUM', array(
             'myuplink' => array('#40033', '~raumtemp|room temp|BT50'),
             'onecta'   => array('managementPoints[embeddedId=climateControl].sensoryData.value.roomTemperature.value'),
             'melcloud' => array('RoomTemperatureZone1'),
             'vaillant' => array('state.zones.0.currentRoomTemperature'),
+            'emsesp'   => array('thermostat.hc.currtemp', 'thermostat.currtemp'),
         )),
         'SOLL' => array(1, -20, 60, 'FELD.SOLL', array(
             'myuplink' => array('#47398', '~raum soll|room setpoint'),
@@ -777,6 +890,7 @@ function wp_felder()
             'melcloud' => array('SetTemperatureZone1'),
             'vaillant' => array('state.zones.0.desiredRoomTemperatureSetpoint',
                                 'configuration.zones.0.heating.manualModeSetpointHeating'),
+            'emsesp'   => array('thermostat.hc.seltemp', 'thermostat.seltemp'),
         )),
         'WW' => array(1, 0, 100, 'FELD.WW', array(
             'myuplink' => array('#40014', '~warmwasser|hot water|BT7'),
@@ -784,12 +898,18 @@ function wp_felder()
             'melcloud' => array('TankWaterTemperature'),
             'vaillant' => array('state.dhw.0.currentDhwTemperature',
                                 'state.system.cylinderTemperatureSensorTopDHW'),
+            // Der Zweig dhw zuerst, die flache Form als Rueckfall: welche
+            // von beiden kommt, haengt an der Fassung der Firmware.
+            'emsesp'   => array('boiler.dhw.curtemp', 'boiler.curtemp',
+                                'boiler.dhw.curtemp2', 'boiler.hptw1'),
         )),
         'WWSOLL' => array(1, 0, 100, 'FELD.WWSOLL', array(
             'myuplink' => array('#47041', '~warmwasser soll|hot water setpoint'),
             'onecta'   => array('managementPoints[embeddedId=domesticHotWaterTank].temperatureControl.value.operationModes.heating.setpoints.domesticHotWaterTemperature.value'),
             'melcloud' => array('SetTankWaterTemperature'),
             'vaillant' => array('configuration.dhw.0.tappingSetpoint'),
+            'emsesp'   => array('boiler.dhw.seltemp', 'boiler.dhw.settemp',
+                                'boiler.settemp'),
         )),
         'LEISTUNG' => array(1, 0, 30000, 'FELD.LEISTUNG', array(
             'myuplink' => array('#2305', '~leistungsaufnahme|power consumption'),
@@ -798,12 +918,18 @@ function wp_felder()
             // Nur, wenn die Anlage einen Energiemanager meldet. Fehlt der
             // Zweig, bleibt das Feld leer - das ist der Normalfall.
             'vaillant' => array('_currentSystem.primaryHeatGenerator.mpc.currentPower'),
+            // hpcurrpower ist die AUFGENOMMENE elektrische Leistung in W -
+            // das ist die Groesse, die dieses Feld meint. hppower waere die
+            // abgegebene thermische Leistung in kW und damit dieselbe Zahl
+            // in einer anderen Bedeutung; sie gehoert nicht hierher.
+            'emsesp'   => array('boiler.hpcurrpower'),
         )),
         'KOMPRESSOR' => array(0, 0, 1, 'FELD.KOMPRESSOR', array(
             'myuplink' => array('#44064', '~verdichter|compressor'),
             'onecta'   => array(),
             'melcloud' => array(),
             'vaillant' => array(),
+            'emsesp'   => array('boiler.hpcompon'),
         )),
         'WWZWANG' => array(0, 0, 1, 'FELD.WWZWANG', array(
             'myuplink' => array(),
@@ -812,12 +938,14 @@ function wp_felder()
             // Ein Text, keine Eins: CYLINDER_BOOST heisst "laeuft gerade".
             // wp_umrechnen reicht Texte unveraendert durch.
             'vaillant' => array('state.dhw.0.currentSpecialFunction'),
+            'emsesp'   => array('boiler.dhw.charging', 'boiler.charging'),
         )),
         'EIN' => array(0, 0, 1, 'FELD.EIN', array(
             'myuplink' => array(),
             'onecta'   => array('managementPoints[embeddedId=climateControl].onOffMode.value'),
             'melcloud' => array('Power'),
             'vaillant' => array(),
+            'emsesp'   => array('boiler.heatingactivated'),
         )),
     );
 }
@@ -2003,6 +2131,452 @@ function wp_va_ww_boost($cfg, $ein)
 }
 
 /* ==================================================================
+ * EMS-ESP (Bosch, Buderus, Junkers, Nefit, Worcester, Sieger)
+ *
+ * DER EINZIGE HERSTELLER IN DIESEM PLUGIN, DER NICHT IN DER WOLKE STEHT.
+ * Zwischen Plugin und Waermepumpe haengt ein Gateway am EMS-Bus - meist
+ * eines von BBQKees mit der freien Firmware EMS-ESP. Es spricht HTTP und
+ * liefert JSON, und zwar im eigenen Netz.
+ *
+ * Was daraus folgt, und warum es hier anders aussieht als bei den anderen:
+ *
+ *   - Keine Anmeldung fuers Lesen. GET braucht kein Merkmal.
+ *   - Kein Tagesbudget. Es ist das eigene Geraet; die Untergrenze von 60
+ *     Sekunden schuetzt den EMS-Bus, nicht einen fremden Dienst.
+ *   - Schreiben braucht ein Zugriffsmerkmal (JWT) im Kopf
+ *     "Authorization: Bearer ...". Das ist Absicht der Firmware: GET darf
+ *     jeder, POST nur mit Merkmal. Zu holen in der Weboberflaeche des
+ *     Gateways unter Settings, Security, Manage Users, Schluesselsymbol
+ *     beim Benutzer mit Verwalterrecht. Es verfaellt nicht.
+ *
+ * Die Adressen:
+ *
+ *   GET  /api/<geraet>/info        alle Werte, ausfuehrlich
+ *   GET  /api/<geraet>/commands    was sich schreiben laesst
+ *   GET  /api/<geraet>/entities    alle vorhandenen Groessen
+ *   POST /api/<geraet>/<groesse>   schreiben, Rumpf {"value": ...}
+ *   POST /api/<geraet>/hc<n>/<g>   dasselbe fuer einen Heizkreis
+ *
+ * <geraet> ist die Kurzform: boiler, thermostat, heatpump, mixer, solar,
+ * system und weitere. EINE BESONDERHEIT, die zwei Stunden Suche kostet,
+ * wenn man sie nicht weiss: eine Bosch-WAERMEPUMPE meldet sich als
+ * "boiler", nicht als "heatpump". Unter "heatpump" laeuft ein kleines
+ * Zusatzmodul. Deshalb wird hier boiler gelesen und heatpump nicht.
+ *
+ * ------------------------------------------------------------------
+ * SG READY - was das Gateway kann und was nicht
+ * ------------------------------------------------------------------
+ *
+ * Eine Bosch-Waermepumpe hat vier Klemmeneingaenge. Eingang 1 und 4 sind
+ * die SG-Ready-Klemmen:
+ *
+ *     E1  E4
+ *     an  aus   EVU-Sperre
+ *     aus aus   Normalbetrieb
+ *     aus an    verstaerkter Betrieb        (Einschaltempfehlung)
+ *     an  an    erzwungener verstaerkter Betrieb (Anlaufbefehl)
+ *
+ * Das ist genau die Belegung, die wp_sg_klemmen() ohnehin liefert.
+ *
+ * ABER: hpin1 bis hpin4 sind in EMS-ESP nur LESBAR. Sie zeigen, was an der
+ * Klemme anliegt - sie legen dort nichts an. Ueber den EMS-Bus laesst sich
+ * SG Ready nicht setzen, weil es nicht ueber den Bus laeuft, sondern ueber
+ * Draehte. Wer etwas anderes behauptet, hat es nicht ausprobiert.
+ *
+ * Deshalb zwei Wege, und der Nutzer waehlt:
+ *
+ *   nachbildung  (Vorgabe)  ueber die schreibbaren Groessen des Gateways.
+ *                Braucht keine zusaetzliche Hardware und tut ungefaehr das
+ *                Richtige - aber es ist eine Nachbildung, und die
+ *                Oberflaeche sagt das.
+ *
+ *   klemmen      zwei GPIO des Gateways als Digitalausgang, ueber je ein
+ *                Relais oder einen Optokoppler an E1 und E4. Dann ist es
+ *                echtes SG Ready, mit allem, was die Waermepumpe selbst
+ *                daraus macht.
+ *
+ *                DAZU EINE WARNUNG, DIE NICHT VON MIR STAMMT, SONDERN VOM
+ *                HERSTELLER DES GATEWAYS: die Platinen sind dafuer nicht
+ *                gebaut, ein Anbau an die GPIO bricht die EMV-Erklaerung,
+ *                und ein Relais gehoert nie unmittelbar an den Pin,
+ *                sondern hinter eine Trennstufe. Deshalb steht dieser Weg
+ *                auf "aus", bis ihn jemand ausdruecklich einschaltet.
+ * ================================================================== */
+
+/** Die Basisadresse ohne Schraegstrich am Ende. Leer, wenn nichts gesetzt. */
+/**
+ * Ein Meldekuerzel in Klartext - oder das Kuerzel selbst, wenn es dafuer
+ * keinen Text gibt. Die HTTP-Kuerzel (HTTP_500 und Verwandte) entstehen zur
+ * Laufzeit und koennen in keiner Sprachdatei stehen; ohne diesen Umweg
+ * stuende dann woertlich "MELD.HTTP_500" auf dem Bildschirm.
+ */
+function wp_meld($kuerzel)
+{
+    $t = wp_t('MELD.' . $kuerzel);
+    return $t === 'MELD.' . $kuerzel ? $kuerzel : $t;
+}
+
+function wp_ems_basis($cfg)
+{
+    $u = trim((string) $cfg['ems_url']);
+    if ($u === '' || !preg_match('#^https?://#i', $u)) { return ''; }
+    return rtrim($u, '/');
+}
+
+/**
+ * Eine Auskunft holen. Rueckgabe: array(Feld|null, Grund).
+ *
+ * Der Grund ist ein Kuerzel und wird in der Oberflaeche uebersetzt. Ein
+ * leeres Feld waere hier falsch: "keine Antwort" und "Antwort ohne Inhalt"
+ * sind zwei verschiedene Lagen, und nur eine davon ist ein Netzproblem.
+ */
+function wp_ems_holen($cfg, $pfad)
+{
+    $basis = wp_ems_basis($cfg);
+    if ($basis === '') { return array(null, 'KEINE_ADRESSE'); }
+    $a = wp_http('GET', $basis . '/api/' . ltrim($pfad, '/'), array(), null, 15);
+    if ($a['fehler'] !== '') { return array(null, 'NICHT_ERREICHBAR'); }
+    if ($a['code'] === 404) { return array(null, 'NICHT_VORHANDEN'); }
+    if ($a['code'] < 200 || $a['code'] >= 300) { return array(null, 'HTTP_' . $a['code']); }
+    $d = wp_json($a);
+    if ($d === null) {
+        /* Kommt HTML zurueck, hat nicht das Gateway geantwortet, sondern ein
+         * Router, ein Anmeldeportal oder ein anderes Geraet unter derselben
+         * Adresse. Das gehoert unterschieden - sonst sucht man den Fehler an
+         * der Firmware. */
+        $anfang = ltrim(substr($a['text'], 0, 40));
+        if ($anfang !== '' && $anfang[0] === '<') { return array(null, 'HTML_STATT_JSON'); }
+        return array(null, 'KEIN_JSON');
+    }
+    return array($d, '');
+}
+
+/**
+ * Alles lesen, was gebraucht wird.
+ *
+ * Zusammengesetzt wird EIN Dokument mit den Zweigen boiler, thermostat und
+ * system - so bleiben die Pfade in wp_felder() eindeutig. Das ist noetig,
+ * weil EMS-ESP Kurznamen benutzt und mehrere davon doppelt vergeben sind:
+ * "seltemp" ist am thermostat die Raumtemperatur und am boiler die
+ * Warmwassertemperatur. Ohne den Zweig davor waere nicht zu erkennen, welche
+ * gemeint ist.
+ *
+ * Zusaetzlich wird der eingestellte Heizkreis unter thermostat.hc gespiegelt.
+ * Damit kommen die Kandidatenpfade ohne Kreisnummer aus und gelten fuer alle
+ * acht Kreise.
+ */
+function wp_ems_lesen($cfg)
+{
+    $basis = wp_ems_basis($cfg);
+    if ($basis === '') { return array('ok' => 0, 'fehler' => 'KEINE_ADRESSE', 'roh' => null); }
+
+    $roh = array();
+    list($b, $grund) = wp_ems_holen($cfg, 'boiler/info');
+    if ($b === null) { return array('ok' => 0, 'fehler' => $grund, 'roh' => null); }
+    $roh['boiler'] = $b;
+
+    if (!empty($cfg['ems_thermostat'])) {
+        list($t, $tg) = wp_ems_holen($cfg, 'thermostat/info');
+        if (is_array($t)) {
+            $hc = 'hc' . (int) $cfg['ems_hc'];
+            if (isset($t[$hc]) && is_array($t[$hc])) { $t['hc'] = $t[$hc]; }
+            $roh['thermostat'] = $t;
+        } else {
+            /* Kein Thermostat ist kein Fehler: es gibt Anlagen, die ohne
+             * Raumgeraet laufen. Der Grund wird trotzdem festgehalten, damit
+             * der Reiter Test ihn zeigen kann. */
+            $roh['thermostat_grund'] = $tg;
+        }
+    }
+    return array('ok' => 1, 'fehler' => '', 'roh' => $roh);
+}
+
+/**
+ * Welche Geraete haengen am Bus?
+ *
+ * Es gibt keinen Endpunkt "gib mir alle Geraete" in der Form, die dieses
+ * Plugin braucht - also wird gefragt, wer antwortet. Sieben GET auf ein
+ * Geraet im eigenen Netz sind guenstiger als eine Auswertung von
+ * system/info, deren Aufbau sich zwischen den Fassungen geaendert hat.
+ */
+function wp_ems_geraete()
+{
+    $cfg = wp_config();
+    if (wp_ems_basis($cfg) === '') { return array(); }
+    $out = array();
+    foreach (array('boiler', 'thermostat', 'heatpump', 'mixer', 'solar',
+                   'ventilation', 'heatsource') as $g) {
+        list($d, $grund) = wp_ems_holen($cfg, $g . '/values');
+        if (!is_array($d) || !$d) { continue; }
+        $out[] = array(
+            'id'     => $g,
+            'name'   => $g . ' (' . count($d) . ' ' . wp_t('EMS.WERTE') . ')',
+            'system' => '',
+        );
+    }
+    return $out;
+}
+
+/** Die schreibbaren Groessen eines Geraets. Rueckgabe: array(Namen), Grund. */
+function wp_ems_befehle($cfg, $geraet = 'boiler')
+{
+    list($d, $grund) = wp_ems_holen($cfg, $geraet . '/commands');
+    if (!is_array($d)) { return array(array(), $grund); }
+    $out = array();
+    foreach ($d as $k => $v) {
+        // Je nach Fassung ist es eine Zuordnung Name => Beschreibung oder
+        // eine schlichte Liste. Beide Formen kommen vor.
+        $out[] = is_string($k) ? $k : (string) $v;
+    }
+    sort($out);
+    return array($out, '');
+}
+
+/**
+ * Eine Groesse schreiben. Rueckgabe: array(ok, Grund).
+ *
+ * $geraet darf einen Heizkreis enthalten: 'thermostat/hc1'.
+ */
+function wp_ems_schreiben($cfg, $geraet, $groesse, $wert)
+{
+    $basis = wp_ems_basis($cfg);
+    if ($basis === '') { return array(0, 'KEINE_ADRESSE'); }
+    $g = wp_geheim();
+    if (trim((string) $g['ems_token']) === '') { return array(0, 'KEIN_TOKEN'); }
+
+    $rumpf = json_encode(array('value' => $wert));
+    $a = wp_http('POST', $basis . '/api/' . trim($geraet, '/') . '/' . $groesse,
+        array('Content-Type: application/json',
+              'Authorization: Bearer ' . trim((string) $g['ems_token'])),
+        $rumpf, 15);
+
+    if ($a['fehler'] !== '') { return array(0, 'NICHT_ERREICHBAR'); }
+    /* 401 heisst hier fast immer: Merkmal fehlt oder ist von einem Benutzer
+     * ohne Verwalterrecht. Das ist etwas anderes als "Groesse gibt es nicht"
+     * (404) - und beides sieht in einer Sammelmeldung gleich aus. */
+    if ($a['code'] === 401 || $a['code'] === 403) { return array(0, 'TOKEN_ABGELEHNT'); }
+    if ($a['code'] === 404) { return array(0, 'GROESSE_UNBEKANNT'); }
+    if ($a['code'] < 200 || $a['code'] >= 300) { return array(0, 'HTTP_' . $a['code']); }
+
+    /* Das Gateway antwortet mit 200 auch dann, wenn es den Befehl abgelehnt
+     * hat - der eigentliche Bescheid steht im Rumpf. Ohne diese Pruefung
+     * meldete das Plugin Erfolg, waehrend nichts geschehen ist. */
+    $d = wp_json($a);
+    if (is_array($d) && isset($d['message']) && strtolower((string) $d['message']) !== 'ok') {
+        return array(0, 'ABGELEHNT_' . strtoupper(preg_replace('/[^A-Za-z0-9]+/', '_',
+            substr((string) $d['message'], 0, 40))));
+    }
+    return array(1, '');
+}
+
+/**
+ * Einen GPIO des Gateways schalten.
+ *
+ * EMS-ESP fuehrt Ausgangspins als "analogsensor" - auch die digitalen. Der
+ * Pin muss in der Weboberflaeche des Gateways vorher als Digital out
+ * angelegt sein; ist er das nicht, antwortet das Gateway mit einem Fehler,
+ * und der wird hier durchgereicht statt geschluckt.
+ */
+function wp_ems_gpio($cfg, $pin, $an)
+{
+    $pin = (int) $pin;
+    if ($pin <= 0) { return array(1, 'GPIO_UNBENUTZT'); }
+    $basis = wp_ems_basis($cfg);
+    if ($basis === '') { return array(0, 'KEINE_ADRESSE'); }
+    $g = wp_geheim();
+    if (trim((string) $g['ems_token']) === '') { return array(0, 'KEIN_TOKEN'); }
+
+    $a = wp_http('POST', $basis . '/api/analogsensor/setvalue',
+        array('Content-Type: application/json',
+              'Authorization: Bearer ' . trim((string) $g['ems_token'])),
+        json_encode(array('value' => $an ? 1 : 0, 'id' => $pin)), 15);
+
+    if ($a['fehler'] !== '') { return array(0, 'NICHT_ERREICHBAR'); }
+    if ($a['code'] === 401 || $a['code'] === 403) { return array(0, 'TOKEN_ABGELEHNT'); }
+    if ($a['code'] < 200 || $a['code'] >= 300) { return array(0, 'HTTP_' . $a['code']); }
+    return array(1, '');
+}
+
+/**
+ * Die Arbeitszahl aus den Energiezaehlern.
+ *
+ * Die CS5800i, CS6800i und die Buderus WLW176/186i fuehren beide Reihen als
+ * Gesamtzaehler seit Inbetriebnahme:
+ *
+ *   nrgtotal    erzeugte Waerme in kWh   (Heizen, Kuehlen, Warmwasser)
+ *   metertotal  eingesetzter Strom in kWh
+ *
+ * Aus zwei Gesamtstaenden wird eine Arbeitszahl fuer den Zeitraum dazwischen:
+ *
+ *   COP = (Waerme_neu - Waerme_alt) / (Strom_neu - Strom_alt)
+ *
+ * Der Quotient der GESAMTSTAENDE waere die Arbeitszahl seit Inbetriebnahme -
+ * eine Zahl, die sich kaum noch bewegt und im Februar so aussieht wie im
+ * Juli. Gefragt ist die der letzten Wochen.
+ *
+ * Deshalb wird stuendlich ein Zaehlerstand fortgeschrieben und der aelteste
+ * innerhalb des Fensters als Vergleich genommen. Aeltere Staende fliegen
+ * raus, sonst waechst die Datei unbegrenzt.
+ *
+ * Zwei Faelle geben BEWUSST nichts zurueck statt einer Zahl:
+ *   - es liegt erst ein Stand vor (frisch eingerichtet),
+ *   - im Fenster wurde weniger als eine Kilowattstunde Strom verbraucht.
+ * Im zweiten Fall waere der Quotient aus zwei fast gleichen Zahlen ein
+ * Zufallswert - im Sommer kaeme eine Arbeitszahl von 40 heraus.
+ */
+function wp_ems_cop($cfg, $roh, $tage)
+{
+    $leer = array('cop' => null, 'strom' => null, 'waerme' => null, 'grund' => '');
+
+    $waerme = wp_pfad($roh, 'boiler.nrgtotal');
+    if ($waerme === null) { $waerme = wp_pfad($roh, 'boiler.nrgsupptotal'); }
+    $strom  = wp_pfad($roh, 'boiler.metertotal');
+    if ($strom === null)  { $strom = wp_pfad($roh, 'boiler.nrgconstotal'); }
+
+    if (!is_numeric($waerme) || !is_numeric($strom)) {
+        $leer['grund'] = 'ZAEHLER_FEHLEN';
+        return $leer;
+    }
+    $waerme = (float) $waerme;
+    $strom  = (float) $strom;
+
+    $datei = wp_datadir() . '/ems_zaehler.json';
+    $reihe = is_file($datei) ? json_decode((string) @file_get_contents($datei), true) : array();
+    if (!is_array($reihe)) { $reihe = array(); }
+
+    $jetzt = time();
+    $fenster = max(1, min(365, (int) $tage)) * 86400;
+
+    // Nur behalten, was ins Fenster faellt - plus den einen Stand davor, denn
+    // der ist der Vergleichspunkt fuer den Fensteranfang.
+    $behalten = array();
+    foreach ($reihe as $e) {
+        if (!is_array($e) || !isset($e[0], $e[1], $e[2])) { continue; }
+        if ($jetzt - (int) $e[0] <= $fenster) { $behalten[] = $e; }
+    }
+    // Harte Obergrenze - eine Schleife ohne Grenze ist eine Zeitbombe, und
+    // ein Fenster von 365 Tagen ergaebe sonst 8760 Eintraege.
+    if (count($behalten) > 1000) { $behalten = array_slice($behalten, -1000); }
+
+    $letzter = $behalten ? $behalten[count($behalten) - 1] : null;
+    if ($letzter === null || ($jetzt - (int) $letzter[0]) >= 3540) {
+        $behalten[] = array($jetzt, round($waerme, 3), round($strom, 3));
+        wp_json_schreiben($datei, $behalten);
+    }
+
+    if (count($behalten) < 2) {
+        $leer['grund'] = 'ZU_WENIG_DATEN';
+        return $leer;
+    }
+    $alt = $behalten[0];
+    $d_waerme = $waerme - (float) $alt[1];
+    $d_strom  = $strom  - (float) $alt[2];
+
+    /* Ein Zaehler, der rueckwaerts laeuft, hat einen Neustart oder einen
+     * Austausch hinter sich. Dann ist die alte Reihe wertlos - sie wird
+     * verworfen statt eine negative Arbeitszahl zu melden. */
+    if ($d_waerme < 0 || $d_strom < 0) {
+        wp_json_schreiben($datei, array(array($jetzt, round($waerme, 3), round($strom, 3))));
+        $leer['grund'] = 'ZAEHLER_ZURUECKGESETZT';
+        return $leer;
+    }
+    if ($d_strom < 1.0) {
+        $leer['grund'] = 'ZU_WENIG_ENERGIE';
+        $leer['strom'] = round($d_strom, 1);
+        $leer['waerme'] = round($d_waerme, 1);
+        return $leer;
+    }
+    return array(
+        'cop'    => round($d_waerme / $d_strom, 2),
+        'strom'  => round($d_strom, 1),
+        'waerme' => round($d_waerme, 1),
+        'grund'  => '',
+    );
+}
+
+/**
+ * SG Ready bei EMS-ESP.
+ *
+ * Rueckgabe wie bei den anderen: array(ok, grund, beschreibung).
+ */
+function wp_ems_sg($cfg, $stufe, $stand)
+{
+    $stufe = max(1, min(WP_STUFEN, (int) $stufe));
+    $getan = array();
+
+    /* ---------------- Der echte Weg: zwei Klemmen ---------------- */
+    if ($cfg['ems_sg_art'] === 'klemmen') {
+        if ((int) $cfg['ems_gpio1'] <= 0 || (int) $cfg['ems_gpio4'] <= 0) {
+            return array(0, 'KEINE_GPIO', '');
+        }
+        list($k1, $k4) = wp_sg_klemmen($stufe);
+        list($ok1, $g1) = wp_ems_gpio($cfg, $cfg['ems_gpio1'], $k1);
+        $getan[] = 'GPIO' . (int) $cfg['ems_gpio1'] . '=' . (int) $k1;
+        if (!$ok1) { return array(0, $g1, implode(' ', $getan)); }
+        list($ok4, $g4) = wp_ems_gpio($cfg, $cfg['ems_gpio4'], $k4);
+        $getan[] = 'GPIO' . (int) $cfg['ems_gpio4'] . '=' . (int) $k4;
+        return array($ok4, $g4, implode(' ', $getan));
+    }
+
+    /* ---------------- Die Nachbildung ----------------
+     *
+     * Stufe 1 schaltet den Heizbetrieb ab. Das ist NICHT dasselbe wie eine
+     * EVU-Sperre: die Waermepumpe kennt bei einer echten Sperre ihre
+     * Hoechstdauer und faengt danach von selbst wieder an. Hier haengt das
+     * an wp_sg_sperre_abgelaufen() und damit am Plugin. Faellt der LoxBerry
+     * aus, waehrend gesperrt ist, bleibt es aus - deshalb gibt es die
+     * Hoechstdauer und deshalb steht sie in der Oberflaeche.
+     *
+     * Stufe 3 und 4 heben die RAUMTEMPERATUR an, nicht die Vorlauf-
+     * temperatur. Zwei Gruende: es ist der Weg, den Bosch selbst fuer den
+     * PV-Ueberschuss vorsieht (pvraiseheat wirkt genau dort), und die
+     * Anlage rechnet die Vorlauftemperatur daraus mit ihrer eigenen
+     * Heizkurve. Wer stattdessen selflowtemp beschreibt, uebergeht die
+     * Kurve - und die naechste Berechnung der Anlage macht es wieder
+     * rueckgaengig.
+     */
+    $basis = (float) $cfg['basis_soll'];
+    $kreis = 'thermostat/hc' . (int) $cfg['ems_hc'];
+
+    if ($stufe === 1) {
+        list($ok, $grund) = wp_ems_schreiben($cfg, 'boiler', 'heatingactivated', false);
+        $getan[] = 'boiler.heatingactivated=aus';
+        return array($ok, $grund, implode(' ', $getan));
+    }
+
+    list($ok, $grund) = wp_ems_schreiben($cfg, 'boiler', 'heatingactivated', true);
+    $getan[] = 'boiler.heatingactivated=ein';
+    if (!$ok) { return array(0, $grund, implode(' ', $getan)); }
+
+    if ($stufe === 2) {
+        // Zurueck auf den gemerkten Grundsollwert. Ohne ihn wird nichts
+        // geschrieben - sonst stellte das Plugin auf eine Zahl, die es sich
+        // ausgedacht hat.
+        if ($basis > 0) {
+            list($ok, $grund) = wp_ems_schreiben($cfg, $kreis, 'seltemp', $basis);
+            $getan[] = 'hc' . (int) $cfg['ems_hc'] . '.seltemp=' . $basis;
+        }
+        return array($ok, $grund, implode(' ', $getan));
+    }
+
+    if ($basis <= 0) { return array(0, 'KEIN_GRUNDSOLLWERT', implode(' ', $getan)); }
+    $soll = $basis + ($stufe === 3 ? (float) $cfg['anhebung_3'] : (float) $cfg['anhebung_4']);
+    list($ok, $grund) = wp_ems_schreiben($cfg, $kreis, 'seltemp', $soll);
+    $getan[] = 'hc' . (int) $cfg['ems_hc'] . '.seltemp=' . $soll;
+    if (!$ok) { return array(0, $grund, implode(' ', $getan)); }
+
+    if ($stufe === 4 && !empty($cfg['ww_boost_4'])) {
+        /* Einmalladung Warmwasser. Sie laeuft von selbst aus, sobald die
+         * Stopptemperatur erreicht ist - deshalb wird sie bei Stufe 3 und 2
+         * NICHT abgeschaltet. Ein Abschalten mittendrin liesse den Speicher
+         * halb geladen zurueck. */
+        list($ok, $grund) = wp_ems_schreiben($cfg, 'boiler', 'onetime', true);
+        $getan[] = 'boiler.onetime=ein';
+    }
+    return array($ok, $grund, implode(' ', $getan));
+}
+
+/* ==================================================================
  * Gemeinsame Klammer
  * ================================================================== */
 
@@ -2013,6 +2587,7 @@ function wp_geraete_suchen($hersteller)
         case 'onecta':   return wp_oc_geraete();
         case 'melcloud': return wp_ml_geraete();
         case 'vaillant': return wp_va_geraete();
+        case 'emsesp':   return wp_ems_geraete();
     }
     return array();
 }
@@ -2024,6 +2599,7 @@ function wp_lesen($cfg)
         case 'onecta':   return wp_oc_lesen($cfg);
         case 'melcloud': return wp_ml_lesen($cfg);
         case 'vaillant': return wp_va_lesen($cfg);
+        case 'emsesp':   return wp_ems_lesen($cfg);
     }
     return array('ok' => 0, 'fehler' => 'KEIN_HERSTELLER', 'roh' => null);
 }
@@ -2086,6 +2662,9 @@ function wp_sg_anwenden($cfg, $stufe, $stand = null)
         case 'myuplink':
             list($ok, $grund) = wp_mu_schreiben($cfg, $stufe);
             return array($ok, $grund, 'SGREADY=' . $stufe);
+
+        case 'emsesp':
+            return wp_ems_sg($cfg, $stufe, $stand);
 
         case 'onecta':
             // Nachgebildet. Es gibt bei Onecta keinen SG-Ready-Eingang.
@@ -2222,6 +2801,21 @@ function wp_mqtt_zustand()
     return $aus;
 }
 
+/**
+ * Einen Wert fuer den UDP-Eingang des MQTT-Gateways unschaedlich machen.
+ *
+ * Das Gateway liest ZEILENWEISE. Ein Zeilenumbruch im Wert - aus einer
+ * Fehlermeldung, einem Geraetenamen oder der Ausgabe eines Systembefehls -
+ * zerlegt die Uebertragung, und aus den Bruchstuecken bildet das Gateway
+ * erfundene Themen. Ein Tabulator schadet ebenso, weil Leerzeichen Thema und
+ * Wert trennt.
+ */
+function wp_mqtt_wert_saeubern($v)
+{
+    $wert = str_replace(array("\r\n", "\r", "\n", "\t"), ' ', (string) $v);
+    return trim(preg_replace('/ {2,}/', ' ', $wert));
+}
+
 function wp_mqtt_senden($werte)
 {
     $cfg = wp_config();
@@ -2237,7 +2831,8 @@ function wp_mqtt_senden($werte)
     $raus = 0;
     $alle = 0;
     foreach ($werte as $name => $wert) {
-        $zeile = 'publish ' . $cfg['mqtt_topic'] . '/' . $name . ' ' . $wert . "\n";
+        $zeile = 'publish ' . $cfg['mqtt_topic'] . '/' . $name . ' '
+               . wp_mqtt_wert_saeubern($wert) . "\n";
         $alle++;
         if (@fwrite($sock, $zeile) !== false) { $raus++; }
     }
@@ -2527,14 +3122,20 @@ function wp_abrufen($erzwingen = false)
          * Sie braucht je Zaehlreihe eine eigene Anfrage, und die Zahlen
          * aendern sich im Tagesraster ohnehin kaum. Sie im Abruftakt zu
          * holen waere ein Vielfaches an Anfragen fuer denselben Wert. */
-        if (!empty($cfg['cop_ein']) && $cfg['hersteller'] === 'vaillant' && $erg['ok']) {
+        if (!empty($cfg['cop_ein']) && $erg['ok']
+            && in_array($cfg['hersteller'], array('vaillant', 'emsesp'), true)) {
             $faellig = ((int) (isset($stand['cop_zeit']) ? $stand['cop_zeit'] : 0)) + 3600 <= time();
             if ($faellig || $erzwingen) {
                 /* Frisch einlesen: wp_va_lesen() kann die Reglerart eben erst
                  * ermittelt und geschrieben haben. Die Kopie hier oben waere
                  * dann noch leer, und die Energieadresse zeigte ins Leere. */
                 $cfg = wp_config();
-                $c = wp_va_cop($cfg, $erg['roh'], (int) $cfg['cop_tage']);
+                /* Zwei Hersteller, zwei Wege zur selben Zahl: myVAILLANT
+                 * liefert fertige Summen je Zeitraum, EMS-ESP nur
+                 * Gesamtzaehler - daraus wird die Differenz gebildet. */
+                $c = $cfg['hersteller'] === 'emsesp'
+                    ? wp_ems_cop($cfg, $erg['roh'], (int) $cfg['cop_tage'])
+                    : wp_va_cop($cfg, $erg['roh'], (int) $cfg['cop_tage']);
                 $stand['cop_zeit']  = time();
                 $stand['cop_grund'] = $c['grund'];
                 if ($c['cop'] !== null) {

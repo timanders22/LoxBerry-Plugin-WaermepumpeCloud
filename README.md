@@ -1,11 +1,17 @@
-# LoxBerry-Plugin Wärmepumpe Cloud
+# LoxBerry-Plugin Wärmepumpe
 
-Bindet die **herstellereigenen Cloud-Schnittstellen** moderner Wärmepumpen an
-und übersetzt **SG-Ready-Zustände aus Loxone** dorthin.
+Bindet moderne Wärmepumpen an den Miniserver an und übersetzt **SG-Ready-Zustände
+aus Loxone** dorthin — über die **herstellereigene Cloud** oder, bei Bosch und
+seinen Marken, über ein **Gateway im eigenen Netz**.
 
 Gedacht für die verbreitete Lage, dass kein Modbus-TCP-Modul verbaut ist,
 sondern nur das WLAN-Modul des Herstellers — und der Miniserver deshalb an der
 Wärmepumpe vorbeiregelt.
+
+> **Zum Namen:** der Ordner heißt weiterhin `WaermepumpeCloud`. Mit EMS-ESP ist
+> das nicht mehr ganz wahr — ein Umbenennen bräche aber jede bestehende
+> Installation (der Ordnername ist die Plugin-Kennung). Der Titel in der
+> Plugin-Verwaltung nennt seit 0.9.4 alle fünf Wege.
 
 | Hersteller | Schnittstelle | SG Ready | Was zu beachten ist |
 |---|---|---|---|
@@ -13,6 +19,36 @@ Wärmepumpe vorbeiregelt.
 | **Daikin Onecta** | offiziell, OAuth2 (Autorisierungscode) | nachgebildet | **200 Aufrufe je Tag**, gleitendes Fenster |
 | **MELCloud** (Mitsubishi) | inoffiziell, ContextKey | nachgebildet | **Mindesttakt 180 s** — häufiger sperrt das Konto für Stunden |
 | **myVAILLANT** (Vaillant, Saunier Duval, Bulex, Glow-worm, DemirDöküm) | inoffiziell, OpenID Connect mit PKCE | nachgebildet | **Anmeldung mit den App-Zugangsdaten**, kein API-Schlüssel; der sensoCOMFORT meldet ohnehin nur alle 5 min |
+| **EMS-ESP** (Bosch, Buderus, Junkers, Nefit, Worcester, Sieger) | **lokal**, HTTP/JSON über ein Gateway am EMS-Bus | nachgebildet, echt mit zwei Relais | **Kein Konto, keine Ratenbegrenzung.** Braucht ein Gateway (z. B. BBQKees); Lesen geht ohne alles, Schreiben mit einem Zugriffsmerkmal |
+
+### EMS-ESP im Besonderen
+
+Der einzige Weg in diesem Plugin, der ohne fremden Dienst auskommt. Damit
+fallen die drei Dinge weg, an denen die Cloud-Anbindungen hängen: Anmeldung,
+Aufrufbudget und die Möglichkeit, dass der Hersteller die Schnittstelle
+abschaltet.
+
+Drei Dinge, die man vorher wissen sollte:
+
+* **Eine Bosch-Wärmepumpe meldet sich als `boiler`**, nicht als `heatpump`.
+  Unter `heatpump` läuft ein anderes Modul. Wer dort sucht, findet nichts.
+* **SG Ready lässt sich über den Bus nicht setzen.** Die Klemmen 1 und 4 kann
+  das Gateway nur *lesen* (`hpin1` … `hpin4` sind schreibgeschützt). Die
+  Nachbildung schaltet stattdessen `boiler.heatingactivated` ab bzw. hebt
+  `thermostat.hc<n>.seltemp` an. Wer die echten Klemmen fahren will, legt zwei
+  GPIO des Gateways als *Digital out* an und führt sie über je ein Relais oder
+  einen Optokoppler an die Eingänge — der Gateway-Hersteller weist dabei
+  ausdrücklich darauf hin, dass die Platinen dafür nicht gebaut sind.
+* **Die Arbeitszahl kommt aus zwei Gesamtzählern** (`nrgtotal` erzeugte Wärme,
+  `metertotal` eingesetzter Strom, beide nur bei den neueren Modellen). Das
+  Plugin schreibt stündlich einen Stand fort und rechnet über die Differenz —
+  der Quotient der Gesamtstände wäre die Arbeitszahl seit Inbetriebnahme und
+  im Februar so hoch wie im Juli.
+
+Ein Knopf im Reiter *Test* fragt das Gateway, **was sich schreiben lässt**
+(`/api/<gerät>/commands`). Das ist der Vorteil gegenüber den vier Wolken: die
+Liste kommt vom Gerät und stimmt auch bei einem Modell, das dieses Plugin nie
+gesehen hat.
 
 ## Was das Plugin ehrlich nicht kann
 
