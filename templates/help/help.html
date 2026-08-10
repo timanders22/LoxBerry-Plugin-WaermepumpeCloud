@@ -1,73 +1,36 @@
-<p>Dieses Plugin bindet die <b>herstellereigene Cloud</b> moderner
-W&auml;rmepumpen an und &uuml;bersetzt <b>SG-Ready-Zust&auml;nde</b> aus Loxone
-dorthin. Gedacht f&uuml;r Anlagen ohne Modbus-Modul, bei denen nur das
-WLAN-Modul des Herstellers verbaut ist.</p>
+<p><TMPL_VAR HILFE.K01></p>
 
-<p><b>Unterst&uuml;tzt:</b> myUplink (Nibe), Daikin Onecta,
-MELCloud (Mitsubishi Electric), myVAILLANT (Vaillant, Saunier Duval, Bulex,
-Glow-worm, DemirD&ouml;k&uuml;m).</p>
+<p><TMPL_VAR HILFE.K02></p>
 
-<p><b>Reihenfolge beim Einrichten:</b></p>
+<p><TMPL_VAR HILFE.K03></p>
 <ol>
-<li><i>Einstellungen</i> &rarr; Hersteller w&auml;hlen. Die Tabelle dar&uuml;ber
-sagt, worauf man sich bei jedem der drei einl&auml;sst.</li>
-<li>Zugangsdaten eintragen. Bei myUplink und Daikin sind das Kennung und
-Geheimnis einer eigenen Anwendung, die man im Entwicklerportal des Herstellers
-anlegt. Bei MELCloud und myVAILLANT sind es E-Mail und Passwort des Kontos.</li>
-<li>Bei myVAILLANT zus&auml;tzlich <b>Marke und Land</b> w&auml;hlen. Beides
-zusammen bestimmt den Anmeldebereich; ein falsches Land meldet kein falsches
-Passwort, sondern ein unbekanntes Konto.</li>
-<li>Bei Daikin zus&auml;tzlich die einmalige Anmeldung &uuml;ber den Browser.</li>
-<li><i>Test</i> &rarr; <b>Ger&auml;te suchen</b>, die Kennung nach
-<i>Einstellungen</i> &uuml;bernehmen und speichern.</li>
-<li><i>Test</i> &rarr; <b>Jetzt abrufen</b>, dann <b>Feldwege zeigen</b>.</li>
-<li><i>SG Ready</i> &rarr; ansehen, was die vier Zust&auml;nde bei diesem
-Hersteller tats&auml;chlich bewirken.</li>
-<li><i>MQTT</i> &rarr; das Abo ins Gateway eintragen.</li>
-<li><i>Einbindung in Loxone</i> &rarr; Vorlagen herunterladen und in Loxone
-Config einlesen.</li>
+<li><TMPL_VAR HILFE.K04></li>
+<li><TMPL_VAR HILFE.K05></li>
+<li><TMPL_VAR HILFE.K06></li>
+<li><TMPL_VAR HILFE.K07></li>
+<li><TMPL_VAR HILFE.K08></li>
+<li><TMPL_VAR HILFE.K09></li>
+<li><TMPL_VAR HILFE.K10></li>
+<li><TMPL_VAR HILFE.K11></li>
+<li><TMPL_VAR HILFE.K12></li>
 </ol>
 
-<h3>myVAILLANT</h3>
+<h3><TMPL_VAR HILFE.K13></h3>
 <ul>
-<li><b>Keine offene Schnittstelle.</b> Angemeldet wird mit den Zugangsdaten der
-App. Alles dazu stammt aus der quelloffenen Bibliothek
-<span class="sm-mono">myPyllant</span> &mdash; nichts ist geraten, aber
-Vaillant kann es jederzeit &auml;ndern. Wenn m&ouml;glich: in der App ein
-zweites Konto mit Freigabe anlegen und dieses hinterlegen.</li>
-<li><b>Der Warmwasserkreis z&auml;hlt ab 255</b>, nicht ab 0. Bleibt die
-Warmwasser-Aufheizung wirkungslos, ist dieser Index der erste Verd&auml;chtige.</li>
-<li><b>Angehoben wird &uuml;ber die Schnellabweichung</b>, nicht &uuml;ber den
-Handbetriebs-Sollwert &mdash; sie l&auml;uft von selbst ab. Bleibt der
-Miniserver h&auml;ngen, f&auml;llt die Anlage nach der eingestellten Zeit von
-allein zur&uuml;ck.</li>
-<li><b>Gesperrt wird nicht.</b> Zustand 1 beendet nur eine laufende Anhebung.
-Die Anlage liesse sich zwar ausschalten, aber <i>aus</i> ist keine EVU-Sperre.
-Wer wirklich sperren will, nimmt die beiden Klemmen am Ger&auml;t.</li>
-<li><b>Arbeitszahl</b> aus den Energiez&auml;hlern: abgegebene W&auml;rme
-geteilt durch aufgenommenen Strom. Liefert die Anlage nur eine der beiden
-Reihen, wird <b>nichts</b> gerechnet &mdash; der Grund steht im Reiter
-Einstellungen.</li>
+<li><TMPL_VAR HILFE.K14></li>
+<li><TMPL_VAR HILFE.K15></li>
+<li><TMPL_VAR HILFE.K16></li>
+<li><TMPL_VAR HILFE.K17></li>
+<li><TMPL_VAR HILFE.K18></li>
 </ul>
 
-<p><b>Drei Dinge, die vorher zu wissen sind:</b></p>
+<p><TMPL_VAR HILFE.K19></p>
 <ul>
-<li><b>myUplink:</b> Lesen ist frei, <b>Schreiben verlangt ein
-kostenpflichtiges Abo</b>. Ohne Abo antwortet die Schnittstelle beim Schalten
-mit einer Ablehnung &mdash; das Plugin meldet das eigens.</li>
-<li><b>Daikin Onecta:</b> <b>200 Aufrufe je Tag.</b> Der Abruftakt wird
-deshalb aus dem Budget gerechnet, nicht frei gew&auml;hlt.</li>
-<li><b>MELCloud:</b> inoffiziell, kann sich jederzeit &auml;ndern.
-<b>Mindesttakt 180 Sekunden</b> &mdash; wer h&auml;ufiger fragt, wird f&uuml;r
-Stunden ausgesperrt.</li>
+<li><TMPL_VAR HILFE.K20></li>
+<li><TMPL_VAR HILFE.K21></li>
+<li><TMPL_VAR HILFE.K22></li>
 </ul>
 
-<p><b>Echtes SG Ready gibt es nur bei Nibe.</b> Bei Daikin und Mitsubishi wird
-es nachgebildet: „Sperre“ hei&szlig;t dort schlicht <i>aus</i>, und <i>aus</i>
-ist nicht dasselbe wie die EVU-Sperre, die eine W&auml;rmepumpe selbst kennt.
-Der Reiter <i>SG Ready</i> sagt je Zustand, was genau geschieht.</p>
+<p><TMPL_VAR HILFE.K23></p>
 
-<p><b>Wenn ein Wert fehlt:</b> Das Plugin probiert je Feld mehrere Pfade durch
-und sagt im Reiter <i>Test</i>, welcher gegriffen hat. Steht der Wert in der
-Rohantwort, aber nicht in der Tabelle, l&auml;sst er sich dort unten von Hand
-zuordnen.</p>
+<p><TMPL_VAR HILFE.K24></p>

@@ -599,6 +599,9 @@ $wp_beschriftung = array(
 </div>
 <?php } ?>
 
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-aktion"></i><?= wp_t('LEGENDE.AKTION') ?></span>
+</div>
 <div class="sm-knopfreihe">
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="speichern_zugang" value="1"><?= wp_e(wp_t('ALLG.SPEICHERN')) ?></button>
 </div>
@@ -791,6 +794,9 @@ $wp_beschriftung = array(
   <div class="sm-hilfe"><?= wp_t('SG.H_WWBOOST') ?></div>
 </div>
 
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-aktion"></i><?= wp_t('LEGENDE.AKTION') ?></span>
+</div>
 <div class="sm-knopfreihe">
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="speichern_sg" value="1"><?= wp_e(wp_t('ALLG.SPEICHERN')) ?></button>
 </div>
@@ -917,9 +923,8 @@ foreach ($wp_pr as $wp_z) { if ($wp_z[0] === 0) { $wp_schlecht++; } }
 
 <h2><?= wp_e(wp_t('TEST.H_KNOEPFE')) ?></h2>
 <div class="sm-legende">
-<span><i class="sm-punkt sm-b-lesen"></i> <?= wp_t('LEGENDE.LESEN') ?></span>
-<span><i class="sm-punkt sm-b-technik"></i> <?= wp_t('LEGENDE.TECHNIK') ?></span>
-<span><i class="sm-punkt sm-b-aktion"></i> <?= wp_t('LEGENDE.AKTION') ?></span>
+<span><i class="sm-punkt sm-b-technik"></i><?= wp_t('LEGENDE.TECHNIK') ?></span>
+<span><i class="sm-punkt sm-b-aktion"></i><?= wp_t('LEGENDE.AKTION') ?></span>
 </div>
 
 <div class="sm-knopfreihe">
