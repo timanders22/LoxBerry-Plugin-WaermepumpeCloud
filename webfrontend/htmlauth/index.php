@@ -931,7 +931,9 @@ $wp_beschriftung = array(
 <!-- ================= Reiter: MQTT ================= -->
 <div class="sm-seite<?= $wp_tab === 'tab-mqtt' ? ' sm-active' : '' ?>" id="tab-mqtt">
 <h2><?= wp_e(wp_t('MQTT.H_TITEL')) ?></h2>
-<?php if (!function_exists('wp_hs_autostart')) { function wp_hs_autostart() { $h = getenv('LBHOMEDIR') ?: '/opt/loxberry'; $g = $h . '/config/system/general.json'; if (!is_file($g)) { return null; } $j = json_decode((string) @file_get_contents($g), true); if (!is_array($j) || !isset($j['Mqtt'])) { return null; } return !empty($j['Mqtt']['Gatewayautostart']); } } if (wp_hs_autostart() === false) { ?><div class="sm-alert sm-warn"><b>MQTT:</b> <?php echo wp_t('MQTT.W_AUTOSTART'); ?></div><?php } ?>
+<?php /* Der frueher hier eingeschobene Zweitpruefblock (wp_hs_autostart) ist
+   entfallen: wp_mqtt_zustand() prueft seit 0.9.6 den richtigen Schluessel
+   Gatewayautostart - zwei wortgleiche Warnungen uebereinander waren die Folge. */ ?>
 <?php $wp_m = wp_mqtt_zustand(); ?>
 <?php if (!$wp_m['gefunden']) { ?>
 <div class="sm-warnung"><?= wp_t('MQTT.KEIN_ABSCHNITT') ?></div>
@@ -1048,9 +1050,11 @@ foreach ($wp_pr as $wp_z) { if ($wp_z[0] === 0) { $wp_schlecht++; } }
 </div>
 
 <div class="sm-knopfreihe">
-<?php foreach (array('geraete' => 'lesen', 'abruf' => 'lesen', 'zeile' => 'lesen') as $wp_a => $wp_farbe) { ?>
+<?php /* Klasse woertlich, nicht zusammengesetzt: alle drei sind Lese-Knoepfe,
+   und hausstandard_pruefen.py kann zusammengesetzte Klassen nicht sehen. */
+foreach (array('geraete', 'abruf', 'zeile') as $wp_a) { ?>
 <form action="index.php" method="post" style="margin:0;"><input data-role="none" type="hidden" name="activetab" value="tab-test">
-  <button data-role="none" class="sm-btn sm-b-<?= $wp_farbe ?>" type="submit" name="test" value="<?= $wp_a ?>"><?= wp_e(wp_t('TEST.K_' . strtoupper($wp_a))) ?></button>
+  <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="test" value="<?= $wp_a ?>"><?= wp_e(wp_t('TEST.K_' . strtoupper($wp_a))) ?></button>
 </form>
 <?php } ?>
 </div>

@@ -100,6 +100,9 @@ function wp_paths()
         'logdir'    => rtrim($home, '/') . '/log/plugins/' . $plugin,
     );
     $p['config'] = $p['configdir'] . '/waermepumpe.json';
+    // Zweitschrift NEBEN dem Ordner (Hausmuster Weissware/Kodi): beim Update
+    // kopiert der Installer config/ aus dem Archiv darueber.
+    $p['sicherung'] = rtrim($home, '/') . '/config/plugins/' . $plugin . '.backup.waermepumpe.json';
     $p['geheim'] = $p['configdir'] . '/geheim.json';
     return $p;
 }
@@ -425,6 +428,13 @@ function wp_vorgaben()
 function wp_config()
 {
     $p = wp_paths();
+    // Selbstheilung: fehlende oder leere Konfiguration aus der Zweitschrift
+    // holen (Hausmuster Weissware/Kodi, nachgeruestet 13.08.2026).
+    $roh = is_file($p['config']) ? trim((string) @file_get_contents($p['config'])) : '';
+    if (($roh === '' || $roh === '{}') && isset($p['sicherung']) && is_file($p['sicherung'])) {
+        @mkdir($p['configdir'], 0775, true);
+        @copy($p['sicherung'], $p['config']);
+    }
     $cfg = is_file($p['config']) ? json_decode((string) @file_get_contents($p['config']), true) : array();
     if (!is_array($cfg)) { $cfg = array(); }
     $cfg = array_merge(wp_vorgaben(), $cfg);
@@ -544,7 +554,9 @@ function wp_config_write($cfg)
 {
     $p = wp_paths();
     @mkdir($p['configdir'], 0775, true);
-    return wp_json_schreiben($p['config'], $cfg);
+    if (!wp_json_schreiben($p['config'], $cfg)) { return false; }
+    if (isset($p['sicherung'])) { @copy($p['config'], $p['sicherung']); }
+    return true;
 }
 
 /**
@@ -2797,7 +2809,7 @@ function wp_mqtt_zustand()
     if (!isset($d['Mqtt'])) { return $aus; }
     $aus['gefunden'] = true;
     $aus['udpport'] = isset($d['Mqtt']['Udpinport']) ? (int) $d['Mqtt']['Udpinport'] : 0;
-    $aus['autostart'] = !empty($d['Mqtt']['Autostart']);
+    $aus['autostart'] = !empty($d['Mqtt']['Gatewayautostart']); // NICHT 'Autostart' - den Schluessel gibt es nicht (Fehlerklasse ACTiKamera 1.9.2)
     return $aus;
 }
 
