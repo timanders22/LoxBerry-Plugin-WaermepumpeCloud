@@ -931,6 +931,7 @@ $wp_beschriftung = array(
 <!-- ================= Reiter: MQTT ================= -->
 <div class="sm-seite<?= $wp_tab === 'tab-mqtt' ? ' sm-active' : '' ?>" id="tab-mqtt">
 <h2><?= wp_e(wp_t('MQTT.H_TITEL')) ?></h2>
+<?php if (!function_exists('wp_hs_autostart')) { function wp_hs_autostart() { $h = getenv('LBHOMEDIR') ?: '/opt/loxberry'; $g = $h . '/config/system/general.json'; if (!is_file($g)) { return null; } $j = json_decode((string) @file_get_contents($g), true); if (!is_array($j) || !isset($j['Mqtt'])) { return null; } return !empty($j['Mqtt']['Gatewayautostart']); } } if (wp_hs_autostart() === false) { ?><div class="sm-alert sm-warn"><b>MQTT:</b> <?php echo wp_t('MQTT.W_AUTOSTART'); ?></div><?php } ?>
 <?php $wp_m = wp_mqtt_zustand(); ?>
 <?php if (!$wp_m['gefunden']) { ?>
 <div class="sm-warnung"><?= wp_t('MQTT.KEIN_ABSCHNITT') ?></div>
