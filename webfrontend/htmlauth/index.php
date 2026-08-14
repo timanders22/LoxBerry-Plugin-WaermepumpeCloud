@@ -336,9 +336,8 @@ if ($wp_post && isset($_POST['speichern_geraet'])) {
         }
     }
 
-    $wp_cfg['mqtt_ein'] = !empty($_POST['mqtt_ein']) ? 1 : 0;
-    $t = preg_replace('#[^A-Za-z0-9_/\-]#', '', wp_g('mqtt_topic', 'waermepumpe'));
-    if ($t === '') { $wp_fehler[] = wp_t('EINST.FEHLER_TOPIC'); } else { $wp_cfg['mqtt_topic'] = $t; }
+    /* mqtt_ein und mqtt_topic werden hier NICHT mehr angefasst: sie
+     * wohnen im Reiter MQTT und haben dort ein eigenes Formular. */
 
     if (!$wp_fehler) {
         if (wp_config_write($wp_cfg)) { $wp_meldungen[] = wp_t('EINST.GESPEICHERT'); }
@@ -346,6 +345,30 @@ if ($wp_post && isset($_POST['speichern_geraet'])) {
     }
     $wp_cfg = wp_config();
     $wp_tab = 'tab-settings';
+}
+
+/* ---------------- MQTT (eigener Reiter, eigenes Formular) ----------------
+ *
+ * Eigenes Formular UND eigener Handler gehoeren zusammen. Loesten beide
+ * Formulare denselben Handler aus, setzte dieser die Haken des jeweils
+ * nicht abgeschickten Formulars per isset() auf 0. */
+if ($wp_post && isset($_POST['save_mqtt'])) {
+    $wp_mcfg = wp_config();
+    $wp_mcfg['mqtt_ein'] = !empty($_POST['mqtt_ein']) ? 1 : 0;
+    $wp_mt = preg_replace('#[^A-Za-z0-9_/\-]#', '',
+        (string) (isset($_POST['mqtt_topic']) ? $_POST['mqtt_topic'] : ''));
+    if ($wp_mt === '') {
+        $wp_fehler[] = wp_t('EINST.FEHLER_TOPIC');
+    } else {
+        $wp_mcfg['mqtt_topic'] = $wp_mt;
+    }
+    if (!$wp_fehler) {
+        if (wp_config_write($wp_mcfg)) {
+            $wp_meldungen[] = wp_t('EINST.GESPEICHERT');
+        }
+    }
+    $wp_cfg = wp_config();
+    $wp_tab = 'tab-mqtt';
 }
 
 /* ================= SG Ready speichern ================= */
@@ -834,14 +857,8 @@ $wp_beschriftung = array(
 </div>
 <?php } ?>
 
-<div class="sm-feld">
-  <label style="font-weight:400;"><input data-role="none" type="checkbox" name="mqtt_ein" value="1"<?= $wp_cfg['mqtt_ein'] ? ' checked' : '' ?>>
-    <?= wp_e(wp_t('EINST.L_MQTT_EIN')) ?></label>
-</div>
-<div class="sm-feld">
-  <label for="wp_topic"><?= wp_e(wp_t('EINST.L_MQTT_TOPIC')) ?></label>
-  <input data-role="none" type="text" name="mqtt_topic" id="wp_topic" value="<?= wp_e($wp_cfg['mqtt_topic']) ?>" size="30">
-</div>
+<?php /* MQTT stand hier bis zu dieser Fassung. Es wohnt jetzt
+         vollstaendig im Reiter MQTT - eine Sache, eine Stelle. */ ?>
 
 <div class="sm-knopfreihe">
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="speichern_geraet" value="1"><?= wp_e(wp_t('ALLG.SPEICHERN')) ?></button>
@@ -930,6 +947,24 @@ $wp_beschriftung = array(
 
 <!-- ================= Reiter: MQTT ================= -->
 <div class="sm-seite<?= $wp_tab === 'tab-mqtt' ? ' sm-active' : '' ?>" id="tab-mqtt">
+
+<h2>MQTT</h2>
+<form action="index.php" method="post">
+<input data-role="none" type="hidden" name="save_mqtt" value="1">
+<input data-role="none" type="hidden" name="activetab" value="tab-mqtt">
+<div class="sm-feld">
+  <label style="font-weight:400;"><input data-role="none" type="checkbox" name="mqtt_ein" value="1"<?= $wp_cfg['mqtt_ein'] ? ' checked' : '' ?>>
+    <?= wp_e(wp_t('EINST.L_MQTT_EIN')) ?></label>
+</div>
+<div class="sm-feld">
+  <label for="wp_topic"><?= wp_e(wp_t('EINST.L_MQTT_TOPIC')) ?></label>
+  <input data-role="none" type="text" name="mqtt_topic" id="wp_topic" value="<?= wp_e($wp_cfg['mqtt_topic']) ?>" size="30">
+</div>
+<div class="sm-legende"><span><i class="sm-punkt sm-b-aktion"></i> <?= wp_t('LEGENDE.AKTION') ?></span></div>
+<div class="sm-knopfreihe">
+  <button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?= wp_e(wp_t('ALLG.SPEICHERN')) ?></button>
+</div>
+</form>
 <h2><?= wp_e(wp_t('MQTT.H_TITEL')) ?></h2>
 <?php /* Der frueher hier eingeschobene Zweitpruefblock (wp_hs_autostart) ist
    entfallen: wp_mqtt_zustand() prueft seit 0.9.6 den richtigen Schluessel
