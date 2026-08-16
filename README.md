@@ -50,6 +50,25 @@ Ein Knopf im Reiter *Test* fragt das Gateway, **was sich schreiben lässt**
 Liste kommt vom Gerät und stimmt auch bei einem Modell, das dieses Plugin nie
 gesehen hat.
 
+## Neu in 0.9.9
+
+**Der Abrufdienst konnte nie starten.** `bin/wp_abruf.php` suchte seine Programmbibliothek
+ueber `dirname(__DIR__) . '/webfrontend/htmlauth/…'`. Im entpackten Archiv
+liegen `bin/` und `webfrontend/` nebeneinander, auf dem installierten
+LoxBerry in getrennten Baeumen — der Aufruf endete dort bei jedem Cron-Lauf
+mit `Failed opening required`. Weil die Cron-Zeile nach `/dev/null` schreibt,
+stand das nirgends. Damit wurden seit der Einfuehrung des Dienstes keine Werte geholt.
+
+Die Bibliothek wird jetzt ueber eine Kandidatenliste gesucht; findet keiner
+sie, schreibt der Dienst auf die Fehlerausgabe, **welche Datei er wo gesucht
+hat**, und endet mit Rueckgabewert 1 statt stillschweigend.
+
+Nach dem Update einmal von Hand pruefen:
+
+```bash
+php /opt/loxberry/bin/plugins/<ordner>/wp_abruf.php; echo "Rueckgabewert: $?"
+```
+
 ## Was das Plugin ehrlich nicht kann
 
 Diese drei Punkte stehen hier, weil sie die Erwartung „Plug-and-Play" begrenzen.

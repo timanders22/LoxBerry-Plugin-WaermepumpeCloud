@@ -19,7 +19,47 @@
  */
 
 error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
-require_once dirname(__DIR__) . '/webfrontend/htmlauth/wp_lib.php';
+/* Die Bibliothek ueber eine Kandidatenliste finden - NICHT ueber eine feste
+ * Zahl von ".." nach oben.
+ *
+ * Im entpackten Archiv liegen bin/ und webfrontend/ nebeneinander, auf dem
+ * installierten LoxBerry in GETRENNTEN Baeumen:
+ *
+ *     /opt/loxberry/bin/plugins/<ordner>/wp_abruf.php
+ *     /opt/loxberry/webfrontend/htmlauth/plugins/<ordner>/wp_lib.php
+ *
+ * dirname(__DIR__) ergibt dort /opt/loxberry/bin/plugins - gesucht wurde also
+ * /opt/loxberry/bin/plugins/webfrontend/htmlauth/wp_lib.php. Die gibt es nicht: der
+ * Dienst brach bei JEDEM Cron-Lauf mit einem fatalen Fehler ab, und weil die
+ * Cron-Zeile nach /dev/null schreibt, stand das nirgends.
+ *
+ * Gefunden am 16.08.2026 mit Werkzeuge/installationslage_pruefen.py, nachdem
+ * dieselbe Zeile den Hintergrunddienst des Abfahrts-Assistenten von 1.5.0 bis
+ * 1.5.7 lahmgelegt hatte.
+ */
+$wp_lb = getenv('LBHOMEDIR');
+$wp_ordner = getenv('LBPPLUGINDIR') ?: basename(__DIR__);
+$wp_kandidaten = array();
+if ($wp_lb) {
+    $wp_kandidaten[] = $wp_lb . '/webfrontend/htmlauth/plugins/' . $wp_ordner . '/wp_lib.php';
+}
+// installiert, ohne dass die Umgebungsvariablen gesetzt waeren:
+// .../bin/plugins/<ordner>  ->  .../webfrontend/htmlauth/plugins/<ordner>
+$wp_kandidaten[] = dirname(dirname(dirname(__DIR__)))
+                 . '/webfrontend/htmlauth/plugins/' . basename(__DIR__) . '/wp_lib.php';
+// entpacktes Archiv: bin/ und webfrontend/ liegen nebeneinander
+$wp_kandidaten[] = dirname(__DIR__) . '/webfrontend/htmlauth/wp_lib.php';
+
+$wp_lib = '';
+foreach ($wp_kandidaten as $wp_kand) {
+    if (is_file($wp_kand)) { $wp_lib = $wp_kand; break; }
+}
+if ($wp_lib === '') {
+    fwrite(STDERR, "Waermepumpe Cloud: wp_lib.php nicht gefunden. Gesucht wurde in:\n");
+    foreach ($wp_kandidaten as $wp_kand) { fwrite(STDERR, '  ' . $wp_kand . "\n"); }
+    exit(1);
+}
+require_once $wp_lib;
 
 $modus = isset($argv[1]) ? (string) $argv[1] : 'takt';
 
