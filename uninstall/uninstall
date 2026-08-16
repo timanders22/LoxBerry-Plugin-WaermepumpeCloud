@@ -13,7 +13,7 @@
 # Ramdisk. Die lagen bis 0.9.0 unberuehrt herum - die Sperrdatei, die
 # Zeitstempel, die Zwischenstaende.
 
-PFOLDER="${3:-waermepumpecloud}"
+PFOLDER="${3:-waermepumpe}"
 BASE="${5:-$LBHOMEDIR}"
 # Dritter Rueckfall: der eigene Ablageort. Bewusst kein fest verdrahteter
 # Systempfad - LoxBerry laesst sich anderswohin installieren, und der
@@ -22,8 +22,21 @@ BASE="${5:-$LBHOMEDIR}"
 if [ -z "$BASE" ] || [ ! -d "$BASE" ]; then
     BASE=$(cd "$(dirname "$(readlink -f "$0")")/../../../.." 2>/dev/null && pwd)
 fi
-CFGDIR="${LBPCONFIG:-$BASE/config/plugins/$PFOLDER}"
-DATADIR="${LBPDATA:-$BASE/data/plugins/$PFOLDER}"
+# ACHTUNG - hier lag bis 0.9.10 der schwerste Fehler dieses Plugins.
+#
+# $LBPCONFIG und $LBPDATA sind die Umgebungsvariablen des INSTALLERS. Sie
+# zeigen auf <home>/config/plugins bzw. <home>/data/plugins, also OHNE den
+# Pluginordner; LoxBerry reicht sie ueber "Defaults env_keep" in
+# /etc/sudoers.d/lbdefaults an dieses Skript durch, sie SIND hier gesetzt.
+#
+# Bis 0.9.10 stand hier DATADIR="${LBPDATA:-...}" ohne angehaengten Ordner.
+# Das rm -rf weiter unten hat damit <home>/data/plugins geloescht - also die
+# Zwischenstaende, Token-Dateien und Anmeldemarken JEDES installierten
+# Plugins. 2>/dev/null verschluckte jede Meldung, und das Skript meldete
+# danach <OK>. Nachgestellt am 16.08.2026 in einer Attrappe: vier Plugins
+# drin, vier Plugins weg.
+CFGDIR="${LBPCONFIG:-$BASE/config/plugins}/$PFOLDER"
+DATADIR="${LBPDATA:-$BASE/data/plugins}/$PFOLDER"
 
 # ---------------------------------------------------------------
 # 1. Zugangsdaten - ueberschreiben, dann entfernen
@@ -43,11 +56,37 @@ rm -rf "$CFGDIR/.upgrade" 2>/dev/null
 rm -f "$CFGDIR/.upgrade_pfad" 2>/dev/null
 
 # ---------------------------------------------------------------
+# 1b. Die Zweitschrift NEBEN dem Konfigordner
+# ---------------------------------------------------------------
+# wp_config_write() legt <home>/config/plugins/<ordner>.backup.waermepumpe.json
+# an - eine Ebene UEBER dem Ordner, den LoxBerry beim Deinstallieren entfernt.
+# Bis 0.9.10 blieb sie deshalb liegen, und wp_config() spielte sie bei der
+# naechsten Neuinstallation stillschweigend zurueck. Gemessen am 16.08.2026:
+# nach Deinstallation und frischer Neuinstallation standen Hersteller, Takt UND
+# das alte Aktionstoken wieder da. Eine saubere Neuinstallation war damit keine.
+ZWEITSCHRIFT="$(dirname "$CFGDIR")/$PFOLDER.backup.waermepumpe.json"
+if [ -f "$ZWEITSCHRIFT" ]; then
+    LAENGE=$(stat -c %s "$ZWEITSCHRIFT" 2>/dev/null || echo 0)
+    [ "$LAENGE" -gt 0 ] && dd if=/dev/zero of="$ZWEITSCHRIFT" bs=1 count="$LAENGE" \
+        conv=notrunc >/dev/null 2>&1
+    rm -f "$ZWEITSCHRIFT"
+fi
+
+# ---------------------------------------------------------------
 # 2. Datenordner vollstaendig
 # ---------------------------------------------------------------
 # Darin liegen die Zwischenstaende UND die erneuerbaren Anmeldemarken der
 # drei Herstellerclouds (token_onecta.json, token_myuplink.json,
 # token_melcloud.json). Die sind auch ohne Passwort ein gueltiger Zugang.
+# Zweiter Boden. Ein rm -rf, das genau dann zu weit greift, wenn eine
+# Umgebungsvariable anders aussieht als erwartet, ist die teuerste Art Fehler:
+# er faellt erst auf, wenn die Daten der anderen Plugins schon weg sind.
+# Deshalb wird VOR dem Loeschen geprueft, dass der Pfad wirklich auf den
+# eigenen Pluginordner endet - und sonst abgewiesen statt geraten.
+if [ "$(basename "$DATADIR")" != "$PFOLDER" ]; then
+    echo "<FAIL> Datenordner sieht falsch aus ($DATADIR) - es wird NICHTS geloescht."
+    exit 1
+fi
 rm -rf "$DATADIR" 2>/dev/null
 
 # ---------------------------------------------------------------

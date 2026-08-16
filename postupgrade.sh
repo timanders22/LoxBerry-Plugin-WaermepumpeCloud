@@ -13,9 +13,10 @@ ARGV3=$3
 ARGV5=$5
 ARGV6=$6
 
-PFOLDER="${ARGV3:-waermepumpecloud}"
+PFOLDER="${ARGV3:-waermepumpe}"
 BASE="${ARGV5:-$LBHOMEDIR}"
-CFGDIR="${LBPCONFIG:-$BASE/config/plugins/$PFOLDER}"
+# Pluginordner anhaengen - siehe preupgrade.sh.
+CFGDIR="${LBPCONFIG:-$BASE/config/plugins}/$PFOLDER"
 MERKER="$CFGDIR/.upgrade_pfad"
 
 if [ -r "$MERKER" ]; then

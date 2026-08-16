@@ -187,15 +187,18 @@ if ($wp_post && isset($_POST['speichern_zugang'])) {
         }
     }
 
-    if (!$wp_fehler) {
-        $okA = wp_geheim_write($neu);
-        $okB = wp_config_write($wp_cfg);
-        if ($okA && $okB) {
-            $wp_meldungen[] = wp_t('EINST.GESPEICHERT');
-            wp_log('Zugangsdaten gespeichert (Hersteller ' . $wp_cfg['hersteller'] . ')');
-        } else {
-            $wp_fehler[] = sprintf(wp_t('EINST.FEHLER_SPEICHERN'), wp_e($p['configdir']));
-        }
+    /* Melden, nicht blockieren. Jede Pruefung oben uebernimmt ihr Feld nur im
+     * gueltigen Fall - ein beanstandetes Geheimnis bleibt also auf dem
+     * bisherigen Wert, waehrend die uebrigen Eingaben des Formulars erhalten
+     * bleiben. Wer drei Felder ausfuellt und sich in einem vertippt, soll nicht
+     * alle drei neu eintippen muessen. */
+    $okA = wp_geheim_write($neu);
+    $okB = wp_config_write($wp_cfg);
+    if ($okA && $okB) {
+        $wp_meldungen[] = wp_t('EINST.GESPEICHERT');
+        wp_log('Zugangsdaten gespeichert (Hersteller ' . $wp_cfg['hersteller'] . ')');
+    } else {
+        $wp_fehler[] = sprintf(wp_t('EINST.FEHLER_SPEICHERN'), wp_e($p['configdir']));
     }
     $wp_cfg = wp_config();
     $wp_geh = wp_geheim();
@@ -226,9 +229,22 @@ if ($wp_post && isset($_POST['onecta_code'])) {
 /* ================= Geraet und Takt speichern ================= */
 if ($wp_post && isset($_POST['speichern_geraet'])) {
     $wp_stand_vor = wp_stand();
-    $wp_cfg['geraet']   = preg_replace('/[^A-Za-z0-9_\-]/', '', wp_g('geraet'));
-    $wp_cfg['gebaeude'] = preg_replace('/[^A-Za-z0-9_\-]/', '', wp_g('gebaeude'));
-    $wp_cfg['system']   = preg_replace('/[^A-Za-z0-9_\-]/', '', wp_g('system'));
+    /* Kennungen werden GEPRUEFT, nicht gefiltert.
+     *
+     * Bis 0.9.10 lief ueber diese drei ein preg_replace, das alles Unerlaubte
+     * still entfernte. Bei einer undurchsichtigen Geraetekennung weiss niemand,
+     * welche Zeichen bedeutungstragend sind: aus "{7a3f-11ee}" wurde
+     * "7a3f-11ee", die Cloud antwortete mit 404, und die Ursache stand
+     * nirgends. Das ist die stille Falschaussage aus der Heimkino-Sitzung. */
+    foreach (array('geraet', 'gebaeude', 'system') as $wp_kf) {
+        $wp_kw = trim(wp_g($wp_kf, (string) $wp_cfg[$wp_kf]));
+        if ($wp_kw !== '' && !preg_match('/^[A-Za-z0-9_\-]{1,128}$/', $wp_kw)) {
+            $wp_fehler[] = sprintf(wp_t('EINST.FEHLER_KENNUNG'),
+                wp_e(wp_t('EINST.L_' . strtoupper($wp_kf))), wp_e($wp_kw));
+            continue;
+        }
+        $wp_cfg[$wp_kf] = $wp_kw;
+    }
 
     // Den MELCloud-Geraetetyp aus der Suche uebernehmen, statt ihn erfragen
     // zu lassen. Er entscheidet, ob ueberhaupt geschrieben werden darf -
@@ -311,6 +327,7 @@ if ($wp_post && isset($_POST['speichern_geraet'])) {
         }
         $wp_cfg['ems_thermostat'] = !empty($_POST['ems_thermostat']) ? 1 : 0;
 
+        $wp_sg_art_alt = (string) $wp_cfg['ems_sg_art'];
         $art = wp_g('ems_sg_art', 'nachbildung');
         $wp_cfg['ems_sg_art'] = $art === 'klemmen' ? 'klemmen' : 'nachbildung';
         foreach (array('ems_gpio1', 'ems_gpio4') as $wp_gf) {
@@ -325,24 +342,40 @@ if ($wp_post && isset($_POST['speichern_geraet'])) {
         /* Der Weg ueber die Klemmen ohne Pins waere ein eingeschalteter
          * Schalter, der nichts tut. Lieber jetzt beanstanden als spaeter
          * suchen lassen, warum die Sperre nicht ankommt. */
+        /* Diese beiden Beanstandungen betreffen eine KOMBINATION, nicht ein
+         * einzelnes Feld. Alles andere wird unten trotz Beanstandung
+         * gespeichert - dieser Zustand aber darf nicht in die Konfiguration:
+         * "Klemmen" ohne Pins waere ein eingeschalteter Schalter, der nichts
+         * tut. Deshalb faellt der Weg auf den vorherigen Wert zurueck. */
         if ($wp_cfg['ems_sg_art'] === 'klemmen'
             && ((int) $wp_cfg['ems_gpio1'] <= 0 || (int) $wp_cfg['ems_gpio4'] <= 0)) {
             $wp_fehler[] = wp_t('EINST.FEHLER_EMS_GPIO');
+            $wp_cfg['ems_sg_art'] = $wp_sg_art_alt;
         }
         if ($wp_cfg['ems_sg_art'] === 'klemmen'
             && (int) $wp_cfg['ems_gpio1'] === (int) $wp_cfg['ems_gpio4']
             && (int) $wp_cfg['ems_gpio1'] > 0) {
             $wp_fehler[] = wp_t('EINST.FEHLER_EMS_GPIO_GLEICH');
+            $wp_cfg['ems_sg_art'] = $wp_sg_art_alt;
         }
     }
 
     /* mqtt_ein und mqtt_topic werden hier NICHT mehr angefasst: sie
      * wohnen im Reiter MQTT und haben dort ein eigenes Formular. */
 
-    if (!$wp_fehler) {
-        if (wp_config_write($wp_cfg)) { $wp_meldungen[] = wp_t('EINST.GESPEICHERT'); }
-        else { $wp_fehler[] = sprintf(wp_t('EINST.FEHLER_SPEICHERN'), wp_e($p['configdir'])); }
-    }
+    /* MELDEN ist richtig, BLOCKIEREN nicht.
+     *
+     * Bis 0.9.10 stand hier if (!$wp_fehler). Gemessen am 16.08.2026: ein
+     * Heizkreis von 99 verhinderte, dass der im selben Formular gueltig
+     * geaenderte Takt von 900 gespeichert wurde - der Benutzer korrigiert dann
+     * einen Fehler nach dem anderen und verliert bei jedem Anlauf seine
+     * uebrigen Eingaben. Das steht als eigener Fehler in REGELN_1, Abschnitt 11.
+     *
+     * Jede Pruefung oben setzt ihr Feld nur im gueltigen Fall; ein beanstandetes
+     * Feld behaelt also seinen bisherigen Wert. Gespeichert wird deshalb immer,
+     * und die Beanstandungen stehen gesammelt darueber. */
+    if (wp_config_write($wp_cfg)) { $wp_meldungen[] = wp_t('EINST.GESPEICHERT'); }
+    else { $wp_fehler[] = sprintf(wp_t('EINST.FEHLER_SPEICHERN'), wp_e($p['configdir'])); }
     $wp_cfg = wp_config();
     $wp_tab = 'tab-settings';
 }
@@ -355,17 +388,29 @@ if ($wp_post && isset($_POST['speichern_geraet'])) {
 if ($wp_post && isset($_POST['save_mqtt'])) {
     $wp_mcfg = wp_config();
     $wp_mcfg['mqtt_ein'] = !empty($_POST['mqtt_ein']) ? 1 : 0;
-    $wp_mt = preg_replace('#[^A-Za-z0-9_/\-]#', '',
-        (string) (isset($_POST['mqtt_topic']) ? $_POST['mqtt_topic'] : ''));
+    /* PRUEFEN, nicht zurechtbiegen.
+     *
+     * Bis 0.9.10 lief hier ein preg_replace, das alles Unerlaubte still
+     * entfernte. Gemessen am 16.08.2026: aus "wärmepumpe/haus" wurde
+     * "wrmepumpe/haus", und der Benutzer las "Einstellungen gespeichert."
+     * Wer sein Abo im Gateway nach der eigenen Notiz eintraegt, bekommt dann
+     * nie eine Nachricht und sucht den Fehler ueberall, nur nicht hier. */
+    $wp_mt = trim((string) (isset($_POST['mqtt_topic']) && !is_array($_POST['mqtt_topic'])
+        ? $_POST['mqtt_topic'] : ''));
     if ($wp_mt === '') {
         $wp_fehler[] = wp_t('EINST.FEHLER_TOPIC');
+    } elseif (!preg_match('#^[A-Za-z0-9_\-]+(/[A-Za-z0-9_\-]+)*$#', $wp_mt)) {
+        $wp_fehler[] = sprintf(wp_t('EINST.FEHLER_TOPIC_ZEICHEN'), wp_e($wp_mt));
     } else {
         $wp_mcfg['mqtt_topic'] = $wp_mt;
     }
-    if (!$wp_fehler) {
-        if (wp_config_write($wp_mcfg)) {
-            $wp_meldungen[] = wp_t('EINST.GESPEICHERT');
-        }
+    /* Das Gueltige speichern, das Beanstandete melden - nicht alles verwerfen.
+     * $wp_mcfg traegt bei einer Beanstandung noch den bisherigen Themenpfad,
+     * der Haken ist aber schon uebernommen. */
+    if (wp_config_write($wp_mcfg)) {
+        $wp_meldungen[] = wp_t('EINST.GESPEICHERT');
+    } else {
+        $wp_fehler[] = sprintf(wp_t('EINST.FEHLER_SPEICHERN'), wp_e(wp_paths()['configdir']));
     }
     $wp_cfg = wp_config();
     $wp_tab = 'tab-mqtt';
@@ -400,10 +445,10 @@ if ($wp_post && isset($_POST['speichern_sg'])) {
         }
     }
 
-    if (!$wp_fehler) {
-        if (wp_config_write($wp_cfg)) { $wp_meldungen[] = wp_t('SG.GESPEICHERT'); }
-        else { $wp_fehler[] = sprintf(wp_t('EINST.FEHLER_SPEICHERN'), wp_e($p['configdir'])); }
-    }
+    /* Melden, nicht blockieren - siehe die Begruendung im Zweig darueber.
+     * Jede Pruefung setzt ihr Feld nur im gueltigen Fall. */
+    if (wp_config_write($wp_cfg)) { $wp_meldungen[] = wp_t('SG.GESPEICHERT'); }
+    else { $wp_fehler[] = sprintf(wp_t('EINST.FEHLER_SPEICHERN'), wp_e($p['configdir'])); }
     $wp_cfg = wp_config();
     $wp_tab = 'tab-sgready';
 }
@@ -943,6 +988,51 @@ $wp_beschriftung = array(
     wp_e(date('d.m.Y H:i', (int) $wp_stand['stufe_zeit'])),
     '<span class="sm-mono">' . wp_e($wp_stand['stufe_quittiert']) . '</span>') ?></div>
 <?php } ?>
+
+<?php /* Wirksamkeitsnachweis. Die Tabelle behauptet nichts - sie stellt die
+   Werte vor dem Wechsel neben die 15 Minuten danach und ueberlaesst das
+   Urteil dem Bewohner. Bei vier von fuenf Herstellern ist SG Ready
+   nachgebildet, und ob die Nachbildung an DIESER Anlage etwas bewirkt, kann
+   von aussen niemand wissen. */ ?>
+<h2><?= wp_e(wp_t('SG.H_WIRKUNG')) ?></h2>
+<div class="sm-step"><?= sprintf(wp_t('SG.WIRKUNG_TEXT'), (int) round(WP_VERLAUF_NACH / 60)) ?></div>
+<?php
+$wp_verlauf = isset($wp_stand['sg_verlauf']) && is_array($wp_stand['sg_verlauf'])
+    ? $wp_stand['sg_verlauf'] : array();
+if (!$wp_verlauf) { ?>
+<div class="sm-hinweis"><?= wp_t('SG.WIRKUNG_LEER') ?></div>
+<?php } else { ?>
+<table class="sm-tbl">
+<tr><th><?= wp_e(wp_t('SG.W_ZEIT')) ?></th><th><?= wp_e(wp_t('SG.W_STUFE')) ?></th>
+    <th><?= wp_e(wp_t('SG.W_GESCHRIEBEN')) ?></th>
+    <th><?= wp_e(wp_t('SG.W_VORLAUF')) ?></th><th><?= wp_e(wp_t('SG.W_LEISTUNG')) ?></th></tr>
+<?php foreach ($wp_verlauf as $wp_v) {
+    $wp_paar = function ($feld, $einheit) use ($wp_v) {
+        $v = isset($wp_v['vor_' . $feld]) ? $wp_v['vor_' . $feld] : null;
+        $n = isset($wp_v['nach_' . $feld]) ? $wp_v['nach_' . $feld] : null;
+        if ($v === null && $n === null) { return '&mdash;'; }
+        $t = ($v === null ? '?' : $v . ' ' . $einheit);
+        if ($n === null) {
+            // Noch nicht nachgemessen oder ueberholt - beides ausdruecklich
+            // sagen, statt eine leere Zelle stehen zu lassen.
+            return wp_e($t) . ' <span class="sm-aus">&rarr; '
+                 . wp_e(wp_t((int) $wp_v['nach'] === -1 ? 'SG.W_UEBERHOLT' : 'SG.W_LAEUFT')) . '</span>';
+        }
+        $d = $n - $v;
+        $pfeil = $d > 0 ? '&uarr;' : ($d < 0 ? '&darr;' : '&rarr;');
+        return wp_e($t) . ' ' . $pfeil . ' <b>' . wp_e($n . ' ' . $einheit) . '</b>'
+             . ' <span class="sm-mono">(' . ($d > 0 ? '+' : '') . wp_e(round($d, 1)) . ')</span>';
+    };
+?>
+<tr><td><?= wp_e(date('d.m. H:i', (int) $wp_v['zeit'])) ?></td>
+    <td><b><?= (int) $wp_v['stufe'] ?></b> &mdash; <?= wp_e(wp_t('SG.STUFE' . (int) $wp_v['stufe'])) ?></td>
+    <td><span class="sm-mono"><?= wp_e($wp_v['was'] !== '' ? $wp_v['was'] : '-') ?></span></td>
+    <td><?= $wp_paar('VORLAUF', '&deg;C') ?></td>
+    <td><?= $wp_paar('LEISTUNG', 'W') ?></td></tr>
+<?php } ?>
+</table>
+<div class="sm-hilfe"><?= wp_t('SG.WIRKUNG_HILFE') ?></div>
+<?php } ?>
 </div>
 
 <!-- ================= Reiter: MQTT ================= -->
@@ -1017,6 +1107,17 @@ $wp_beschriftung = array(
   <div class="sm-pre"><?= wp_e(wp_endpunkt('sgready')) ?>&amp;stufe=1 .. 4</div>
   <?= wp_t('LOX.S4_KLEMMEN') ?>
   <div class="sm-pre"><?= wp_e(wp_endpunkt('sgready')) ?>&amp;k1=1&amp;k2=0</div>
+<?php /* Die Warmwasser-Zwangsladung ist ein EIGENER Ausgang und haengt nicht
+   an SG Ready. Sie steht nur da, wo der Hersteller sie kann - sonst stuende
+   hier eine Adresse, die immer mit einer Absage antwortet. */
+if (wp_ww_moeglich($wp_cfg['hersteller'])) { ?>
+  <?= wp_t('LOX.S4_WW') ?>
+  <div class="sm-pre"><?= wp_e(wp_endpunkt('ww_boost')) ?>&amp;ein=1<br><?= wp_e(wp_endpunkt('ww_boost')) ?>&amp;ein=0</div>
+<?php } else { ?>
+  <div class="sm-hilfe"><?= sprintf(wp_t('LOX.S4_WW_NICHT'), wp_e($wp_info ? $wp_info['name'] : '?')) ?></div>
+<?php } ?>
+  <?= wp_t('LOX.S4_SELFTEST') ?>
+  <div class="sm-pre"><?= wp_e(wp_endpunkt('status')) ?>&amp;selftest=1</div>
 </div>
 <div class="sm-step"><b>5.</b> <?= wp_t('LOX.S5') ?></div>
 
@@ -1085,7 +1186,7 @@ foreach ($wp_pr as $wp_z) { if ($wp_z[0] === 0) { $wp_schlecht++; } }
 </div>
 
 <div class="sm-knopfreihe">
-<?php /* Klasse woertlich, nicht zusammengesetzt: alle drei sind Lese-Knoepfe,
+<?php /* Klasse woertlich, nicht zusammengesetzt: alle sind Lese-Knoepfe,
    und hausstandard_pruefen.py kann zusammengesetzte Klassen nicht sehen. */
 foreach (array('geraete', 'abruf', 'zeile') as $wp_a) { ?>
 <form action="index.php" method="post" style="margin:0;"><input data-role="none" type="hidden" name="activetab" value="tab-test">
@@ -1104,9 +1205,21 @@ foreach ($wp_technik as $wp_a) { ?>
   <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="test" value="<?= $wp_a ?>"><?= wp_e(wp_t('TEST.K_' . strtoupper($wp_a))) ?></button>
 </form>
 <?php } ?>
+</div>
+
+<?php /* Die Vorschau steht VOR dem Abschnitt "Schalten" und ist gruen: sie
+   liest nur. Sie geht denselben Weg wie der Ernstfall, aber die acht
+   Schreibstellen geben "PROBE" zurueck, statt zu senden - siehe wp_probe().
+   Wer wissen will, was Stufe 3 an SEINER Anlage ausloest, muss sie damit nicht
+   mehr umfahren. */ ?>
+<h3><?= wp_e(wp_t('TEST.H_PROBE')) ?></h3>
+<div class="sm-step"><?= wp_t('TEST.PROBE_TEXT') ?></div>
+<div class="sm-knopfreihe">
+<?php for ($wp_p = 1; $wp_p <= WP_STUFEN; $wp_p++) { ?>
 <form action="index.php" method="post" style="margin:0;"><input data-role="none" type="hidden" name="activetab" value="tab-test">
-  <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="test" value="token"><?= wp_e(wp_t('TEST.K_TOKEN')) ?></button>
+  <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="test" value="probe<?= $wp_p ?>"><?= sprintf(wp_e(wp_t('TEST.K_PROBE')), $wp_p) ?></button>
 </form>
+<?php } ?>
 </div>
 
 <h3><?= wp_e(wp_t('TEST.H_SCHALTEN')) ?></h3>
@@ -1117,6 +1230,38 @@ foreach ($wp_technik as $wp_a) { ?>
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="test" value="sg<?= $wp_s ?>"><?= $wp_s ?> &mdash; <?= wp_e(wp_t('SG.STUFE' . $wp_s)) ?></button>
 </form>
 <?php } ?>
+</div>
+
+<?php /* Warmwasser-Zwangsladung als eigene Reihe - sie ist NICHT an SG Ready
+   gebunden und im Sommer der haeufigste Anwendungsfall: Speicher mit
+   PV-Ueberschuss laden, Heizkreis in Ruhe lassen. Orange, weil sie sofort
+   wirkt. Nur dort, wo der Hersteller es kann; bei myUplink gaebe es sonst
+   einen Knopf, der nur absagt. */
+if (wp_ww_moeglich($wp_cfg['hersteller'])) { ?>
+<div class="sm-hilfe"><?= wp_t('TEST.WW_TEXT') ?></div>
+<div class="sm-knopfreihe">
+<?php foreach (array('ww_ein', 'ww_aus') as $wp_wa) { ?>
+<form action="index.php" method="post" style="margin:0;"><input data-role="none" type="hidden" name="activetab" value="tab-test">
+  <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="test" value="<?= $wp_wa ?>"><?= wp_e(wp_t('TEST.K_' . strtoupper($wp_wa))) ?></button>
+</form>
+<?php } ?>
+</div>
+<?php } ?>
+
+<?php /* "Token neu erzeugen" steht BEWUSST hier und nicht in der grauen Reihe
+   der technischen Auskuenfte. Er liest nicht: er macht jede Adresse
+   ungueltig, die im Miniserver steht, und danach holt kein virtueller Eingang
+   mehr einen Wert, bis der Nutzer alle Adressen in Loxone Config nachgezogen
+   hat. Die Trennlinie zwischen Gruen und Orange ist nach der Hauslinie nicht
+   "hat eine Wirkung", sondern "kann den Betrieb stoeren".
+   Bis 0.9.10 war er grau und stand unter der Legende "Technische Auskunft -
+   fuer die Fehlersuche"; derselbe Griff hat im Dashboard einmal jedes Tablet
+   ausgesperrt. Und der Hinweis steht DANEBEN, nicht erst nach dem Klick. */ ?>
+<div class="sm-warnung"><?= wp_t('TEST.WARNUNG_TOKEN') ?></div>
+<div class="sm-knopfreihe">
+<form action="index.php" method="post" style="margin:0;"><input data-role="none" type="hidden" name="activetab" value="tab-test">
+  <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="test" value="token"><?= wp_e(wp_t('TEST.K_TOKEN')) ?></button>
+</form>
 </div>
 
 <?php if ($wp_testausgabe !== '') { ?>
@@ -1150,7 +1295,11 @@ $wp_zeilen = is_file($wp_logdatei) ? array_reverse(wp_log_ende($wp_logdatei, 200
 if (!$wp_zeilen) { ?>
 <div class="sm-hinweis"><?= wp_e(wp_t('LOG.LEER')) ?></div>
 <?php } else { ?>
-<div class="sm-pre"><pre><?= wp_e(implode('', $wp_zeilen)) ?></pre></div>
+<?php /* implode mit "\n", NICHT mit "" - wp_log_ende() gibt die Zeilen ueber
+   array_map('rtrim', ...) OHNE Zeilenende zurueck. Bis 0.9.10 klebte hier das
+   ganze Protokoll zu einer einzigen Zeile zusammen, und der Fehlercode
+   verschmolz mit dem naechsten Zeitstempel zu "HTTP_4012026-08-16". */ ?>
+<div class="sm-pre"><pre><?= wp_e(implode("\n", $wp_zeilen)) ?></pre></div>
 <?php } ?>
 <form action="index.php" method="post">
   <input data-role="none" type="hidden" name="activetab" value="tab-log">

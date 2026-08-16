@@ -265,10 +265,105 @@ function wp_pruefungen()
     $z[] = wp_pruefzeile($gut ? 1 : 0, wp_t('TEST.F_VORLAGE'),
         $gut ? wp_t('TEST.A_VORLAGE_OK') : wp_t('TEST.A_VORLAGE_KAPUTT'));
 
+    /* ---- Verdichtertakt: wird er ueberhaupt gezaehlt, und wie fein? ----
+     *
+     * Der Zaehler kostet keinen zusaetzlichen Abruf, aber er sieht genauer aus,
+     * als er ist: gezaehlt wird im Abruftakt, und ein Verdichterlauf, der
+     * kuerzer ist als dieser Takt, faellt zwischen zwei Abrufe. TAKTE ist
+     * deshalb eine Untergrenze. Das gehoert vor die Augen des Anwenders und
+     * nicht in eine Fussnote - sonst hielte er die Zahl fuer eine Messung. */
+    $kandidaten = wp_kandidaten('KOMPRESSOR', $cfg);
+    if (!$kandidaten) {
+        $z[] = wp_pruefzeile(-1, wp_t('TEST.F_TAKT_ZAEHLER'),
+            sprintf(wp_t('TEST.A_TAKT_KEIN_FELD'), wp_e($info['name'])));
+    } elseif (!isset($stand['werte']['KOMPRESSOR'])) {
+        $z[] = wp_pruefzeile(0, wp_t('TEST.F_TAKT_ZAEHLER'), wp_t('TEST.A_TAKT_NOCH_NICHTS'));
+    } else {
+        $t = isset($stand['takt_zaehler']) && is_array($stand['takt_zaehler'])
+            ? $stand['takt_zaehler'] : array();
+        $z[] = wp_pruefzeile(1, wp_t('TEST.F_TAKT_ZAEHLER'),
+            sprintf(wp_t('TEST.A_TAKT_OK'),
+                (int) (isset($t['starts']) ? $t['starts'] : 0),
+                (int) $cfg['takt'],
+                (int) round((int) $cfg['takt'] / 60)));
+    }
+
+    /* ---- Reiterleiste, Bereiche und Positivliste stimmen ueberein? ----
+     *
+     * Diese Zeile ist der Ersatz fuer eine Pruefung, die es nicht mehr gibt:
+     * Leiste und Bereiche werden in index.php aus EINEM Feld erzeugt, und
+     * hausstandard_pruefen.py findet die Reiter deshalb nicht mehr - es meldet
+     * "trifft nicht zu" statt "geprueft". Ein Kreuz an der ersten Stelle einer
+     * Pruefkette, das nichts bedeutet, ist schlimmer als keine Pruefung.
+     *
+     * Die Aufloesung nach REGELN_1, Abschnitt 11, lautet: ausschreiben ODER die
+     * Uebereinstimmung im Reiter Test pruefen lassen. Hier steht das Zweite. */
+    $quelle = @file_get_contents(__DIR__ . '/index.php');
+    if ($quelle === false) {
+        $z[] = wp_pruefzeile(0, wp_t('TEST.F_REITER'), wp_t('TEST.A_REITER_UNLESBAR'));
+    } else {
+        $liste = array();
+        if (preg_match('/\$wp_reiter_ids\s*=\s*array\(([^)]*)\)/', $quelle, $m)) {
+            preg_match_all("/'([a-z0-9]+)'/", $m[1], $mm);
+            $liste = $mm[1];
+        }
+        preg_match_all('/id="tab-([a-z0-9]+)"/', $quelle, $mb);
+        $bereiche = array_values(array_unique($mb[1]));
+
+        /* Die Beschriftung wird aus der ECHTEN Zuordnung in index.php gelesen,
+         * nicht aus strtoupper($r) geraten: der Reiter heisst 'settings', sein
+         * Schluessel aber REITER.EINSTELLUNGEN. Der erste Entwurf dieser
+         * Pruefung hat genau das geraten und daraufhin dauerhaft ein Kreuz
+         * gezeigt - ein Kreuz an der ersten Stelle einer Pruefkette, das nichts
+         * bedeutet, ist schlimmer als keine Pruefung. Gemessen am 16.08.2026. */
+        $schluessel = array();
+        if (preg_match('/\$wp_beschriftung\s*=\s*array\((.*?)\);/s', $quelle, $mz)) {
+            preg_match_all("/'([a-z0-9]+)'\s*=>\s*'(REITER\.[A-Z0-9_]+)'/", $mz[1], $ms,
+                           PREG_SET_ORDER);
+            foreach ($ms as $paar) { $schluessel[$paar[1]] = $paar[2]; }
+        }
+        $fehlend = array();
+        foreach ($liste as $r) {
+            if (!isset($schluessel[$r]) || wp_t($schluessel[$r]) === $schluessel[$r]) {
+                $fehlend[] = $r;
+            }
+        }
+        sort($liste); sort($bereiche);
+        $gleich = $liste && $liste === $bereiche && !$fehlend;
+        $z[] = wp_pruefzeile($gleich ? 1 : 0, wp_t('TEST.F_REITER'),
+            $gleich ? sprintf(wp_t('TEST.A_REITER_OK'), count($liste))
+                    : sprintf(wp_t('TEST.A_REITER_ABWEICHUNG'),
+                        wp_e(implode(', ', $liste)), wp_e(implode(', ', $bereiche)),
+                        wp_e($fehlend ? implode(', ', $fehlend) : '-')));
+    }
+
+    /* ---- Stoerungen in Folge ---- */
+    $folge = (int) (isset($stand['fehler_folge']) ? $stand['fehler_folge'] : 0);
+    if ($folge === 0) {
+        $z[] = wp_pruefzeile((int) $stand['zeit'] > 0 ? 1 : -1, wp_t('TEST.F_STOERUNG'),
+            (int) $stand['zeit'] > 0 ? wp_t('TEST.A_STOERUNG_KEINE')
+                                     : wp_t('TEST.A_STOERUNG_NOCH_NICHTS'));
+    } else {
+        $z[] = wp_pruefzeile(0, wp_t('TEST.F_STOERUNG'),
+            sprintf(wp_t('TEST.A_STOERUNG'), $folge,
+                wp_e((string) (isset($stand['fehler_letzt']) ? $stand['fehler_letzt'] : '?')),
+                (int) $folge * max(1, (int) $cfg['takt']) / 60));
+    }
+
     /* ---- Token ---- */
     $gut = preg_match('/^[A-Za-z0-9]{24,}$/', (string) $cfg['aktionstoken']) ? 1 : 0;
     $z[] = wp_pruefzeile($gut, wp_t('TEST.F_TOKEN'),
         $gut ? wp_t('TEST.A_TOKEN_OK') : wp_t('TEST.A_TOKEN_FEHLT'));
+
+    /* ---- Selbsttest des Endpunkts ----
+     *
+     * Die Adresse gehoert sichtbar hierher, nicht nur in die Hilfe: sie ist der
+     * einzige Weg, die im Miniserver eingetragene Adresse zu pruefen, OHNE die
+     * Waermepumpe zu schalten. */
+    if ($gut) {
+        $z[] = wp_pruefzeile(1, wp_t('TEST.F_SELFTEST'),
+            sprintf(wp_t('TEST.A_SELFTEST'), wp_e(wp_endpunkt('status') . '&selftest=1')));
+    }
 
     return $z;
 }
@@ -380,6 +475,61 @@ function wp_test_aktion($was, $zusatz = '')
             }
             return array(1, sprintf(wp_t('TEST.M_SG_OK'), $stufe,
                 wp_e(wp_t('SG.STUFE' . $stufe)), wp_e($getan)));
+
+        case 'ww_ein':
+        case 'ww_aus':
+            if (!wp_ww_moeglich($cfg['hersteller'])) {
+                $wpi = wp_hersteller_info($cfg['hersteller']);
+                return array(0, sprintf(wp_t('TEST.M_WW_NICHT'), wp_e($wpi ? $wpi['name'] : '?')));
+            }
+            $ein = ($was === 'ww_ein');
+            list($ok, $grund, $wastext) = wp_ww_boost($cfg, $ein);
+            if (!$ok) {
+                return array(0, sprintf(wp_t('TEST.M_WW_FEHL'),
+                    wp_t($ein ? 'TEST.WW_EIN' : 'TEST.WW_AUS'), wp_e(wp_meld($grund))));
+            }
+            wp_log('Warmwasser-Zwangsladung ueber den Reiter Test ' . ($ein ? 'ein' : 'aus'));
+            return array(1, sprintf(wp_t('TEST.M_WW_OK'),
+                wp_t($ein ? 'TEST.WW_EIN' : 'TEST.WW_AUS'), wp_e($wastext)));
+
+        case 'probe1':
+        case 'probe2':
+        case 'probe3':
+        case 'probe4':
+            /* Vorschau: was WUERDE dieser Zustand an dieser Anlage ausloesen?
+             *
+             * Es wird derselbe Weg gegangen wie im Ernstfall - wp_sg_anwenden()
+             * baut die Beschreibung wie immer -, nur geben die acht
+             * Schreibstellen "PROBE" zurueck, statt zu senden. Die Konfiguration
+             * wird NICHT angefasst: sg_stufe und sg_angefordert bleiben, wie sie
+             * sind, sonst waere die Vorschau selbst eine Anforderung.
+             *
+             * try/finally, damit der Schalter auch dann zurueckfaellt, wenn in
+             * der Tiefe eine Ausnahme fliegt. Bliebe er stehen, wuerde der
+             * naechste echte Schaltbefehl im selben Prozess still nichts tun -
+             * ein Befehl, der genau dann nichts tut, wenn er gebraucht wird. */
+            $stufe = (int) substr($was, 5);
+            $ok = 0; $grund = 'AUSNAHME'; $getan = '';
+            wp_probe(true);
+            try {
+                list($ok, $grund, $getan) = wp_sg_anwenden($cfg, $stufe, wp_stand());
+            } catch (Exception $e) {
+                $grund = $e->getMessage();
+            } finally {
+                /* IMMER zuruecksetzen. Bliebe der Schalter stehen, taete der
+                 * naechste echte Schaltbefehl im selben Prozess still nichts -
+                 * ein Befehl, der genau dann nichts tut, wenn er gebraucht
+                 * wird, ist schlimmer als keiner. */
+                wp_probe(false);
+            }
+            if (!$ok) {
+                return array(0, sprintf(wp_t('TEST.M_PROBE_FEHL'), $stufe, wp_e(wp_meld($grund))));
+            }
+            $wpi = wp_hersteller_info($cfg['hersteller']);
+            return array(1, sprintf(wp_t('TEST.M_PROBE_OK'), $stufe,
+                wp_e(wp_t('SG.STUFE' . $stufe)), wp_e($wpi ? $wpi['name'] : '?'),
+                wp_e($getan !== '' ? $getan : wp_t('TEST.PROBE_NICHTS')),
+                wp_t(wp_sg_echt($cfg['hersteller']) ? 'TEST.PROBE_ECHT' : 'TEST.PROBE_NACHBILDUNG')));
 
         case 'token':
             $neu = wp_config();

@@ -50,6 +50,144 @@ Ein Knopf im Reiter *Test* fragt das Gateway, **was sich schreiben lässt**
 Liste kommt vom Gerät und stimmt auch bei einem Modell, das dieses Plugin nie
 gesehen hat.
 
+## Neu in 0.9.11
+
+Diese Fassung behebt **vier Fehler, die im Betrieb Schaden anrichten**, und
+nimmt sieben Funktionen auf. Alles darunter ist nachgemessen, nicht abgeleitet —
+einschließlich des einen Punktes, der bis zuletzt offen war und am Gerät selbst
+beantwortet wurde (siehe *Die MELCloud-Bitmaske* am Ende dieses Abschnitts).
+
+### Vier Fehler, die repariert werden mussten
+
+**Die Deinstallation hat den Datenordner *aller* Plugins gelöscht.**
+`uninstall/uninstall` bildete `DATADIR="${LBPDATA:-…}"` ohne Pluginordner.
+`LBPDATA` ist die Umgebungsvariable des *Installers* und zeigt auf
+`<home>/data/plugins` — ohne den Ordnernamen. Das `rm -rf` traf damit das
+gemeinsame Verzeichnis: Zwischenstände, Token-Dateien und Anmeldemarken jedes
+installierten Plugins. `2>/dev/null` verschluckte jede Meldung, und das Skript
+meldete danach `<OK>`. In einer Attrappe nachgestellt: vier Plugins drin, vier
+Plugins weg. Dieselbe Verwechslung steckte in `postinstall.sh`, `preupgrade.sh`
+und `postupgrade.sh` — die Sicherung vor einem Update sicherte deshalb zwei
+Streudateien und meldete dafür Erfolg. Alle vier Stellen hängen den Ordner
+jetzt an, und vor dem `rm -rf` steht eine Prüfung, die abweist statt zu raten.
+
+**Der Loxone-Endpunkt hat auf keiner Installation je funktioniert.**
+`webfrontend/html/index.php` suchte seine Bibliothek über
+`dirname(__DIR__) . '/htmlauth/wp_lib.php'`. Im entpackten Archiv geht das auf,
+auf dem installierten LoxBerry liegen `html/` und `htmlauth/` in getrennten
+Bäumen — der Aufruf endete dort mit einem fatalen Fehler, Rückgabewert 255 und
+**leerer** Antwort, weil `display_errors` zwei Zeilen vorher abgeschaltet wird.
+Betroffen waren beide Richtungen: die Statuszeile *und* das Schalten über die
+vier virtuellen Ausgänge. Der virtuelle Eingang behielt seinen letzten Wert, und
+in der App sah alles normal aus. Dieselbe Zeile hatte bis 0.9.8 den Abrufdienst
+lahmgelegt und wurde dort mit 0.9.9 berichtigt — die zweite Stelle blieb stehen.
+Jetzt gilt dieselbe Kandidatenliste; findet keiner die Bibliothek, antwortet der
+Endpunkt mit `WP;OK=0;GRUND=BIBLIOTHEK_FEHLT` und nennt die gesuchten Pfade.
+
+**Der Menüeintrag zeigte `ARRAY(0x…)`.** Der `TITLE` in `plugin.cfg` enthielt
+Kommas. `plugininstall.pl` liest die Datei mit Config::Simple, und dessen
+`parse_ini_file` zerlegt jeden Wert an `\s*,\s*` zu einer Liste; `param()` gibt
+eine mehrelementige Liste im skalaren Kontext als Referenz zurück. Die landete
+als Titel in der Plugin-Datenbank, und `plugininstall.cgi` brach mit
+*„attempt to set parameter 'plugindb_title' with an array ref"* ab. Der Titel
+heißt jetzt **Wärmepumpe Cloud** — kommafrei und unter der Grenze von 25
+Zeichen, ab der der Installer kürzt.
+
+**Drei virtuelle Eingänge bekamen nie einen Wert, und MQTT schwieg bei
+Störungen.** Die Loxone-Vorlage und die Themen-Tabelle liefen über
+`wp_statusfelder()`, die Statuszeile aber über `wp_felder()` — `COP`, `STROM`
+und `WAERME` standen deshalb in der Importdatei und kamen in der Zeile nie vor.
+Umgekehrt fehlte `ALTER` über MQTT, und der MQTT-Block stand innerhalb von
+`if ($erg['ok'])`: auf dem Weg, den dieses Plugin selbst den Regelweg nennt, kam
+bei einer Störung **nichts** an. Beides hat jetzt **eine** Quelle,
+`wp_ausgabewerte()`.
+
+### Sieben neue Funktionen
+
+| Funktion | Was sie beantwortet |
+|---|---|
+| **Verdichtertakt** (`WP_TAKTE`, `WP_LAUFZEIT`, `WP_LAUFANTEIL`) | Wie oft startet der Verdichter, wie lang läuft er? Häufiges Takten ist der teuerste Betriebsfehler und in keiner Hersteller-App zu sehen |
+| **Spreizung** (`WP_SPREIZUNG`) | Vorlauf minus Rücklauf — die Zahl für Volumenstrom und Pumpe |
+| **Störungszähler** (`WP_STOERUNG`) | Fehlgeschlagene Abrufe **in Folge**: trennt „hakt kurz" von „seit Stunden tot" |
+| **`?selftest=1`** | Prüft das Token, **ohne zu schalten** |
+| **Wirksamkeitsnachweis** | Was Vorlauf und Leistungsaufnahme vor einem SG-Ready-Wechsel waren — und 15 Minuten danach |
+| **Vorschau** | Was Zustand 1 bis 4 an *dieser* Anlage auslösen würde, ohne etwas zu senden |
+| **Warmwasser-Zwangsladung** (`WP_WW_BOOST`) | Speicher aus PV-Überschuss laden, ohne den Heizkreis anzufassen |
+
+**Zum Verdichtertakt gehört eine Einschränkung, und sie steht auch in der
+Oberfläche:** gezählt wird im Abruftakt. Ein Verdichterlauf, der kürzer ist als
+dieser Takt, fällt zwischen zwei Abrufe. `WP_TAKTE` ist deshalb eine
+**Untergrenze**, keine genaue Zahl. Wer genau zählen will, legt den
+Verdichterkontakt auf einen Digitaleingang des Miniservers.
+
+**Die Vorschau geht denselben Weg wie der Ernstfall.** Nicht eine zweite
+Beschreibungsfunktion — die liefe früher oder später auseinander, und dann
+zeigte die Vorschau etwas anderes an, als der Ernstfall tut. Statt dessen geben
+die acht Schreibstellen im Probemodus `PROBE` zurück. Gemessen gegen ein
+Gerät, das Zugriffe mitschreibt: Vorschau **0** Zugriffe, Ernstfall **3** — bei
+wortgleicher Beschreibung.
+
+**Die Warmwasser-Zwangsladung gibt es nicht bei myUplink.** Für Nibe ist in
+diesem Plugin kein belegter Parameter dafür hinterlegt. Der Endpunkt antwortet
+dort mit `HTTP 501 … GRUND=NICHT_UNTERSTUETZT`, und die Importdatei enthält den
+Ausgang gar nicht erst — ein Baustein, der nur Absagen erntet, wäre schlimmer
+als keiner. Eine geratene Parameternummer stünde in Loxone und sähe aus wie eine
+Funktion.
+
+### Fünf weitere Korrekturen
+
+* **Der unangemeldete Endpunkt schrieb.** Ein Aufruf ganz ohne Token legte zwei
+  Dateien an und erzeugte das Aktionstoken. Er liest jetzt nur.
+* **Eingaben wurden still zurechtgebogen.** Aus `wärmepumpe/haus` wurde
+  `wrmepumpe/haus`, und der Benutzer las „Einstellungen gespeichert." Dasselbe
+  traf Geräte-, Gebäude- und System-Kennung. Wird jetzt abgewiesen und benannt.
+* **Eine Beanstandung verhinderte das Speichern *aller* Felder.** Ein Heizkreis
+  von 99 warf den im selben Formular gültig geänderten Takt weg. Gemeldet wird
+  weiter, blockiert nicht mehr.
+* **Der Reiter Logdateien zeigte alles in einer Zeile**, weil `implode('')`
+  zusammenklebte, was `rtrim` von den Zeilenenden befreit hatte.
+* **Der Ersatzweg ohne `php-curl` folgte Umleitungen** und schickte
+  `Authorization: Bearer …` an das Umleitungsziel erneut mit. Gemessen gegen
+  einen Server, der `/a` auf `/b` umleitet.
+
+Dazu: die Nebendatei beim atomaren Schreiben trägt jetzt die Prozessnummer
+(drei Prozesse schreiben dieselben Dateien), die Rechte werden **vor** dem
+Inhalt gesetzt, der Knopf *Token neu erzeugen* ist orange statt grau, und die
+Zweitschrift der Konfiguration überlebt die Deinstallation nicht mehr — sie
+holte bisher bei einer Neuinstallation den alten Stand samt Token zurück.
+
+### Die MELCloud-Bitmaske — nachgemessen, kein Befund
+
+`wp_ml_flags()` führt zwei Werte, die oberhalb von `PHP_INT_MAX` einer
+**32-Bit**-Ganzzahl liegen (`SetTemperatureZone1` = 8 589 934 592 und
+`SetTankWaterTemperature` = 281 474 976 710 688). Auf einem 32-Bit-PHP würde der
+Übersetzer daraus Gleitkommazahlen machen, und die `EffectiveFlags` wären dann
+womöglich falsch — MELCloud übernähme das betroffene Feld stillschweigend nicht,
+und der Schreibbefehl meldete trotzdem HTTP 200.
+
+**Am Gerät gemessen (16.08.2026, LoxBerry 4.0.0.14):**
+
+```
+$ php -r 'echo PHP_INT_SIZE, "\n";'
+8
+```
+
+Damit ist `PHP_INT_MAX` = 9 223 372 036 854 775 807 — vier Größenordnungen über
+dem größten Flaggenwert. Gegengerechnet unter PHP 7.4.33 und 8.4.24: alle fünf
+Flaggen bleiben `integer`, und die Masken, die dieses Plugin tatsächlich bildet,
+kommen als Ganzzahlen heraus:
+
+| Fall | `EffectiveFlags` |
+|---|---|
+| Sperre (Zustand 1) | `1` |
+| Warmwasser-Zwangsladung | `65536` |
+| Anheben (Zustand 3 und 4) | `8589934593` |
+| Anheben mit Warmwasser | `281483566710817` |
+
+**Der Verdacht hat sich damit aufgelöst.** Er stünde hier trotzdem, wenn jemand
+dieses Plugin auf einem 32-Bit-System betreibt — dort wäre die Rechnung erneut
+zu führen.
+
 ## Neu in 0.9.9
 
 **Der Abrufdienst konnte nie starten.** `bin/wp_abruf.php` suchte seine Programmbibliothek

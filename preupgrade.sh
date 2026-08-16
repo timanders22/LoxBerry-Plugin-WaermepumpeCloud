@@ -32,9 +32,14 @@ ARGV3=$3
 ARGV5=$5
 ARGV6=$6
 
-PFOLDER="${ARGV3:-waermepumpecloud}"
+PFOLDER="${ARGV3:-waermepumpe}"
 BASE="${ARGV5:-$LBHOMEDIR}"
-CFGDIR="${LBPCONFIG:-$BASE/config/plugins/$PFOLDER}"
+# $LBPCONFIG zeigt auf <home>/config/plugins, OHNE Pluginordner - deshalb wird
+# er angehaengt. Bis 0.9.10 stand er nur im Rueckfallzweig; war die Variable
+# gesetzt (der Regelfall), sicherte dieses Skript zwei Streudateien eine Ebene
+# darueber und meldete dafuer "<OK> 2 Datei(en) gesichert". Eine Sicherung,
+# die Erfolg meldet und das Falsche sichert, ist schlimmer als keine.
+CFGDIR="${LBPCONFIG:-$BASE/config/plugins}/$PFOLDER"
 
 if [ -n "$ARGV6" ] && [ -d "$ARGV6" ]; then
     SICHERUNG="$ARGV6/waermepumpe_upgrade"

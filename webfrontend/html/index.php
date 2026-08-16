@@ -26,7 +26,50 @@ ini_set('display_errors', '0');
 header('Cache-Control: no-store');
 header('Content-Type: text/plain; charset=utf-8');
 
-require_once dirname(__DIR__) . '/htmlauth/wp_lib.php';
+/* Die Bibliothek wird gesucht, nicht geraten - dieselbe Kandidatenliste wie in
+ * bin/wp_abruf.php, und aus demselben Grund.
+ *
+ * Im entpackten Archiv liegen html/ und htmlauth/ nebeneinander, auf dem
+ * INSTALLIERTEN LoxBerry in getrennten Baeumen:
+ *
+ *     /opt/loxberry/webfrontend/html/plugins/<ordner>/index.php
+ *     /opt/loxberry/webfrontend/htmlauth/plugins/<ordner>/wp_lib.php
+ *
+ * dirname(__DIR__) ergibt dort /opt/loxberry/webfrontend/html/plugins - gesucht
+ * wurde also .../html/plugins/htmlauth/wp_lib.php. Die gibt es nicht. Weil
+ * display_errors oben schon auf 0 steht, endete der Aufruf mit HTTP 500 und
+ * LEEREM Rumpf: der virtuelle Eingang in Loxone behielt seinen letzten Wert,
+ * und in der App sah alles normal aus.
+ *
+ * Dieselbe Zeile hatte bis 0.9.8 den Abrufdienst lahmgelegt; dort wurde sie mit
+ * 0.9.9 berichtigt, hier nicht. Fehlerklasse Heimkino/Docker-NG.
+ */
+$wp_lb = getenv('LBHOMEDIR');
+$wp_ordner = getenv('LBPPLUGINDIR') ?: basename(__DIR__);
+$wp_kandidaten = array();
+if ($wp_lb) {
+    $wp_kandidaten[] = $wp_lb . '/webfrontend/htmlauth/plugins/' . $wp_ordner . '/wp_lib.php';
+}
+// installiert, ohne dass die Umgebungsvariablen gesetzt waeren:
+// .../webfrontend/html/plugins/<ordner>  ->  .../webfrontend/htmlauth/plugins/<ordner>
+$wp_kandidaten[] = dirname(dirname(dirname(__DIR__)))
+                 . '/htmlauth/plugins/' . basename(__DIR__) . '/wp_lib.php';
+// entpacktes Archiv: html/ und htmlauth/ liegen nebeneinander
+$wp_kandidaten[] = dirname(__DIR__) . '/htmlauth/wp_lib.php';
+
+$wp_lib = '';
+foreach ($wp_kandidaten as $wp_kand) {
+    if (is_file($wp_kand)) { $wp_lib = $wp_kand; break; }
+}
+if ($wp_lib === '') {
+    /* Nicht stillschweigend sterben. Loxone liest diese Zeile, und ein
+     * benannter Fehler ist dort etwas voellig anderes als ein leerer Rumpf. */
+    http_response_code(500);
+    echo "WP;OK=0;GRUND=BIBLIOTHEK_FEHLT\n";
+    foreach ($wp_kandidaten as $wp_kand) { echo '# gesucht: ' . $wp_kand . "\n"; }
+    exit;
+}
+require_once $wp_lib;
 
 function wp_ende($code, $text)
 {
@@ -35,16 +78,43 @@ function wp_ende($code, $text)
     exit;
 }
 
-$cfg = wp_config();
+/* NUR LESEN. Der unangemeldete Bereich legt kein Token an und schreibt
+ * ueberhaupt nichts - siehe die Begruendung an wp_config(). */
+$cfg = wp_config(false);
+
+$soll = (string) $cfg['aktionstoken'];
+$ist  = isset($_GET['token']) && !is_array($_GET['token']) ? (string) $_GET['token'] : '';
+
+/* ---------------- Selbsttest ----------------
+ *
+ * Ein Token muss sich pruefen lassen, OHNE dass etwas passiert.
+ *
+ * Ohne diesen Zweig gibt es nur zwei schlechte Moeglichkeiten: entweder man
+ * setzt wirklich einen SG-Ready-Zustand ab - dann faehrt die Waermepumpe um -,
+ * oder man erfaehrt nie, ob die Adresse im Miniserver noch stimmt. Beides ist
+ * unbrauchbar, wenn man eine Anlage pruefen will.
+ *
+ * Steht bewusst VOR der Token-Abweisung, weil er den Fall "gar kein Token
+ * eingerichtet" von "falsches Token" unterscheiden koennen muss. Die drei
+ * Antworten sind woertlich die des Hausstandards - sie werden von aussen
+ * ausgewertet und sind deshalb kein Ort fuer eigene Formulierungen.
+ */
+if (isset($_GET['selftest'])) {
+    if ($soll === '') {
+        wp_ende(403, 'SELFTEST;OK=0;ERR=KEIN_TOKEN_EINGERICHTET');
+    }
+    if (!hash_equals($soll, $ist)) {
+        wp_ende(403, 'SELFTEST;OK=0;ERR=TOKEN');
+    }
+    wp_ende(200, 'SELFTEST;OK=1;TOKEN=OK');
+}
 
 /* ---------------- Token ---------------- */
-$soll = (string) $cfg['aktionstoken'];
-$ist  = isset($_GET['token']) ? (string) $_GET['token'] : '';
 if ($soll === '' || !hash_equals($soll, $ist)) {
     wp_ende(403, 'WP;OK=0;GRUND=TOKEN');
 }
 
-$erlaubte_aktionen = array('status', 'sgready', 'werte');
+$erlaubte_aktionen = array('status', 'sgready', 'werte', 'ww_boost');
 $aktion = isset($_GET['aktion']) ? (string) $_GET['aktion'] : 'status';
 if (!in_array($aktion, $erlaubte_aktionen, true)) {
     wp_ende(400, "WP;OK=0;GRUND=UNBEKANNTE_AKTION\n"
@@ -70,6 +140,36 @@ if ($aktion === 'werte') {
         'werte'  => $s['werte'],
     ), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) . "\n";
     exit;
+}
+
+/* ---------------- ww_boost ----------------
+ *
+ * Die Warmwasser-Zwangsladung getrennt von SG Ready. Im Sommer will man den
+ * Speicher mit PV-Ueberschuss laden und den Heizkreis in Ruhe lassen; ueber
+ * Zustand 4 ginge beides nur zusammen.
+ *
+ * Bewusst NICHT an sg_ein gebunden: wer SG Ready abgeschaltet hat, kann den
+ * Speicher trotzdem laden wollen. Das ist eine andere Entscheidung.
+ */
+if ($aktion === 'ww_boost') {
+    if (!wp_ww_moeglich($cfg['hersteller'])) {
+        wp_ende(501, 'WP;OK=0;AKTION=ww_boost;GRUND=NICHT_UNTERSTUETZT'
+                     . ';HERSTELLER=' . preg_replace('/[^a-z]/', '', (string) $cfg['hersteller']));
+    }
+    if (isset($_GET['ein']) && is_array($_GET['ein'])) {
+        wp_ende(400, 'WP;OK=0;AKTION=ww_boost;GRUND=EIN_UNGUELTIG');
+    }
+    $roh = isset($_GET['ein']) ? (string) $_GET['ein'] : '1';
+    if (!preg_match('/^[01]$/', $roh)) {
+        wp_ende(400, 'WP;OK=0;AKTION=ww_boost;GRUND=EIN_UNGUELTIG');
+    }
+    $ein = (int) $roh;
+    list($ok, $grund, $was) = wp_ww_boost($cfg, $ein === 1);
+    if (!$ok) {
+        wp_ende(502, 'WP;OK=0;AKTION=ww_boost;EIN=' . $ein . ';GRUND=' . $grund);
+    }
+    wp_log('Warmwasser-Zwangsladung ueber den Endpunkt ' . ($ein ? 'ein' : 'aus') . ' (' . $was . ')');
+    wp_ende(200, 'WP;OK=1;AKTION=ww_boost;EIN=' . $ein);
 }
 
 /* ---------------- sgready ---------------- */

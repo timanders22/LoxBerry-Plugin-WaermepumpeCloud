@@ -32,6 +32,10 @@
  * schlimmer als keine.
  */
 
+// Die Fassung steht an EINER Stelle. Bis 0.9.10 trug der User-Agent fest die
+// 0.9.2, waehrend die plugin.cfg laengst 0.9.10 fuehrte - wer beim Hersteller
+// ein Protokoll liest, ordnet Meldungen dann der falschen Fassung zu.
+define('WP_FASSUNG', '0.9.11');
 define('WP_STUFEN', 4);          // SG Ready kennt genau vier Zustaende
 define('WP_SPERRE_MAX', 120);    // Minuten, danach faellt die Sperre von selbst
 define('WP_ZUORDNUNG_MAX', 4000);
@@ -425,7 +429,11 @@ function wp_vorgaben()
     );
 }
 
-function wp_config()
+/**
+ * @param bool $token_anlegen  Nur die angemeldete Oberflaeche darf das
+ *                             Aktionstoken erzeugen - siehe unten.
+ */
+function wp_config($token_anlegen = true)
 {
     $p = wp_paths();
     // Selbstheilung: fehlende oder leere Konfiguration aus der Zweitschrift
@@ -495,9 +503,26 @@ function wp_config()
         }
     }
 
+    /* Das Aktionstoken wird nur aus der ANGEMELDETEN Oberflaeche heraus
+     * angelegt, nie aus dem Endpunkt.
+     *
+     * Bis 0.9.10 stand hier keine Bedingung. Damit loeste ein Aufruf von
+     * /plugins/<ordner>/index.php - ohne jede Anmeldung, ohne Token, ohne
+     * gueltige Aktion - zwei Schreibvorgaenge auf der Karte aus und erzeugte
+     * das Token, bevor der Betreiber die Oberflaeche je geoeffnet hatte.
+     * Gemessen am 16.08.2026: leerer Konfigordner vorher, 736 Byte plus
+     * Zweitschrift nachher. Fehlerklasse rk_token() (Raumklima, 10.08.2026).
+     *
+     * Fehlt das Token, bleibt es leer - und der Endpunkt weist ab. Das ist der
+     * richtige Zustand: solange niemand die Oberflaeche geoeffnet hat, gibt es
+     * auch keine Adresse, die in Loxone stehen koennte. */
     if (!preg_match('/^[A-Za-z0-9]{24,}$/', (string) $cfg['aktionstoken'])) {
-        $cfg['aktionstoken'] = wp_token();
-        wp_config_write($cfg);
+        if ($token_anlegen) {
+            $cfg['aktionstoken'] = wp_token();
+            wp_config_write($cfg);
+        } else {
+            $cfg['aktionstoken'] = '';
+        }
     }
     return $cfg;
 }
@@ -533,14 +558,33 @@ function wp_json_schreiben($pfad, $daten)
              . 'Datei bleibt unveraendert stehen.');
         return false;
     }
-    $neben = $pfad . '.neu';
-    if (@file_put_contents($neben, $js, LOCK_EX) !== strlen($js)) {
-        @unlink($neben);
+    /* Die Nebendatei traegt die Prozessnummer.
+     *
+     * An diesem Plugin schreiben nachweislich DREI Prozesse dieselben Dateien:
+     * der Minutencron, die Oberflaeche und der Endpunkt. Ohne PID heisst die
+     * Nebendatei ueberall gleich - treffen zwei zusammen, ueberschreibt einer
+     * die Nebendatei des anderen, und umbenannt wird eine Mischung. Betroffen
+     * waere auch geheim.json. */
+    $neben = $pfad . '.' . getmypid() . '.neu';
+    /* Erst leer anlegen, dann die Rechte, dann fuellen.
+     *
+     * Bis 0.9.10 wurde in einem Zug geschrieben und erst danach chmod gesetzt.
+     * Fuer die Dauer des Schreibens stand geheim.json damit mit den Rechten der
+     * umask da - also Client Secret, Passwort und Erneuerungsmerkmal lesbar fuer
+     * jeden. Die Reihenfolge kostet nichts und schliesst das Fenster. */
+    @unlink($neben);
+    if (@touch($neben) === false) {
         wp_log('SCHWERWIEGEND - ' . basename($pfad) . ' NICHT geschrieben, die Nebendatei '
              . 'liess sich nicht anlegen. Schreibrechte auf ' . dirname($pfad) . ' pruefen.');
         return false;
     }
     @chmod($neben, 0600);
+    if (@file_put_contents($neben, $js, LOCK_EX) !== strlen($js)) {
+        @unlink($neben);
+        wp_log('SCHWERWIEGEND - ' . basename($pfad) . ' NICHT geschrieben, die Nebendatei '
+             . 'liess sich nicht fuellen. Platz auf der Karte pruefen.');
+        return false;
+    }
     if (!@rename($neben, $pfad)) {
         @unlink($neben);
         wp_log('SCHWERWIEGEND - ' . basename($pfad) . ' NICHT geschrieben, das Umbenennen '
@@ -613,8 +657,13 @@ function wp_token($laenge = 32)
  */
 function wp_http($methode, $url, $kopf = array(), $koerper = null, $zeit = 20)
 {
-    $kopf[] = 'User-Agent: LoxBerry-Waermepumpe/0.9.2';
+    $kopf[] = 'User-Agent: LoxBerry-Waermepumpe/' . WP_FASSUNG;
     $kopf[] = 'Accept: application/json';
+    // Vier Kopfzeilen, nicht zwei: vor mancher Schnittstelle sitzt ein
+    // Waechter, der eine unvollstaendige Kennung abweist - und die Meldung
+    // sieht dann nach einem Anmeldefehler aus.
+    $kopf[] = 'Accept-Language: de-DE,de;q=0.9,en;q=0.8';
+    $kopf[] = 'Accept-Encoding: identity';
 
     if (function_exists('curl_init')) {
         $ch = curl_init($url);
@@ -632,9 +681,22 @@ function wp_http($methode, $url, $kopf = array(), $koerper = null, $zeit = 20)
         return array('code' => $code, 'text' => (string) $text, 'fehler' => $fehler);
     }
 
+    /* follow_location AUSDRUECKLICH aus - der curl-Zweig oben setzt
+     * CURLOPT_FOLLOWLOCATION ebenfalls auf false, und beide Wege muessen sich
+     * gleich verhalten.
+     *
+     * Bis 0.9.10 fehlten die beiden Zeilen. Gemessen am 16.08.2026 gegen einen
+     * Server, der /a auf /b umleitet: der Ersatzweg folgte der Umleitung UND
+     * schickte "Authorization: Bearer ..." erneut mit, also an ein Ziel, das
+     * die Gegenstelle bestimmt. Bei EMS-ESP ist diese Adresse eine
+     * Nutzereingabe ins eigene Netz.
+     *
+     * Der Fall ist selten (php-curl steht in dpkg/apt), aber ein apt-Lauf kann
+     * scheitern - und dann griffe stillschweigend der unsichere Weg. */
     $ctx = stream_context_create(array('http' => array(
         'method' => $methode, 'header' => implode("\r\n", $kopf),
         'content' => $koerper, 'timeout' => $zeit, 'ignore_errors' => true,
+        'follow_location' => 0, 'max_redirects' => 1,
     )));
     $text = @file_get_contents($url, false, $ctx);
     $code = 0;
@@ -962,6 +1024,147 @@ function wp_felder()
     );
 }
 
+/**
+ * Abgeleitete Werte - die Anlage liefert sie nicht, sie ergeben sich.
+ *
+ * Bewusst NICHT in wp_felder(): dort steht, was ein Hersteller herausgibt, und
+ * jeder Eintrag traegt seine Kandidatenpfade. Was hier entsteht, hat keinen
+ * Pfad und keine Zuordnung - es wird gerechnet.
+ *
+ * Es gilt dieselbe Linie wie bei der Arbeitszahl: fehlt eine Zutat, entsteht
+ * KEIN Wert. Eine Null waere schlimmer als nichts, denn sie stuende in Loxone
+ * und saehe richtig aus.
+ */
+function wp_abgeleitete_felder()
+{
+    return array(
+        // name => array(analog, min, max, Sprachschluessel)
+        'SPREIZUNG'  => array(1, -20, 30,   'FELD.SPREIZUNG'),
+        'TAKTE'      => array(1,   0, 200,  'FELD.TAKTE'),
+        'LAUFZEIT'   => array(1,   0, 1440, 'FELD.LAUFZEIT'),
+        'LAUFANTEIL' => array(1,   0, 100,  'FELD.LAUFANTEIL'),
+    );
+}
+
+/**
+ * Spreizung und Verdichtertakt fortschreiben.
+ *
+ * SPREIZUNG = Vorlauf minus Ruecklauf. Zwei vorhandene Messwerte, eine
+ * Subtraktion - und die aussagekraeftigste Zahl ueberhaupt, wenn es um
+ * Volumenstrom und Pumpe geht. Liefert die Anlage nur einen der beiden Werte,
+ * entsteht nichts (myVAILLANT gibt keinen Ruecklauf heraus).
+ *
+ * TAKTE, LAUFZEIT und LAUFANTEIL kommen aus den FLANKEN von KOMPRESSOR.
+ * Haeufiges Takten ist der teuerste Betriebsfehler einer Waermepumpe und in
+ * keiner Hersteller-App zu sehen. Gezaehlt wird seit Mitternacht; der Zaehler
+ * kostet keinen einzigen zusaetzlichen Abruf, weil KOMPRESSOR ohnehin gelesen
+ * wird.
+ *
+ * ZWEI EHRLICHE GRENZEN, die auch in der Oberflaeche stehen:
+ *
+ * 1. Gezaehlt wird im Abruftakt. Ein Verdichterlauf, der kuerzer ist als der
+ *    Takt, faellt zwischen zwei Abrufe und wird nicht gesehen. TAKTE ist
+ *    deshalb eine UNTERGRENZE, keine genaue Zahl - bei 300 s Takt (Vorgabe)
+ *    entgeht alles, was schneller ist. Wer genau zaehlen will, braucht den
+ *    Verdichterkontakt an einem Digitaleingang des Miniservers.
+ * 2. Nach einem Neustart des LoxBerry oder einer Stoerung fehlen die Flanken
+ *    der Ausfallzeit. Der Zaehler laeuft weiter, statt bei null zu beginnen -
+ *    aber er behauptet nicht, vollstaendig zu sein.
+ *
+ * Beides ist der Grund, warum die Werte TAKTE und nicht "Starts" heissen und
+ * warum im Reiter Test eine eigene Zeile sagt, wie fein gezaehlt wird.
+ */
+function wp_abgeleitete_werte($stand, $cfg)
+{
+    $w = isset($stand['werte']) && is_array($stand['werte']) ? $stand['werte'] : array();
+
+    /* --- Spreizung --- */
+    if (isset($w['VORLAUF']) && isset($w['RUECKLAUF'])
+        && is_numeric($w['VORLAUF']) && is_numeric($w['RUECKLAUF'])) {
+        $stand['werte']['SPREIZUNG'] = round((float) $w['VORLAUF'] - (float) $w['RUECKLAUF'], 1);
+    } else {
+        unset($stand['werte']['SPREIZUNG']);
+    }
+
+    /* --- Verdichtertakt --- */
+    if (!isset($w['KOMPRESSOR']) || !is_numeric($w['KOMPRESSOR'])) {
+        // Der Hersteller liefert den Verdichterzustand nicht. Dann gibt es
+        // keinen Takt zu zaehlen - und es wird auch nichts gesendet.
+        foreach (array('TAKTE', 'LAUFZEIT', 'LAUFANTEIL') as $f) {
+            unset($stand['werte'][$f]);
+        }
+        return $stand;
+    }
+
+    $jetzt = time();
+    $heute = date('Y-m-d', $jetzt);
+    $t = isset($stand['takt_zaehler']) && is_array($stand['takt_zaehler'])
+        ? $stand['takt_zaehler'] : array();
+    $t = array_merge(array(
+        'tag'      => $heute,
+        'letzter'  => -1,    // -1 = noch nie gesehen, dann zaehlt die erste Flanke nicht
+        'starts'   => 0,
+        'fertig'   => 0,     // abgeschlossene Laeufe - nur die ergeben eine mittlere Laufzeit
+        'summe'    => 0,     // Sekunden der abgeschlossenen Laeufe
+        'beginn'   => 0,     // Zeitpunkt des laufenden Laufs, 0 = laeuft nicht
+    ), $t);
+
+    if ($t['tag'] !== $heute) {
+        /* Tageswechsel. Laeuft der Verdichter gerade, beginnt sein Lauf fuer
+         * die neue Zaehlung jetzt - sonst schriebe man ihm die Stunden des
+         * Vortages gut. */
+        $t = array('tag' => $heute, 'letzter' => (int) $t['letzter'], 'starts' => 0,
+                   'fertig' => 0, 'summe' => 0,
+                   'beginn' => ((int) $t['letzter'] === 1 ? $jetzt : 0));
+    }
+
+    $ist = ((float) $w['KOMPRESSOR']) > 0 ? 1 : 0;
+    if ($t['letzter'] === -1) {
+        // Erster Abruf ueberhaupt: den Zustand nur merken, keine Flanke werten.
+        $t['beginn'] = $ist ? $jetzt : 0;
+    } elseif ($ist === 1 && (int) $t['letzter'] === 0) {
+        $t['starts'] = (int) $t['starts'] + 1;
+        $t['beginn'] = $jetzt;
+    } elseif ($ist === 0 && (int) $t['letzter'] === 1) {
+        if ((int) $t['beginn'] > 0) {
+            $t['summe']  = (int) $t['summe'] + max(0, $jetzt - (int) $t['beginn']);
+            $t['fertig'] = (int) $t['fertig'] + 1;
+        }
+        $t['beginn'] = 0;
+    }
+    $t['letzter'] = $ist;
+    $stand['takt_zaehler'] = $t;
+
+    $stand['werte']['TAKTE'] = (int) $t['starts'];
+
+    /* Mittlere Laufzeit NUR aus abgeschlossenen Laeufen.
+     *
+     * Der erste Entwurf rechnete den gerade laufenden Lauf mit. Direkt nach
+     * einem Anlauf stand dann LAUFZEIT=0 - eine Zahl, die richtig aussieht und
+     * das Gegenteil dessen behauptet, was gemeint ist ("die Laeufe sind null
+     * Minuten lang" statt "es ist noch nichts zu Ende gemessen"). Gemessen und
+     * verworfen am 16.08.2026.
+     *
+     * Solange kein Lauf zu Ende ist, entsteht deshalb kein Wert. */
+    if ((int) $t['fertig'] > 0) {
+        $stand['werte']['LAUFZEIT'] = round((int) $t['summe'] / (int) $t['fertig'] / 60, 1);
+    } else {
+        unset($stand['werte']['LAUFZEIT']);
+    }
+
+    /* Beim Laufanteil zaehlt der gerade laufende Lauf dagegen MIT - er ist
+     * verstrichene Zeit, und die Frage lautet "wie viel vom Tag lief er",
+     * nicht "wie lang war ein Lauf". Ohne ihn faellt der Anteil waehrend jedes
+     * Laufs zurueck und springt beim Abschalten nach oben. */
+    $summe = (int) $t['summe'];
+    if ((int) $t['beginn'] > 0) { $summe += max(0, $jetzt - (int) $t['beginn']); }
+    $seit_mitternacht = $jetzt - strtotime($heute . ' 00:00:00');
+    if ($seit_mitternacht > 0) {
+        $stand['werte']['LAUFANTEIL'] = round(min(100, $summe * 100 / $seit_mitternacht), 1);
+    }
+    return $stand;
+}
+
 /** Kandidatenliste eines Feldes fuer den eingestellten Hersteller, inklusive Nutzer-Zuordnung. */
 function wp_kandidaten($feld, $cfg)
 {
@@ -1030,6 +1233,12 @@ function wp_stand()
         'zeit' => 0, 'ok' => 0, 'werte' => array(), 'wege' => array(),
         'roh' => null, 'fehler' => '', 'geraete' => array(),
         'stufe_gesetzt' => 0, 'stufe_zeit' => 0, 'stufe_quittiert' => '',
+        // Verdichtertakt: Tag, letzter Zustand, Starts, Laufsekunden, laufender Lauf
+        'takt_zaehler' => array(),
+        // Stoerungen in Folge, letzter Grund und wann
+        'fehler_folge' => 0, 'fehler_letzt' => '', 'fehler_zeit' => 0,
+        // Wirksamkeitsnachweis: Ringspeicher der SG-Ready-Wechsel
+        'sg_verlauf' => array(),
     ), $d);
 }
 
@@ -1154,6 +1363,8 @@ function wp_mu_sg_moeglich($roh)
 
 function wp_mu_schreiben($cfg, $stufe)
 {
+    // Probemodus: nicht schreiben, nur melden. Siehe wp_probe().
+    if (wp_probe()) { return array(1, 'PROBE'); }
     $k = wp_mu_kopf();
     if ($k === null) { return array(0, 'KEIN_TOKEN'); }
     $r = wp_mu_sg_register();
@@ -1362,6 +1573,8 @@ function wp_oc_lesen($cfg)
 /** Ein Merkmal setzen. $pfad ist optional (verschachtelte Merkmale wie temperatureControl). */
 function wp_oc_setzen($cfg, $punkt, $merkmal, $wert, $pfad = '')
 {
+    // Probemodus: nicht schreiben, nur melden. Siehe wp_probe().
+    if (wp_probe()) { return array(1, 'PROBE'); }
     $t = wp_oc_token();
     if ($t === '') { return array(0, 'KEIN_TOKEN'); }
     if (!wp_budget_frei('onecta')) { return array(0, 'BUDGET_LEER'); }
@@ -1514,6 +1727,8 @@ function wp_ml_typen()
 
 function wp_ml_setzen($cfg, $felder)
 {
+    // Probemodus: nicht schreiben, nur melden. Siehe wp_probe().
+    if (wp_probe()) { return array(1, 'PROBE'); }
     // Typ -1 heisst: noch nicht gesucht. Dann wird Luft/Wasser angenommen,
     // denn das ist der Fall, fuer den dieses Plugin gebaut ist - und der
     // Reiter Test sagt ausdruecklich, dass es eine Annahme ist.
@@ -2103,6 +2318,8 @@ function wp_va_cop($cfg, $roh, $tage)
  */
 function wp_va_veto($cfg, $temperatur, $stunden)
 {
+    // Probemodus: nicht schreiben, nur melden. Siehe wp_probe().
+    if (wp_probe()) { return array(1, 'PROBE'); }
     $url = wp_va_systembasis($cfg['system'], $cfg['regler'])
          . '/zones/' . (int) $cfg['zone'] . '/quick-veto';
     $koerper = json_encode(array(
@@ -2120,6 +2337,8 @@ function wp_va_veto($cfg, $temperatur, $stunden)
 /** Eine laufende Schnellabweichung beenden. */
 function wp_va_veto_ende($cfg)
 {
+    // Probemodus: nicht schreiben, nur melden. Siehe wp_probe().
+    if (wp_probe()) { return array(1, 'PROBE'); }
     list($code, $unused, $fehler) = wp_va_abfrage('DELETE',
         wp_va_systembasis($cfg['system'], $cfg['regler'])
         . '/zones/' . (int) $cfg['zone'] . '/quick-veto');
@@ -2131,6 +2350,8 @@ function wp_va_veto_ende($cfg)
 /** Warmwasser-Schnellaufheizung ein oder aus. */
 function wp_va_ww_boost($cfg, $ein)
 {
+    // Probemodus: nicht schreiben, nur melden. Siehe wp_probe().
+    if (wp_probe()) { return array(1, 'PROBE'); }
     $url = wp_va_systembasis($cfg['system'], $cfg['regler'])
          . '/domestic-hot-water/' . (int) $cfg['dhw'] . '/boost';
     if ($ein) {
@@ -2351,6 +2572,8 @@ function wp_ems_befehle($cfg, $geraet = 'boiler')
  */
 function wp_ems_schreiben($cfg, $geraet, $groesse, $wert)
 {
+    // Probemodus: nicht schreiben, nur melden. Siehe wp_probe().
+    if (wp_probe()) { return array(1, 'PROBE'); }
     $basis = wp_ems_basis($cfg);
     if ($basis === '') { return array(0, 'KEINE_ADRESSE'); }
     $g = wp_geheim();
@@ -2391,6 +2614,8 @@ function wp_ems_schreiben($cfg, $geraet, $groesse, $wert)
  */
 function wp_ems_gpio($cfg, $pin, $an)
 {
+    // Probemodus: nicht schreiben, nur melden. Siehe wp_probe().
+    if (wp_probe()) { return array(1, 'PROBE'); }
     $pin = (int) $pin;
     if ($pin <= 0) { return array(1, 'GPIO_UNBENUTZT'); }
     $basis = wp_ems_basis($cfg);
@@ -2648,6 +2873,33 @@ function wp_sg_stufe_aus_klemmen($k1, $k2)
     return 4;
 }
 
+/**
+ * Probemodus - zeigen, was geschrieben WUERDE, ohne zu schreiben.
+ *
+ * Dieses Plugin bedient fuenf Hersteller auf fuenf verschiedene Arten, und bei
+ * vieren davon ist SG Ready nachgebildet. Was "Stufe 3" an DIESER Anlage
+ * tatsaechlich ausloest, konnte man bisher nur herausfinden, indem man es
+ * absetzt - also die Waermepumpe umfaehrt. Das ist eine schlechte Art, eine
+ * Einrichtung zu pruefen.
+ *
+ * Der Schalter steht bewusst an den ACHT Schreibstellen und nicht in einer
+ * zweiten Beschreibungsfunktion: eine zweite Stelle, die dasselbe erzeugt,
+ * laeuft frueher oder spaeter auseinander - dann zeigte die Vorschau etwas
+ * anderes an, als der Ernstfall tut, und das waere schlimmer als keine
+ * Vorschau. So bleibt wp_sg_anwenden() die einzige Quelle: sie baut ihre
+ * Beschreibung wie immer, nur die Schreibaufrufe geben "PROBE" zurueck.
+ *
+ * ACHTUNG bei Erweiterungen: wer eine neue Schreibfunktion aufnimmt, setzt
+ * diese Zeile mit hinein. Der Reiter Test zaehlt die abgesicherten Stellen,
+ * damit ein Vergessen auffaellt.
+ */
+function wp_probe($setzen = null)
+{
+    static $an = false;
+    if ($setzen !== null) { $an = (bool) $setzen; }
+    return $an;
+}
+
 /** Bildet dieser Hersteller SG Ready echt ab oder nur nach? */
 function wp_sg_echt($hersteller)
 {
@@ -2880,10 +3132,11 @@ function wp_endpunkt($aktion = 'status')
 function wp_statusfelder()
 {
     $out = array(
-        'OK'     => array(0, 0, 1, 'FELD.OK'),
-        'STUFE'  => array(1, 1, 4, 'FELD.STUFE'),
-        'ALTER'  => array(1, 0, 86400, 'FELD.ALTER'),
-        'BUDGET' => array(1, -1, 1000, 'FELD.BUDGET'),
+        'OK'       => array(0, 0, 1, 'FELD.OK'),
+        'STUFE'    => array(1, 1, 4, 'FELD.STUFE'),
+        'ALTER'    => array(1, 0, 86400, 'FELD.ALTER'),
+        'BUDGET'   => array(1, -1, 1000, 'FELD.BUDGET'),
+        'STOERUNG' => array(1, 0, 9999, 'FELD.STOERUNG'),
     );
     foreach (wp_felder() as $name => $d) {
         $out[$name] = array($d[0], $d[1], $d[2], $d[3]);
@@ -2894,6 +3147,10 @@ function wp_statusfelder()
     $out['COP']    = array(1, 0, 10, 'FELD.COP');
     $out['STROM']  = array(1, 0, 100000, 'FELD.STROM');
     $out['WAERME'] = array(1, 0, 400000, 'FELD.WAERME');
+    /* Zuletzt die abgeleiteten Werte. Sie kommen von keinem Hersteller,
+     * sondern werden gerechnet - und auch sie entstehen nur, wenn die Zutaten
+     * da sind. Siehe wp_abgeleitete_felder(). */
+    foreach (wp_abgeleitete_felder() as $name => $d) { $out[$name] = $d; }
     return $out;
 }
 
@@ -2942,8 +3199,18 @@ function wp_xml_virtual_out($kopf, $cmds)
         $o .= "\t" . '<VirtualOutCmd ';
         $o .= 'Title="' . wp_x($c['title']) . '" ';
         $o .= 'Comment="' . wp_x(isset($c['comment']) ? $c['comment'] : '') . '" ';
+        /* CmdOffMethod und CmdOff gehoeren dazu, und zwar an DIESER Stelle.
+         *
+         * Nicht aus der Erinnerung, sondern gegen die echten Ausfuhren aus der
+         * laufenden Anlage gemessen: VQ_KEBA_P30_UDP.xml fuehrt CmdOff
+         * unmittelbar hinter CmdOn, und die von Loxone Config selbst erzeugte
+         * VO_Rasenmaeher...xml fuehrt die Reihenfolge
+         *     CmdOnMethod, CmdOffMethod, CmdOn, ..., CmdOff, ...
+         * Leer bleiben sie, wo es keinen Ausbefehl gibt - genauso wie dort. */
         $o .= 'CmdOnMethod="' . wp_x(isset($c['methode']) ? $c['methode'] : 'GET') . '" ';
+        $o .= 'CmdOffMethod="' . wp_x(isset($c['methode']) ? $c['methode'] : 'GET') . '" ';
         $o .= 'CmdOn="' . wp_x($c['ein']) . '" ';
+        $o .= 'CmdOff="' . wp_x(isset($c['aus']) ? $c['aus'] : '') . '" ';
         $o .= 'Analog="' . (!empty($c['analog']) ? 'true' : 'false') . '"';
         $o .= '/>' . $crlf;
     }
@@ -2998,6 +3265,26 @@ function wp_vorlage_aus()
             'analog'  => 0,
         );
     }
+    /* Warmwasser-Zwangsladung als EIGENER Ausgang.
+     *
+     * Nur bei Herstellern, die es koennen - bei myUplink gaebe es sonst einen
+     * virtuellen Ausgang in Loxone, der immer mit einer Absage antwortet. Ein
+     * Bedienelement ohne Wirkung ist schlimmer als keines.
+     *
+     * Ein Ausgang mit Ein- UND Ausbefehl, nicht zwei: das Laden ist ein
+     * Zustand, kein Ereignis, und so haengt es in Loxone an einem einzigen
+     * Digitalausgang. */
+    $cfg_ww = wp_config();
+    if (wp_ww_moeglich($cfg_ww['hersteller'])) {
+        $cmds[] = array(
+            'title'   => 'WP_WW_BOOST',
+            'comment' => trim(strip_tags(html_entity_decode(wp_t('LOX.WW_KOMMENTAR'), ENT_QUOTES, 'UTF-8'))),
+            'ein'     => wp_endpunkt('ww_boost') . '&ein=1',
+            'aus'     => wp_endpunkt('ww_boost') . '&ein=0',
+            'methode' => 'GET',
+            'analog'  => 0,
+        );
+    }
     $p = wp_paths();
     $host = isset($_SERVER['HTTP_HOST']) && $_SERVER['HTTP_HOST'] !== ''
         ? preg_replace('/[^A-Za-z0-9\.\-:]/', '', (string) $_SERVER['HTTP_HOST'])
@@ -3021,17 +3308,56 @@ function wp_vorlage_aus()
  * Wirklichkeit, und der Fehler faellt erst in Loxone Config auf.
  * ================================================================== */
 
-function wp_zeile($stand, $cfg)
+/**
+ * Die Werte, die nach draussen gehen - EINE Quelle fuer BEIDE Wege.
+ *
+ * Bis 0.9.10 gab es zwei: wp_zeile() lief ueber wp_felder(), die Vorlage und
+ * die Themen-Tabelle ueber wp_statusfelder(), und der MQTT-Zweig in
+ * wp_abrufen() baute sich seine Liste noch einmal selbst zusammen. Das Ergebnis
+ * waren drei Listen, die auseinanderliefen:
+ *
+ *   - COP, STROM und WAERME standen in der Vorlage und in der Themen-Tabelle,
+ *     kamen aber in der Statuszeile NIE vor. Wer die Vorlage einliest, bekam
+ *     drei virtuelle Eingaenge, die dauerhaft auf 0 stehen - ausgerechnet die
+ *     Arbeitszahl.
+ *   - ALTER stand in der Statuszeile und in der Themen-Tabelle, wurde aber
+ *     ueber MQTT nie gesendet. Genau darauf beruht die Ausfallerkennung, und
+ *     MQTT ist laut Reiter "Einbindung in Loxone" der Regelweg.
+ *
+ * Beides ist am 16.08.2026 gemessen worden: Zeile 17 von 20 Feldern, MQTT 15.
+ * Deshalb baut jetzt DIESE Funktion die Werte, und wp_zeile() wie der
+ * MQTT-Zweig nehmen genau sie. Laeuft etwas auseinander, faellt es in der
+ * Selbstpruefung auf, nicht erst in Loxone Config.
+ */
+function wp_ausgabewerte($stand, $cfg)
 {
     $alter = $stand['zeit'] > 0 ? time() - (int) $stand['zeit'] : 86400;
+    $aus = array(
+        'OK'     => (int) $stand['ok'] ? 1 : 0,
+        'STUFE'  => (int) ($stand['stufe_gesetzt'] ?: $cfg['sg_stufe']),
+        'ALTER'  => min(86400, max(0, $alter)),
+        'BUDGET' => wp_budget_rest($cfg['hersteller']),
+        /* Fehlgeschlagene Abrufe IN FOLGE.
+         *
+         * OK allein sagt nur "der letzte Durchlauf ging schief" - und ein
+         * einzelner Aussetzer einer Cloud ist normal. Erst die Folge trennt
+         * "haekelt kurz" von "seit sechs Stunden tot", und genau diese
+         * Unterscheidung braucht man in Loxone, um nicht bei jedem Schluckauf
+         * eine Meldung abzusetzen. 0 heisst: der letzte Abruf saß. */
+        'STOERUNG' => (int) (isset($stand['fehler_folge']) ? $stand['fehler_folge'] : 0),
+    );
+    foreach (wp_statusfelder() as $name => $d) {
+        if (isset($aus[$name])) { continue; }          // die vier Zustandsfelder stehen schon
+        if (!isset($stand['werte'][$name])) { continue; }   // kein Wert: nichts senden, keine Null
+        $aus[$name] = $stand['werte'][$name];
+    }
+    return $aus;
+}
+
+function wp_zeile($stand, $cfg)
+{
     $teile = array('WP');
-    $teile[] = 'OK=' . ((int) $stand['ok'] ? 1 : 0);
-    $teile[] = 'STUFE=' . (int) ($stand['stufe_gesetzt'] ?: $cfg['sg_stufe']);
-    $teile[] = 'ALTER=' . min(86400, max(0, $alter));
-    $teile[] = 'BUDGET=' . wp_budget_rest($cfg['hersteller']);
-    foreach (wp_felder() as $name => $d) {
-        if (!isset($stand['werte'][$name])) { continue; }
-        $v = $stand['werte'][$name];
+    foreach (wp_ausgabewerte($stand, $cfg) as $name => $v) {
         $teile[] = $name . '=' . (is_numeric($v) ? (0 + $v) : $v);
     }
     return implode(';', $teile);
@@ -3092,6 +3418,16 @@ function wp_abrufen($erzwingen = false)
         if ($u['werte']) {
             $stand['werte'] = $u['werte'];
             $stand['zeit'] = time();
+
+            /* Spreizung und Verdichtertakt fortschreiben. Steht bewusst HIER
+             * und nicht weiter unten: der Takt lebt von den Flanken, und die
+             * gibt es nur bei einem Durchlauf, der wirklich Werte gebracht hat.
+             * Bei einer leeren Antwort darf nichts gezaehlt werden - sonst
+             * saehe ein stillstehender Verdichter aus wie ein abgeschalteter. */
+            $stand = wp_abgeleitete_werte($stand, $cfg);
+
+            // Faellige Nachmessung des Wirksamkeitsnachweises nachtragen.
+            $stand = wp_sg_verlauf_nachmessen($stand);
 
             // Den Sollwert im Normalbetrieb einmal merken. Ohne ihn weiss die
             // Nachbildung nicht, worauf sie nach einer Anhebung zurueckstellen
@@ -3176,16 +3512,171 @@ function wp_abrufen($erzwingen = false)
     } else {
         wp_log('Abruf fehlgeschlagen: ' . $erg['fehler'], 'abruf_' . $erg['fehler']);
     }
+
+    /* Stoerungszaehler fortschreiben.
+     *
+     * Zurueckgesetzt wird nur, wenn der Durchlauf WIRKLICH Werte gebracht hat -
+     * $erg['ok'] wird oben bei einer leeren Antwort ausdruecklich auf 0
+     * gesetzt. Sonst zaehlte eine Anlage, die brav HTTP 200 mit einer leeren
+     * Huelle antwortet, als "geht wieder". */
+    if ($erg['ok']) {
+        $stand['fehler_folge'] = 0;
+        $stand['fehler_letzt'] = '';
+    } else {
+        $stand['fehler_folge'] = (int) (isset($stand['fehler_folge']) ? $stand['fehler_folge'] : 0) + 1;
+        $stand['fehler_letzt'] = (string) $erg['fehler'];
+        $stand['fehler_zeit']  = time();
+    }
     wp_stand_write($stand);
 
-    if ($erg['ok']) {
-        $werte = $stand['werte'];
-        $werte['OK'] = 1;
-        $werte['STUFE'] = (int) ($stand['stufe_gesetzt'] ?: $cfg['sg_stufe']);
-        $werte['BUDGET'] = wp_budget_rest($cfg['hersteller']);
-        wp_mqtt_senden($werte);
-    }
+    /* IMMER senden, auch nach einem Fehlschlag - und zwar genau die Werte, die
+     * auch die Statuszeile traegt.
+     *
+     * Bis 0.9.10 stand dieser Block innerhalb von if ($erg['ok']). Auf dem Weg,
+     * den dieses Plugin selbst den Regelweg nennt, kam damit bei einer Stoerung
+     * NICHTS an: die virtuellen Eingaenge behielten ihren letzten Wert, und in
+     * der App sah alles normal aus. Das ist genau die Lage, gegen die Schritt 5
+     * im Reiter "Einbindung in Loxone" gebaut ist.
+     *
+     * Jetzt gehen bei jedem Durchlauf OK, ALTER und der Stoerungszaehler
+     * hinaus. Bleibt OK auf 0 und waechst ALTER, ist das in Loxone eine
+     * Aussage - vorher war es Schweigen. */
+    wp_mqtt_senden(wp_ausgabewerte($stand, $cfg));
     return array((int) $erg['ok'], (string) $erg['fehler']);
+}
+
+/**
+ * Warmwasser-Zwangsladung - eigenstaendig, unabhaengig von SG Ready.
+ *
+ * WARUM EIGENSTAENDIG?
+ *
+ * Bis 0.9.10 gab es die Zwangsladung nur als Anhaengsel des Zustands 4: wer
+ * den Speicher mit PV-Ueberschuss laden wollte, musste den Heizkreis
+ * mitanheben. Im Sommer ist das genau verkehrt - dann will man den Speicher
+ * laden und die Heizung in Ruhe lassen. Das ist der haeufigste Anwendungsfall
+ * ueberhaupt, und er brauchte bisher einen Umweg.
+ *
+ * Rueckgabe wie ueberall: array(ok, grund, beschreibung).
+ *
+ * MYUPLINK KANN ES NICHT, und das wird gesagt statt geraten. Die Nibe-Anbindung
+ * dieses Plugins schreibt ausschliesslich die beiden SG-Ready-Register; einen
+ * belegten Parameter fuer die Warmwasser-Zwangsladung gibt es hier nicht, und
+ * eine geratene Parameternummer waere schlimmer als eine Absage - sie stuende
+ * in Loxone und saehe aus wie eine Funktion.
+ */
+function wp_ww_boost($cfg, $ein)
+{
+    $ein = $ein ? true : false;
+    switch ($cfg['hersteller']) {
+
+        case 'vaillant':
+            list($ok, $grund) = wp_va_ww_boost($cfg, $ein);
+            return array($ok, $grund, 'Warmwasser-Aufheizung ' . ($ein ? 'ein' : 'aus'));
+
+        case 'onecta':
+            list($ok, $grund) = wp_oc_setzen($cfg, 'domesticHotWaterTank', 'powerfulMode',
+                                             $ein ? 'on' : 'off');
+            return array($ok, $grund, 'domesticHotWaterTank.powerfulMode=' . ($ein ? 'on' : 'off'));
+
+        case 'melcloud':
+            list($ok, $grund) = wp_ml_setzen($cfg, array('ForcedHotWaterMode' => $ein));
+            return array($ok, $grund, 'ForcedHotWaterMode=' . ($ein ? 'true' : 'false'));
+
+        case 'emsesp':
+            // Derselbe Hebel, den die SG-Ready-Nachbildung bei Zustand 4
+            // benutzt - eine Einmalladung des Speichers.
+            list($ok, $grund) = wp_ems_schreiben($cfg, 'boiler', 'onetime', $ein);
+            return array($ok, $grund, 'boiler.onetime=' . ($ein ? 'ein' : 'aus'));
+
+        case 'myuplink':
+            return array(0, 'NICHT_UNTERSTUETZT', '');
+    }
+    return array(0, 'KEIN_HERSTELLER', '');
+}
+
+/** Kann dieser Hersteller die Warmwasser-Zwangsladung? */
+function wp_ww_moeglich($hersteller)
+{
+    return in_array($hersteller, array('vaillant', 'onecta', 'melcloud', 'emsesp'), true);
+}
+
+/* ==================================================================
+ * Wirksamkeitsnachweis
+ *
+ * Bei VIER der fuenf Hersteller ist SG Ready nachgebildet - das Plugin hebt
+ * einen Sollwert an oder setzt eine Schnellabweichung, statt einen SG-Ready-
+ * Eingang zu bedienen. Ob das an einer bestimmten Anlage etwas BEWIRKT, kann
+ * niemand von aussen wissen: es haengt an Modell, Firmware, Heizkurve und
+ * daran, ob die Anlage den Wunsch ueberhaupt annimmt.
+ *
+ * Bisher stand darueber nur ein Vorbehalt in der README. Ein Vorbehalt ist
+ * aber ein Auftrag, kein Ergebnis - und beantworten laesst sich die Frage mit
+ * dem, was ohnehin schon abgerufen wird: Vorlauf und Leistungsaufnahme vor dem
+ * Wechsel, und dieselben Werte eine Weile danach.
+ *
+ * Deshalb dieser Ringspeicher. Er behauptet nichts, er stellt zwei Messwerte
+ * nebeneinander und ueberlaesst das Urteil dem Bewohner.
+ * ================================================================== */
+
+define('WP_VERLAUF_MAX', 20);      // Eintraege im Ringspeicher
+define('WP_VERLAUF_NACH', 900);    // Sekunden bis zur Nachmessung (15 Minuten)
+
+/** Einen Zustandswechsel festhalten - mit den Werten, wie sie JETZT sind. */
+function wp_sg_verlauf_eintragen($stand, $stufe, $was)
+{
+    $w = isset($stand['werte']) && is_array($stand['werte']) ? $stand['werte'] : array();
+    $v = isset($stand['sg_verlauf']) && is_array($stand['sg_verlauf'])
+        ? $stand['sg_verlauf'] : array();
+
+    $e = array(
+        'zeit'  => time(),
+        'stufe' => (int) $stufe,
+        'was'   => (string) $was,
+        'nach'  => 0,     // Zeitpunkt der Nachmessung, 0 = steht noch aus
+    );
+    // Nur was wirklich da ist. Ein fehlender Wert bleibt fehlend - eine Null
+    // hiesse "0 Grad Vorlauf" und waere eine Falschaussage.
+    foreach (array('VORLAUF', 'LEISTUNG', 'SOLL', 'RAUM') as $f) {
+        if (isset($w[$f]) && is_numeric($w[$f])) { $e['vor_' . $f] = 0 + $w[$f]; }
+    }
+    array_unshift($v, $e);
+    $stand['sg_verlauf'] = array_slice($v, 0, WP_VERLAUF_MAX);
+    return $stand;
+}
+
+/**
+ * Die Nachmessung nachtragen, sobald sie faellig ist.
+ *
+ * Wird bei jedem Abruf aufgerufen. Nachgetragen wird genau EINMAL je Eintrag
+ * und fruehestens nach WP_VERLAUF_NACH Sekunden - vorher sagt der Vergleich
+ * nichts, weil eine Waermepumpe traeg ist.
+ *
+ * Wenn zwischendurch ein neuer Zustand gesetzt wurde, wird NICHT mehr
+ * nachgemessen: der gemessene Unterschied gehoerte dann zu zwei Wechseln
+ * gleichzeitig und liesse sich keinem zuordnen. Ein Wert, der nicht zuordenbar
+ * ist, gehoert nicht in eine Tabelle, die Wirksamkeit belegen soll.
+ */
+function wp_sg_verlauf_nachmessen($stand)
+{
+    if (!isset($stand['sg_verlauf']) || !is_array($stand['sg_verlauf'])) { return $stand; }
+    $w = isset($stand['werte']) && is_array($stand['werte']) ? $stand['werte'] : array();
+    $jetzt = time();
+    foreach ($stand['sg_verlauf'] as $i => $e) {
+        if (!empty($e['nach'])) { continue; }                       // schon nachgemessen
+        if ($jetzt - (int) $e['zeit'] < WP_VERLAUF_NACH) { continue; }  // noch zu frueh
+        if ($i > 0) {
+            // Es gibt einen juengeren Eintrag - dieser hier ist ueberholt.
+            $stand['sg_verlauf'][$i]['nach'] = -1;
+            continue;
+        }
+        $stand['sg_verlauf'][$i]['nach'] = $jetzt;
+        foreach (array('VORLAUF', 'LEISTUNG', 'SOLL', 'RAUM') as $f) {
+            if (isset($w[$f]) && is_numeric($w[$f])) {
+                $stand['sg_verlauf'][$i]['nach_' . $f] = 0 + $w[$f];
+            }
+        }
+    }
+    return $stand;
 }
 
 /**
@@ -3232,6 +3723,7 @@ function wp_sg_durchsetzen($cfg = null)
         $stand['stufe_gesetzt'] = $wunsch;
         $stand['stufe_zeit'] = time();
         $stand['stufe_quittiert'] = $was;
+        $stand = wp_sg_verlauf_eintragen($stand, $wunsch, $was);
         wp_stand_write($stand);
         wp_log('SG Ready ' . $wunsch . ' gesetzt (' . $was . ')');
         wp_mqtt_senden(array('STUFE' => $wunsch));
