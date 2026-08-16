@@ -35,7 +35,7 @@
 // Die Fassung steht an EINER Stelle. Bis 0.9.10 trug der User-Agent fest die
 // 0.9.2, waehrend die plugin.cfg laengst 0.9.10 fuehrte - wer beim Hersteller
 // ein Protokoll liest, ordnet Meldungen dann der falschen Fassung zu.
-define('WP_FASSUNG', '0.9.11');
+define('WP_FASSUNG', '0.9.12');
 define('WP_STUFEN', 4);          // SG Ready kennt genau vier Zustaende
 define('WP_SPERRE_MAX', 120);    // Minuten, danach faellt die Sperre von selbst
 define('WP_ZUORDNUNG_MAX', 4000);
@@ -572,7 +572,11 @@ function wp_json_schreiben($pfad, $daten)
      * Fuer die Dauer des Schreibens stand geheim.json damit mit den Rechten der
      * umask da - also Client Secret, Passwort und Erneuerungsmerkmal lesbar fuer
      * jeden. Die Reihenfolge kostet nichts und schliesst das Fenster. */
-    @unlink($neben);
+    // is_file() davor: sonst meldet unlink() beim ersten Schreiben eine Datei,
+    // die es nie gab. Das @ verdeckt es im Betrieb, aber ein Pruefwerkzeug mit
+    // eigenem Fehler-Aufnehmer sieht es trotzdem - und Rauschen macht die
+    // naechste Durchsicht schwerer zu lesen.
+    if (is_file($neben)) { @unlink($neben); }
     if (@touch($neben) === false) {
         wp_log('SCHWERWIEGEND - ' . basename($pfad) . ' NICHT geschrieben, die Nebendatei '
              . 'liess sich nicht anlegen. Schreibrechte auf ' . dirname($pfad) . ' pruefen.');

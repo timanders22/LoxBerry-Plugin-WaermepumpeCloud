@@ -12,10 +12,33 @@ error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
 require_once __DIR__ . '/wp_lib.php';
 require_once __DIR__ . '/wp_test.php';
 
-$p = wp_paths();
-if (file_exists($p['home'] . '/libs/phplib/loxberry_system.php')) {
-    require_once $p['home'] . '/libs/phplib/loxberry_system.php';
-    require_once $p['home'] . '/libs/phplib/loxberry_web.php';
+/* ACHTUNG, hier lag bis 0.9.11 ein Fehler, der die ganze Seite gekostet hat.
+ *
+ * Die Variable hiess `$p` - ein Name, der in jedem fremden Quelltext vorkommt.
+ * `require_once` bindet im GLEICHEN Gueltigkeitsbereich ein: was die
+ * LoxBerry-Bibliothek in Zeile 3 unten an `$p` schreibt (und sei es nur als
+ * Schleifenvariable), ueberschreibt das, was hier oben steht. Gemessen am
+ * 17.08.2026 auf dem Geraet: Zeile 2 fand die Datei noch mit richtigem Pfad,
+ * Zeile 4 suchte danach unter `/libs/phplib/loxberry_web.php` - also ab dem
+ * Wurzelverzeichnis, weil `home` verschwunden war. Ergebnis: HTTP 500 mit
+ * leerem Rumpf, die Oberflaeche war nie erreichbar.
+ *
+ * Zwei Vorkehrungen, beide noetig:
+ *   1. Der Name traegt das Plugin-Kuerzel - so machen es 38 von 41 Linien im
+ *      Bestand. Nur EVCC, SignalBot und dieses Plugin hiessen `$p`.
+ *   2. Der Heimatpfad wird VOR dem Einbinden in eine eigene Zeichenkette
+ *      gerettet. Damit ist die zweite Zeile auch dann richtig, wenn eine
+ *      kuenftige Bibliotheksfassung wieder etwas anderes ueberschreibt.
+ */
+$wp_p = wp_paths();
+$wp_home = (string) $wp_p['home'];
+if ($wp_home !== '' && file_exists($wp_home . '/libs/phplib/loxberry_system.php')) {
+    require_once $wp_home . '/libs/phplib/loxberry_system.php';
+    require_once $wp_home . '/libs/phplib/loxberry_web.php';
+    // Nach dem Einbinden neu holen: wp_paths() haelt seinen eigenen Zwischen-
+    // stand, der Aufruf kostet nichts und stellt sicher, dass unten wirklich
+    // die Pfade dieses Plugins stehen.
+    $wp_p = wp_paths();
 }
 
 /* Drei Stellen gehoeren immer zusammen: Reiterleiste, Bereich (sm-seite mit
@@ -198,7 +221,7 @@ if ($wp_post && isset($_POST['speichern_zugang'])) {
         $wp_meldungen[] = wp_t('EINST.GESPEICHERT');
         wp_log('Zugangsdaten gespeichert (Hersteller ' . $wp_cfg['hersteller'] . ')');
     } else {
-        $wp_fehler[] = sprintf(wp_t('EINST.FEHLER_SPEICHERN'), wp_e($p['configdir']));
+        $wp_fehler[] = sprintf(wp_t('EINST.FEHLER_SPEICHERN'), wp_e($wp_p['configdir']));
     }
     $wp_cfg = wp_config();
     $wp_geh = wp_geheim();
@@ -375,7 +398,7 @@ if ($wp_post && isset($_POST['speichern_geraet'])) {
      * Feld behaelt also seinen bisherigen Wert. Gespeichert wird deshalb immer,
      * und die Beanstandungen stehen gesammelt darueber. */
     if (wp_config_write($wp_cfg)) { $wp_meldungen[] = wp_t('EINST.GESPEICHERT'); }
-    else { $wp_fehler[] = sprintf(wp_t('EINST.FEHLER_SPEICHERN'), wp_e($p['configdir'])); }
+    else { $wp_fehler[] = sprintf(wp_t('EINST.FEHLER_SPEICHERN'), wp_e($wp_p['configdir'])); }
     $wp_cfg = wp_config();
     $wp_tab = 'tab-settings';
 }
@@ -448,7 +471,7 @@ if ($wp_post && isset($_POST['speichern_sg'])) {
     /* Melden, nicht blockieren - siehe die Begruendung im Zweig darueber.
      * Jede Pruefung setzt ihr Feld nur im gueltigen Fall. */
     if (wp_config_write($wp_cfg)) { $wp_meldungen[] = wp_t('SG.GESPEICHERT'); }
-    else { $wp_fehler[] = sprintf(wp_t('EINST.FEHLER_SPEICHERN'), wp_e($p['configdir'])); }
+    else { $wp_fehler[] = sprintf(wp_t('EINST.FEHLER_SPEICHERN'), wp_e($wp_p['configdir'])); }
     $wp_cfg = wp_config();
     $wp_tab = 'tab-sgready';
 }
@@ -479,7 +502,7 @@ if ($wp_post && isset($_POST['speichern_zuordnung'])) {
         if (!$wp_fehler) {
             $wp_cfg['zuordnung'] = $text;
             if (wp_config_write($wp_cfg)) { $wp_meldungen[] = wp_t('TEST.ZUORDNUNG_GESPEICHERT'); }
-            else { $wp_fehler[] = sprintf(wp_t('EINST.FEHLER_SPEICHERN'), wp_e($p['configdir'])); }
+            else { $wp_fehler[] = sprintf(wp_t('EINST.FEHLER_SPEICHERN'), wp_e($wp_p['configdir'])); }
         }
     }
     $wp_cfg = wp_config();
@@ -497,7 +520,7 @@ if ($wp_post && isset($_POST['test'])) {
 
 /* ================= Protokoll leeren ================= */
 if ($wp_post && isset($_POST['log_leeren'])) {
-    @file_put_contents($p['logdir'] . '/waermepumpe.log', '');
+    @file_put_contents($wp_p['logdir'] . '/waermepumpe.log', '');
     $wp_meldungen[] = wp_t('LOG.GELEERT');
     $wp_tab = 'tab-log';
 }
@@ -1215,9 +1238,14 @@ foreach ($wp_technik as $wp_a) { ?>
 <h3><?= wp_e(wp_t('TEST.H_PROBE')) ?></h3>
 <div class="sm-step"><?= wp_t('TEST.PROBE_TEXT') ?></div>
 <div class="sm-knopfreihe">
-<?php for ($wp_p = 1; $wp_p <= WP_STUFEN; $wp_p++) { ?>
+<?php /* Zaehler heisst $wp_pv, NICHT $wp_p: $wp_p traegt die Pfade und wird im
+   Reiter Logdateien weiter unten noch gebraucht. Der erste Entwurf hat ihn hier
+   ueberschrieben - danach stand im Protokollpfad eine 5 statt eines Feldes.
+   Dieselbe Klasse wie der $p-Fehler eine Etage darueber, gefunden am
+   17.08.2026 von der geschaerften Attrappe. */ ?>
+<?php for ($wp_pv = 1; $wp_pv <= WP_STUFEN; $wp_pv++) { ?>
 <form action="index.php" method="post" style="margin:0;"><input data-role="none" type="hidden" name="activetab" value="tab-test">
-  <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="test" value="probe<?= $wp_p ?>"><?= sprintf(wp_e(wp_t('TEST.K_PROBE')), $wp_p) ?></button>
+  <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="test" value="probe<?= $wp_pv ?>"><?= sprintf(wp_e(wp_t('TEST.K_PROBE')), $wp_pv) ?></button>
 </form>
 <?php } ?>
 </div>
@@ -1288,7 +1316,7 @@ if (wp_ww_moeglich($wp_cfg['hersteller'])) { ?>
 <h2><?= wp_e(wp_t('LOG.H_TITEL')) ?></h2>
 <div class="sm-hilfe"><?= wp_t('LOG.MASKE_HINWEIS') ?></div>
 <?php
-$wp_logdatei = $p['logdir'] . '/waermepumpe.log';
+$wp_logdatei = $wp_p['logdir'] . '/waermepumpe.log';
 // Rueckwaerts lesen statt die ganze Datei einlesen - siehe wp_log_ende().
 // array_reverse, weil die Anzeige hier aelteste zuerst erwartet.
 $wp_zeilen = is_file($wp_logdatei) ? array_reverse(wp_log_ende($wp_logdatei, 200)) : array();

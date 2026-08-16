@@ -50,6 +50,54 @@ Ein Knopf im Reiter *Test* fragt das Gateway, **was sich schreiben lässt**
 Liste kommt vom Gerät und stimmt auch bei einem Modell, das dieses Plugin nie
 gesehen hat.
 
+## Neu in 0.9.12
+
+**Die Bedienoberfläche war auf dem Gerät nicht erreichbar.** Jeder Aufruf von
+`/admin/plugins/waermepumpe/` endete mit **HTTP 500 und leerem Rumpf** — in
+0.9.11 und in allen Fassungen davor.
+
+`webfrontend/htmlauth/index.php` nannte seine Pfadvariable `$p`:
+
+```php
+$p = wp_paths();
+if (file_exists($p['home'] . '/libs/phplib/loxberry_system.php')) {
+    require_once $p['home'] . '/libs/phplib/loxberry_system.php';
+    require_once $p['home'] . '/libs/phplib/loxberry_web.php';   // <- scheiterte
+}
+```
+
+`require_once` bindet im **gleichen Gültigkeitsbereich** ein, und die
+LoxBerry-Bibliothek legt unter genau diesem Namen etwas eigenes ab. Am Gerät
+gemessen (LoxBerry 4.0.0.14):
+
+```
+$p vorher : array("home" => "/opt/loxberry")
+$p nachher: array("", "libs", "phplib", "loxberry_system.php")
+```
+
+Danach gibt es kein `$p['home']` mehr. Die **zweite** Zeile suchte deshalb
+unter `/libs/phplib/loxberry_web.php` — ab dem Wurzelverzeichnis. Tückisch ist
+die Reihenfolge: `file_exists()` und das erste `require_once` gehen noch mit
+richtigem Pfad durch, erst das zweite scheitert. Wer die Meldung liest, sucht
+bei Zeile 18; der Fehler steckt in Zeile 15.
+
+**Behoben, zweifach abgesichert:** die Variable heißt jetzt `$wp_p` — so machen
+es 38 von 41 Plugins im Bestand —, **und** der Heimatpfad wird vor dem
+Einbinden in eine eigene Zeichenkette gerettet. Damit trägt es auch, wenn eine
+künftige Bibliotheksfassung wieder etwas anderes überschreibt.
+
+**Warum das keine Prüfung gefunden hat**, und was daraus folgt: die
+LoxBerry-Attrappe der Prüfkette setzte `$p` nicht. Die Oberfläche rendert
+dagegen grün — in allen sechs Reitern, unter PHP 7.4 und 8.4. Die Attrappe
+wurde deshalb nachgezogen; sie überschreibt jetzt dieselben globalen Namen wie
+das Original. Der erste Lauf danach hat die 0.9.11 sofort rot gemeldet — **und
+dazu einen zweiten Fehler gefunden**, den ich beim Beheben selbst eingebaut
+hatte: die Vorschau-Knopfreihe im Reiter *Test* benutzte `$wp_pv` noch als
+`$wp_p` und überschrieb damit den Pfad für den Reiter *Logdateien*. Beides ist
+korrigiert.
+
+Sonst ändert diese Fassung nichts. Alle Funktionen aus 0.9.11 sind unverändert.
+
 ## Neu in 0.9.11
 
 Diese Fassung behebt **vier Fehler, die im Betrieb Schaden anrichten**, und
