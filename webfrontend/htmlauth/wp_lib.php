@@ -3066,8 +3066,40 @@ function wp_mqtt_zustand()
     $aus['gefunden'] = true;
     $aus['udpport'] = isset($d['Mqtt']['Udpinport']) ? (int) $d['Mqtt']['Udpinport'] : 0;
     $aus['autostart'] = !empty($d['Mqtt']['Gatewayautostart']); // NICHT 'Autostart' - den Schluessel gibt es nicht (Fehlerklasse ACTiKamera 1.9.2)
+    /* Die FASSUNG des MQTT-Gateways, ab Werk 1. Sie entscheidet, was der
+     * Anwender eintragen muss: unter V1 jedes Thema von Hand, ab V2
+     * erscheint die Themengruppe von selbst in den Subscriptions.
+     * 0 heisst "nicht feststellbar" - dann wird nichts behauptet,
+     * sondern es werden beide Faelle genannt. */
+    $aus['fassung'] = isset($d['Mqtt']['Gatewayversion'])
+        ? (int) $d['Mqtt']['Gatewayversion'] : 0;
     return $aus;
 }
+
+/**
+ * Der Hinweis zum MQTT-Abo - in der Fassung, die zum GATEWAY passt.
+ *
+ * Bis hierher stand an den Ausgabestellen unbedingt "Ohne diesen Eintrag
+ * kommt am Miniserver nichts an". Das gilt fuer Gateway V1, wo jedes Thema
+ * von Hand einzutragen ist. Ab V2 erscheint die Themengruppe von selbst in
+ * den Subscriptions - der Satz schickte jeden V2-Anwender zu einem
+ * Eingabeplatz, den es nicht gibt.
+ *
+ * Drei Ausgaenge, nicht zwei: ist die Fassung nicht feststellbar, werden
+ * BEIDE Faelle genannt statt einer behauptet.
+ */
+function wp_abo_text()
+{
+    $m = wp_mqtt_zustand();
+    $f = isset($m['fassung']) ? (int) $m['fassung'] : 0;
+    if ($f <= 0) {
+        return wp_t('MQTT.ABO_UNBEKANNT');
+    }
+    $gemessen = ' <span class="sm-mono">'
+              . sprintf(wp_t('MQTT.ABO_GEMESSEN'), $f) . '</span>';
+    return wp_t($f >= 2 ? 'MQTT.ABO_V2' : 'MQTT.ABO_WARNUNG') . $gemessen;
+}
+
 
 /**
  * Einen Wert fuer den UDP-Eingang des MQTT-Gateways unschaedlich machen.
@@ -3773,4 +3805,44 @@ function wp_t($schluessel)
     }
     list($a, $s) = array_pad(explode('.', $schluessel, 2), 2, '');
     return isset($texte[$a][$s]) ? $texte[$a][$s] : $schluessel;
+}
+
+
+/**
+ * Eine Sicherungsdatei einlesen - und dabei NICHTS durchgehen lassen.
+ *
+ * Die sieben Punkte aus REGELN_2, und der wichtigste ist der dritte: eine
+ * halb gueltige Datei ueberschreibt GAR NICHTS. Wer eine Sicherung
+ * zurueckspielt, will entweder den ganzen Stand oder gar keinen - eine zur
+ * Haelfte uebernommene Konfiguration ist schlimmer als die alte, und man
+ * sieht es ihr nicht an.
+ *
+ * Unbekannte Schluessel sind eine Beanstandung, kein stiller Verlust: sie
+ * stammen aus einer anderen Fassung oder einem anderen Plugin.
+ *
+ * Rueckgabe: array(Konfiguration|null, Beanstandungen[], uebernommene Werte).
+ */
+function wp_sicherung_lesen($roh)
+{
+    $mangel = array();
+    $daten = json_decode((string) $roh, true);
+    if (!is_array($daten)) {
+        return array(null, array(wp_t('EINST.SICH_KEIN_JSON')), 0);
+    }
+    $neu = wp_vorgaben();
+    $bekannt = array_keys($neu);
+    $anzahl = 0;
+    foreach ($daten as $k => $w) {
+        if (!in_array($k, $bekannt, true)) {
+            $mangel[] = sprintf(wp_t('EINST.SICH_FREMD'),
+                                 htmlspecialchars((string) $k, ENT_QUOTES, 'UTF-8'));
+            continue;
+        }
+        $neu[$k] = $w;
+        $anzahl++;
+    }
+    if ($anzahl === 0) {
+        $mangel[] = wp_t('EINST.SICH_LEER');
+    }
+    return array($mangel ? null : $neu, $mangel, $anzahl);
 }

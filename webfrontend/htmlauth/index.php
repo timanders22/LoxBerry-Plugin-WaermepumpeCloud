@@ -531,6 +531,54 @@ $wp_info  = wp_hersteller_info($wp_cfg['hersteller']);
 if (class_exists('LBWeb', false)) {
     LBWeb::lbheader(wp_t('ALLG.TITEL'), 'https://wiki.loxberry.de/', 'help.html');
 }
+
+/* ---------------- Einstellungen sichern ----------------
+ *
+ * Ausgegeben wird die VOLLE Konfiguration - samt Aktionstoken. Ohne ihn
+ * stuenden nach dem Zurueckspielen alle Felder richtig, und das Plugin
+ * kaeme trotzdem nicht an die Anlage; die Datei waere wertlos. Damit
+ * traegt sie ein Geheimnis, und der Hinweis am Knopf sagt das. */
+if ($wp_post && isset($_POST['wp_sichern'])) {
+    $wp_js = json_encode(wp_config(),
+        JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    if ($wp_js !== false) {
+        header('Content-Type: application/json; charset=utf-8');
+        header('Content-Disposition: attachment; filename="waermepumpecloud_einstellungen_'
+               . date('Ymd_His') . '.json"');
+        echo $wp_js;
+        exit;
+    }
+    $wp_fehler[] = wp_t('EINST.SICH_SCHREIBFEHLER');
+}
+
+/* ---------------- Einstellungen zurueckspielen ----------------
+ *
+ * is_uploaded_file() ZUERST: ohne diese Pruefung liesse sich jede Datei des
+ * Servers unterschieben. Dann die Groessengrenze - eine Sicherung dieses
+ * Plugins ist wenige Kilobyte gross; alles darueber wird gar nicht gelesen. */
+if ($wp_post && isset($_POST['wp_zurueck'])) {
+    if (!isset($_FILES['wp_sicherung']) || !is_array($_FILES['wp_sicherung'])
+        || !isset($_FILES['wp_sicherung']['tmp_name'])
+        || !@is_uploaded_file($_FILES['wp_sicherung']['tmp_name'])) {
+        $wp_fehler[] = wp_t('EINST.SICH_KEINE_DATEI');
+    } elseif ((int) $_FILES['wp_sicherung']['size'] > 262144) {
+        $wp_fehler[] = wp_t('EINST.SICH_ZU_GROSS');
+    } else {
+        list($wp_neu, $wp_mangel, $wp_n) = wp_sicherung_lesen(
+            (string) @file_get_contents($_FILES['wp_sicherung']['tmp_name']));
+        if ($wp_neu === null) {
+            /* ALLE Beanstandungen, nicht nur die erste - und geaendert wird
+             * nichts. */
+            $wp_fehler[] = wp_t('EINST.SICH_ABGELEHNT') . ' '
+                            . implode(' ', $wp_mangel);
+        } elseif (wp_config_write($wp_neu)) {
+            $wp_meldungen[] = sprintf(wp_t('EINST.SICH_UEBERNOMMEN'), $wp_n);
+        } else {
+            $wp_fehler[] = wp_t('EINST.SICH_SCHREIBFEHLER');
+        }
+    }
+}
+
 ?>
 <style>
 /* Hausstandard: eigener Behaelter, kein Schattenwurf, Reiter im Fluss */
@@ -774,6 +822,7 @@ $wp_beschriftung = array(
 
 <div class="sm-legende">
 <span><i class="sm-punkt sm-b-aktion"></i><?= wp_t('LEGENDE.AKTION') ?></span>
+<span><i class="sm-punkt sm-b-lesen"></i><?= wp_t('LEGENDE.LESEN') ?></span>
 </div>
 <div class="sm-knopfreihe">
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="speichern_zugang" value="1"><?= wp_e(wp_t('ALLG.SPEICHERN')) ?></button>
@@ -933,6 +982,25 @@ $wp_beschriftung = array(
 </div>
 </form>
 <?php } ?>
+
+<h2><?= wp_t('EINST.H_SICHERUNG') ?></h2>
+<div class="sm-hinweis"><?= wp_t('EINST.SICH_ERKLAERUNG') ?></div>
+<div class="sm-warnung"><?= wp_t('EINST.SICH_WARNUNG') ?></div>
+<div class="sm-knopfreihe">
+  <!-- ZWEI GETRENNTE Formulare. Das Sichern schickt einen Download und ruft
+       exit auf; das Zurueckspielen braucht enctype="multipart/form-data".
+       Wer beides in ein Formular legt, bekommt entweder keinen Upload oder
+       einen Download, der das Speichern verschluckt. -->
+  <form action="index.php" method="post">
+    <input data-role="none" type="hidden" name="activetab" value="tab-settings">
+    <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="wp_sichern" value="1"><?= wp_t('EINST.K_SICHERN') ?></button>
+  </form>
+  <form action="index.php" method="post" enctype="multipart/form-data">
+    <input data-role="none" type="hidden" name="activetab" value="tab-settings">
+    <input data-role="none" type="file" name="wp_sicherung" accept=".json">
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="wp_zurueck" value="1"><?= wp_t('EINST.K_ZURUECK') ?></button>
+  </form>
+</div>
 </div>
 
 <!-- ================= Reiter: SG Ready ================= -->
@@ -1094,7 +1162,7 @@ if (!$wp_verlauf) { ?>
 <h3><?= wp_e(wp_t('MQTT.H_ABO')) ?></h3>
 <div class="sm-hilfe"><?= wp_t('MQTT.ABO_TEXT') ?></div>
 <div class="sm-pre"><?= wp_e($wp_cfg['mqtt_topic']) ?>/#</div>
-<div class="sm-warnung"><?= wp_t('MQTT.ABO_WARNUNG') ?></div>
+<div class="sm-warnung"><?= wp_abo_text() ?></div>
 
 <h3><?= wp_e(wp_t('MQTT.H_THEMEN')) ?></h3>
 <table class="sm-tbl">
@@ -1113,7 +1181,7 @@ if (!$wp_verlauf) { ?>
 <div class="sm-step"><b>1.</b> <?= wp_t('LOX.S1') ?></div>
 <div class="sm-step"><b>2.</b> <?= wp_t('LOX.S2') ?>
   <div class="sm-pre"><?= wp_e($wp_cfg['mqtt_topic']) ?>/#</div>
-  <?= wp_t('LOX.S2_WARNUNG') ?></div>
+  <?= wp_abo_text() ?></div>
 <div class="sm-step"><b>3.</b> <?= wp_t('LOX.S3') ?>
   <div class="sm-pre"><?= wp_e(wp_endpunkt('status')) ?></div>
   <?= wp_t('LOX.S3_HINWEIS') ?>
