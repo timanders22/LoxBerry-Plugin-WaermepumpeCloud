@@ -86,6 +86,23 @@ function wp_g($feld, $vorgabe = '')
 $wp_cfg = wp_config();
 $wp_geh = wp_geheim();
 
+/* ==================================================================
+ * DIE HANDLER STEHEN VOR lbheader() - DAS IST BAUVORSCHRIFT
+ * ==================================================================
+ *
+ * Stand der Kopf davor, war er beim Aufruf von header() schon
+ * geschrieben - "Cannot modify header information", und der Knopf
+ * "Einstellungen sichern" lieferte eine Seite mit angehaengtem JSON
+ * statt einer Datei.
+ *
+ * Am PHP-CLI ist das unsichtbar: header() ist dort wirkungslos und
+ * headers_sent() immer falsch. Und wer OHNE gueltiges Formularmerkmal
+ * misst, wird vom Wachposten abgewiesen, bevor der Handler anlaeuft.
+ * Beides hat den Fehler lange verdeckt.
+ *
+ * Reihenfolge: Bibliothek, Konfiguration, Wachposten, Reiterwahl,
+ * ALLE Handler samt Downloads, dann erst lbheader(), dann HTML.
+ * ================================================================== */
 /* ================= Vorlage herunterladen ================= */
 if ($wp_post && isset($_POST['download'])) {
     $v = ($_POST['download'] === 'xml_out') ? wp_vorlage_aus() : wp_vorlage_ein();
@@ -528,9 +545,6 @@ if ($wp_post && isset($_POST['log_leeren'])) {
 $wp_stand = wp_stand();
 $wp_info  = wp_hersteller_info($wp_cfg['hersteller']);
 
-if (class_exists('LBWeb', false)) {
-    LBWeb::lbheader(wp_t('ALLG.TITEL'), 'https://wiki.loxberry.de/', 'help.html');
-}
 
 /* ---------------- Einstellungen sichern ----------------
  *
@@ -577,6 +591,11 @@ if ($wp_post && isset($_POST['wp_zurueck'])) {
             $wp_fehler[] = wp_t('EINST.SICH_SCHREIBFEHLER');
         }
     }
+}
+
+
+if (class_exists('LBWeb', false)) {
+    LBWeb::lbheader(wp_t('ALLG.TITEL'), 'https://wiki.loxberry.de/', 'help.html');
 }
 
 ?>
