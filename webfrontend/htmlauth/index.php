@@ -72,6 +72,24 @@ if (isset($_GET['form']) && !is_array($_GET['form'])
 $wp_post = (isset($_SERVER['REQUEST_METHOD']) ? $_SERVER['REQUEST_METHOD'] : '') === 'POST';
 $wp_meldungen = array();
 $wp_fehler = array();
+
+/* ---------------------------------------------------------------- *
+ * Der Wachposten - EIN Posten, vor allen Handlern.
+ * Abgewiesen heisst gemeldet, und es wird NICHTS ausgefuehrt: $_POST
+ * wird geleert, nur der aktive Reiter bleibt stehen, damit der Bediener
+ * nach der Abweisung dort steht, wo er war.
+ * ---------------------------------------------------------------- */
+$wp_wache = wp_wachposten();
+if ($wp_wache !== '') {
+    $wp_reiter_merk = isset($_POST['activetab']) && is_string($_POST['activetab'])
+        ? (string) $_POST['activetab'] : null;
+    $_POST = array();
+    if ($wp_reiter_merk !== null) {
+        $_POST['activetab'] = $wp_reiter_merk;
+    }
+    $wp_fehler[] = $wp_wache;
+}
+
 $wp_testausgabe = '';
 
 /** Ein Formularfeld holen: nur Steuerzeichen entfernen, sonst nichts.
@@ -745,6 +763,7 @@ $wp_beschriftung = array(
 </table>
 
 <form action="index.php" method="post">
+  <?php echo wp_fmt(); ?>
 <input data-role="none" type="hidden" name="activetab" value="tab-settings">
 
 <div class="sm-feld">
@@ -858,6 +877,7 @@ $wp_beschriftung = array(
 <div class="sm-warnung"><?= wp_t('EINST.ONECTA_UNVOLLSTAENDIG') ?></div>
 <?php } ?>
 <form action="index.php" method="post">
+  <?php echo wp_fmt(); ?>
 <input data-role="none" type="hidden" name="activetab" value="tab-settings">
 <div class="sm-feld">
   <label for="wp_code"><?= wp_e(wp_t('EINST.L_CODE')) ?></label>
@@ -884,6 +904,7 @@ $wp_beschriftung = array(
 <?php } ?>
 
 <form action="index.php" method="post">
+  <?php echo wp_fmt(); ?>
 <input data-role="none" type="hidden" name="activetab" value="tab-settings">
 <div class="sm-feld">
   <label for="wp_geraet"><?= wp_e(wp_t('EINST.L_GERAET')) ?></label>
@@ -1011,10 +1032,12 @@ $wp_beschriftung = array(
        Wer beides in ein Formular legt, bekommt entweder keinen Upload oder
        einen Download, der das Speichern verschluckt. -->
   <form action="index.php" method="post">
+    <?php echo wp_fmt(); ?>
     <input data-role="none" type="hidden" name="activetab" value="tab-settings">
     <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="wp_sichern" value="1"><?= wp_t('EINST.K_SICHERN') ?></button>
   </form>
   <form action="index.php" method="post" enctype="multipart/form-data">
+    <?php echo wp_fmt(); ?>
     <input data-role="none" type="hidden" name="activetab" value="tab-settings">
     <input data-role="none" type="file" name="wp_sicherung" accept=".json">
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="wp_zurueck" value="1"><?= wp_t('EINST.K_ZURUECK') ?></button>
@@ -1049,6 +1072,7 @@ $wp_beschriftung = array(
 <?php } ?>
 
 <form action="index.php" method="post">
+  <?php echo wp_fmt(); ?>
 <input data-role="none" type="hidden" name="activetab" value="tab-sgready">
 <div class="sm-feld">
   <label style="font-weight:400;"><input data-role="none" type="checkbox" name="sg_ein" value="1"<?= $wp_cfg['sg_ein'] ? ' checked' : '' ?>>
@@ -1150,6 +1174,7 @@ if (!$wp_verlauf) { ?>
 
 <h2>MQTT</h2>
 <form action="index.php" method="post">
+  <?php echo wp_fmt(); ?>
 <input data-role="none" type="hidden" name="save_mqtt" value="1">
 <input data-role="none" type="hidden" name="activetab" value="tab-mqtt">
 <div class="sm-feld">
@@ -1238,11 +1263,13 @@ if (wp_ww_moeglich($wp_cfg['hersteller'])) { ?>
 </div>
 <div class="sm-knopfreihe">
 <form action="index.php" method="post" style="margin:0;">
+  <?php echo wp_fmt(); ?>
   <input data-role="none" type="hidden" name="download" value="xml_in">
   <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
   <button data-role="none" class="sm-btn sm-b-technik" type="submit"><?= wp_e(wp_t('LOX.K_VORLAGE_EIN')) ?></button>
 </form>
 <form action="index.php" method="post" style="margin:0;">
+  <?php echo wp_fmt(); ?>
   <input data-role="none" type="hidden" name="download" value="xml_out">
   <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
   <button data-role="none" class="sm-btn sm-b-technik" type="submit"><?= wp_e(wp_t('LOX.K_VORLAGE_AUS')) ?></button>
@@ -1300,6 +1327,7 @@ foreach ($wp_pr as $wp_z) { if ($wp_z[0] === 0) { $wp_schlecht++; } }
    und hausstandard_pruefen.py kann zusammengesetzte Klassen nicht sehen. */
 foreach (array('geraete', 'abruf', 'zeile') as $wp_a) { ?>
 <form action="index.php" method="post" style="margin:0;"><input data-role="none" type="hidden" name="activetab" value="tab-test">
+  <?php echo wp_fmt(); ?>
   <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="test" value="<?= $wp_a ?>"><?= wp_e(wp_t('TEST.K_' . strtoupper($wp_a))) ?></button>
 </form>
 <?php } ?>
@@ -1312,6 +1340,7 @@ $wp_technik = array('wege', 'roh');
 if ($wp_cfg['hersteller'] === 'emsesp') { $wp_technik[] = 'befehle'; }
 foreach ($wp_technik as $wp_a) { ?>
 <form action="index.php" method="post" style="margin:0;"><input data-role="none" type="hidden" name="activetab" value="tab-test">
+  <?php echo wp_fmt(); ?>
   <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="test" value="<?= $wp_a ?>"><?= wp_e(wp_t('TEST.K_' . strtoupper($wp_a))) ?></button>
 </form>
 <?php } ?>
@@ -1332,6 +1361,7 @@ foreach ($wp_technik as $wp_a) { ?>
    17.08.2026 von der geschaerften Attrappe. */ ?>
 <?php for ($wp_pv = 1; $wp_pv <= WP_STUFEN; $wp_pv++) { ?>
 <form action="index.php" method="post" style="margin:0;"><input data-role="none" type="hidden" name="activetab" value="tab-test">
+  <?php echo wp_fmt(); ?>
   <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="test" value="probe<?= $wp_pv ?>"><?= sprintf(wp_e(wp_t('TEST.K_PROBE')), $wp_pv) ?></button>
 </form>
 <?php } ?>
@@ -1342,6 +1372,7 @@ foreach ($wp_technik as $wp_a) { ?>
 <div class="sm-knopfreihe">
 <?php for ($wp_s = 1; $wp_s <= WP_STUFEN; $wp_s++) { ?>
 <form action="index.php" method="post" style="margin:0;"><input data-role="none" type="hidden" name="activetab" value="tab-test">
+  <?php echo wp_fmt(); ?>
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="test" value="sg<?= $wp_s ?>"><?= $wp_s ?> &mdash; <?= wp_e(wp_t('SG.STUFE' . $wp_s)) ?></button>
 </form>
 <?php } ?>
@@ -1357,6 +1388,7 @@ if (wp_ww_moeglich($wp_cfg['hersteller'])) { ?>
 <div class="sm-knopfreihe">
 <?php foreach (array('ww_ein', 'ww_aus') as $wp_wa) { ?>
 <form action="index.php" method="post" style="margin:0;"><input data-role="none" type="hidden" name="activetab" value="tab-test">
+  <?php echo wp_fmt(); ?>
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="test" value="<?= $wp_wa ?>"><?= wp_e(wp_t('TEST.K_' . strtoupper($wp_wa))) ?></button>
 </form>
 <?php } ?>
@@ -1375,6 +1407,7 @@ if (wp_ww_moeglich($wp_cfg['hersteller'])) { ?>
 <div class="sm-warnung"><?= wp_t('TEST.WARNUNG_TOKEN') ?></div>
 <div class="sm-knopfreihe">
 <form action="index.php" method="post" style="margin:0;"><input data-role="none" type="hidden" name="activetab" value="tab-test">
+  <?php echo wp_fmt(); ?>
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="test" value="token"><?= wp_e(wp_t('TEST.K_TOKEN')) ?></button>
 </form>
 </div>
@@ -1386,6 +1419,7 @@ if (wp_ww_moeglich($wp_cfg['hersteller'])) { ?>
 <h2><?= wp_e(wp_t('TEST.H_ZUORDNUNG')) ?></h2>
 <div class="sm-step"><?= wp_t('TEST.ZUORDNUNG_TEXT') ?></div>
 <form action="index.php" method="post">
+  <?php echo wp_fmt(); ?>
 <input data-role="none" type="hidden" name="activetab" value="tab-test">
 <div class="sm-feld">
   <label for="wp_zuordnung"><?= wp_e(wp_t('TEST.L_ZUORDNUNG')) ?></label>
@@ -1417,6 +1451,7 @@ if (!$wp_zeilen) { ?>
 <div class="sm-pre"><pre><?= wp_e(implode("\n", $wp_zeilen)) ?></pre></div>
 <?php } ?>
 <form action="index.php" method="post">
+  <?php echo wp_fmt(); ?>
   <input data-role="none" type="hidden" name="activetab" value="tab-log">
   <div class="sm-legende"><span><i class="sm-punkt sm-b-aktion"></i> <?= wp_t('LEGENDE.AKTION') ?></span></div>
   <div class="sm-knopfreihe">

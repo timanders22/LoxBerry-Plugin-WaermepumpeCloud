@@ -3846,3 +3846,102 @@ function wp_sicherung_lesen($roh)
     }
     return array($mangel ? null : $neu, $mangel, $anzahl);
 }
+
+
+/* ==================================================================
+ * WACHPOSTEN GEGEN FREMDE FORMULARE
+ * ==================================================================
+ *
+ * htmlauth/ schuetzt gegen den UNANGEMELDETEN Aufruf. Es schuetzt nicht
+ * dagegen, dass der Browser eines angemeldeten Bedieners ein Formular
+ * abschickt, das auf einer fremden Seite steht - die Anmeldung schickt er
+ * automatisch mit.
+ *
+ * Gemessen an Schwesterlinien (Skoda Connect 0.9.12, Midea 4.2.12, beide
+ * am 27.08.2026): ein einziger fremder POST genuegte, um das Aktionstoken
+ * neu zu wuerfeln. Danach beantwortet der Endpunkt jeden Virtuellen Eingang
+ * mit 403 - und ein Virtueller Eingang wertet die Antwort NICHT aus. Der
+ * Ausfall bleibt still.
+ *
+ * Der leere Fall wird eigens abgefangen: hash_equals('', '') ist in PHP
+ * TRUE. Wer das Feld nicht vor dem Vergleich auf leer prueft, hat einen
+ * Posten gebaut, den jeder passiert, der das Feld leer laesst.
+ *
+ * Das Merkmal wird aus $_POST und $_GET gelesen, nie aus $_REQUEST:
+ * $_REQUEST enthaelt je nach variables_order auch Cookies.
+ * ================================================================== */
+
+function wp_merkwort()
+{
+    static $wort = null;
+    if ($wort !== null) {
+        return $wort;
+    }
+    $pfade = wp_paths();
+    $verz  = isset($pfade['datadir']) ? $pfade['datadir'] : '';
+    if ($verz === '') {
+        return '';
+    }
+    $datei = $verz . '/formmerkwort';
+    if (is_readable($datei)) {
+        $roh = trim((string) @file_get_contents($datei));
+        if (preg_match('/^[0-9a-f]{32,64}$/', $roh)) {
+            $wort = $roh;
+            return $wort;
+        }
+    }
+    if (function_exists('random_bytes')) {
+        $neu = bin2hex(random_bytes(24));
+    } else {
+        $neu = substr(hash('sha256', uniqid((string) mt_rand(), true) . microtime(true)), 0, 48);
+    }
+    if (!is_dir($verz)) {
+        @mkdir($verz, 0775, true);
+    }
+    /* Rechte VOR dem Inhalt: zwischen Anlegen und chmod laege sonst ein
+     * Fenster, in dem das Merkwort fuer alle lesbar ist. */
+    $tmp = $datei . '.tmp';
+    if (@file_put_contents($tmp, $neu) !== false) {
+        @chmod($tmp, 0600);
+        if (@rename($tmp, $datei)) {
+            @chmod($datei, 0600);
+        } else {
+            @unlink($tmp);
+        }
+    }
+    $wort = $neu;
+    return $wort;
+}
+
+function wp_formtoken()
+{
+    $grund = wp_merkwort();
+    return $grund === '' ? '' : hash_hmac('sha256', 'formular-v1', $grund);
+}
+
+/* Das versteckte Feld. Bewusst OHNE den Escape-Helfer des Plugins: der
+ * steht bei einigen Linien in index.php und waere von hier aus nicht da.
+ * Der Wert ist hexadezimal. */
+function wp_fmt()
+{
+    return '<input data-role="none" type="hidden" name="fmt" value="'
+         . htmlspecialchars(wp_formtoken(), ENT_QUOTES, 'UTF-8') . '">';
+}
+
+/** Rueckgabe: '' wenn die Anfrage durchgelassen wird, sonst der Grund. */
+function wp_wachposten()
+{
+    if (!isset($_SERVER['REQUEST_METHOD']) || $_SERVER['REQUEST_METHOD'] !== 'POST') {
+        return '';
+    }
+    $soll = wp_formtoken();
+    $ist = isset($_POST['fmt']) ? $_POST['fmt']
+         : (isset($_GET['fmt']) ? $_GET['fmt'] : null);
+    if (!is_string($ist) || $ist === '' || $soll === '') {
+        return wp_t('WACHE.FEHLT');
+    }
+    if (!hash_equals($soll, $ist)) {
+        return wp_t('WACHE.FALSCH');
+    }
+    return '';
+}
