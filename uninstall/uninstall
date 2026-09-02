@@ -18,9 +18,26 @@ BASE="${5:-$LBHOMEDIR}"
 # Dritter Rueckfall: der eigene Ablageort. Bewusst kein fest verdrahteter
 # Systempfad - LoxBerry laesst sich anderswohin installieren, und der
 # Plugin-Pruefer sucht die Zeichenkette, ohne den Zusammenhang zu sehen.
-# Dieses Skript liegt unter <home>/data/plugins/<ordner>/uninstall/
+#
+# Bis 0.9.16 stand hier eine feste Zahl "..": vier Ebenen hoch von
+# <home>/data/plugins/<ordner>/uninstall/. Das stimmt fuer genau diese Lage
+# und ist sonst eine Wette - je nachdem, wohin LoxBerry das Skript legt, sind
+# es drei oder vier. Gesucht wird deshalb aufwaerts, bis ein Verzeichnis
+# gefunden ist, das nachweislich eine LoxBerry-Wurzel IST: es traegt
+# config/plugins UND data/plugins. Mit harter Obergrenze, damit die Schleife
+# nicht bis zum Dateisystemursprung laeuft. Dieselbe Bauart wie
+# lb_wurzel_ermitteln() in wp_lib.php.
 if [ -z "$BASE" ] || [ ! -d "$BASE" ]; then
-    BASE=$(cd "$(dirname "$(readlink -f "$0")")/../../../.." 2>/dev/null && pwd)
+    V=$(cd "$(dirname "$(readlink -f "$0")")" 2>/dev/null && pwd)
+    I=0
+    while [ -n "$V" ] && [ "$V" != "/" ] && [ "$I" -lt 8 ]; do
+        if [ -d "$V/config/plugins" ] && [ -d "$V/data/plugins" ]; then
+            BASE="$V"
+            break
+        fi
+        V=$(dirname "$V")
+        I=$((I + 1))
+    done
 fi
 # ACHTUNG - hier lag bis 0.9.10 der schwerste Fehler dieses Plugins.
 #
@@ -39,6 +56,40 @@ CFGDIR="${LBPCONFIG:-$BASE/config/plugins}/$PFOLDER"
 DATADIR="${LBPDATA:-$BASE/data/plugins}/$PFOLDER"
 
 # ---------------------------------------------------------------
+# 0. Fail closed - BEVOR irgendetwas geloescht wird
+# ---------------------------------------------------------------
+# Die Abweisung weiter unten prueft(e) den basename von DATADIR gegen
+# $PFOLDER. Das kann nach der Zeile darueber gar nicht mehr abweichen: der
+# Ordner wird ja genau dort angehaengt. Sie war eine Tautologie und hat
+# ausgerechnet den Fall nicht gefangen, gegen den sie geschrieben war -
+# eine Umgebungsvariable, die eine Ebene daneben zeigt.
+#
+# Nachgestellt mit LBPDATA=<home>/data statt <home>/data/plugins:
+#   <home>/data/waermepumpe/wichtig/  wurde GELOESCHT   (fremder Ordner)
+#   <home>/data/plugins/waermepumpe/  blieb stehen      (die eigenen Marken)
+#   gemeldet wurde <OK>, Rueckgabewert 0.
+#
+# Geprueft wird deshalb die LAGE, nicht der letzte Pfadteil: beide Baeume
+# muessen da sein, und beide Pfade muessen wirklich darunter liegen. Ein
+# Loeschskript, das sich im Pfad irrt, ist schlimmer als eines, das nicht
+# laeuft.
+if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ] || [ ! -d "$BASE/data/plugins" ]; then
+    echo "<FAIL> Das sieht nicht nach einem LoxBerry aus (BASE='$BASE')."
+    echo "<INFO> Es wurde NICHTS geloescht. Von Hand nachsehen in"
+    echo "<INFO>   <home>/config/plugins/$PFOLDER  und  <home>/data/plugins/$PFOLDER"
+    exit 1
+fi
+if [ "$(dirname "$CFGDIR")" != "$BASE/config/plugins" ] \
+   || [ "$(dirname "$DATADIR")" != "$BASE/data/plugins" ]; then
+    echo "<FAIL> Die Pfade liegen nicht unter den erwarteten Baeumen:"
+    echo "<FAIL>   CFGDIR  = $CFGDIR"
+    echo "<FAIL>   DATADIR = $DATADIR"
+    echo "<INFO> Erwartet unter $BASE/config/plugins bzw. $BASE/data/plugins."
+    echo "<INFO> Es wurde NICHTS geloescht - pruefen Sie \$LBPCONFIG und \$LBPDATA."
+    exit 1
+fi
+
+# ---------------------------------------------------------------
 # 1. Zugangsdaten - ueberschreiben, dann entfernen
 # ---------------------------------------------------------------
 # Nur unlink liesse den Inhalt auf der Karte stehen, bis der Platz neu
@@ -51,8 +102,33 @@ for f in "$CFGDIR/geheim.json" "$CFGDIR/geheim.json.vorher"; do
         rm -f "$f"
     fi
 done
-# Der Sicherungsordner eines abgebrochenen Upgrades - dort liegt eine Kopie.
+# Der Sicherungsordner eines abgebrochenen Upgrades - dort liegt eine Kopie
+# von geheim.json. Zwei Orte, weil er mit 0.9.17 umgezogen ist:
+#
+#   <ordner>/.upgrade    bis 0.9.16 - IM Konfigordner, den LoxBerry ohnehin
+#                        entfernt; die Zeile bleibt fuer Anlagen stehen, die
+#                        von einer aelteren Fassung kommen
+#   <ordner>.upgrade     ab 0.9.17 - NEBEN dem Konfigordner. Genau deshalb
+#                        ueberlebt er das Abraeumen des Installers - und
+#                        genau deshalb muss ER hier weg. Was neben dem
+#                        Ordner liegt, raeumt LoxBerry nicht mit auf.
 rm -rf "$CFGDIR/.upgrade" 2>/dev/null
+RUECKFALL="$CFGDIR.upgrade"
+if [ -d "$RUECKFALL" ]; then
+    for f in "$RUECKFALL/geheim.json" "$RUECKFALL/waermepumpe.json"; do
+        if [ -f "$f" ]; then
+            LAENGE=$(stat -c %s "$f" 2>/dev/null || echo 0)
+            [ "$LAENGE" -gt 0 ] && dd if=/dev/zero of="$f" bs=1 count="$LAENGE" \
+                conv=notrunc >/dev/null 2>&1
+        fi
+    done
+    rm -rf "$RUECKFALL"
+fi
+# .upgrade_pfad wird seit 02.09.2026 nicht mehr angelegt (der Merker konnte
+# den Weg zu postupgrade.sh nie ueberleben - Begruendung in preupgrade.sh).
+# Die Zeile bleibt trotzdem stehen: auf einer Anlage, die von einer aelteren
+# Fassung kommt, liegt die Datei noch da, und dieses Skript ist die letzte
+# Gelegenheit, sie wegzuraeumen.
 rm -f "$CFGDIR/.upgrade_pfad" 2>/dev/null
 
 # ---------------------------------------------------------------
@@ -78,15 +154,12 @@ fi
 # Darin liegen die Zwischenstaende UND die erneuerbaren Anmeldemarken der
 # drei Herstellerclouds (token_onecta.json, token_myuplink.json,
 # token_melcloud.json). Die sind auch ohne Passwort ein gueltiger Zugang.
-# Zweiter Boden. Ein rm -rf, das genau dann zu weit greift, wenn eine
-# Umgebungsvariable anders aussieht als erwartet, ist die teuerste Art Fehler:
-# er faellt erst auf, wenn die Daten der anderen Plugins schon weg sind.
-# Deshalb wird VOR dem Loeschen geprueft, dass der Pfad wirklich auf den
-# eigenen Pluginordner endet - und sonst abgewiesen statt geraten.
-if [ "$(basename "$DATADIR")" != "$PFOLDER" ]; then
-    echo "<FAIL> Datenordner sieht falsch aus ($DATADIR) - es wird NICHTS geloescht."
-    exit 1
-fi
+# Ein rm -rf, das genau dann zu weit greift, wenn eine Umgebungsvariable
+# anders aussieht als erwartet, ist die teuerste Art Fehler: er faellt erst
+# auf, wenn die Daten der anderen Plugins schon weg sind. Die Abweisung dagegen
+# steht seit 0.9.17 als Abschnitt 0 ganz oben - vor dem ersten Loeschen und
+# nicht erst vor diesem einen. Sie prueft die Lage statt des letzten
+# Pfadteils; die alte Fassung an dieser Stelle konnte gar nicht anschlagen.
 rm -rf "$DATADIR" 2>/dev/null
 
 # ---------------------------------------------------------------
@@ -98,5 +171,29 @@ rm -rf "$DATADIR" 2>/dev/null
 # Onecta-Zugang.
 rm -rf /run/shm/waermepumpe "${TMPDIR:-/tmp}/waermepumpe" /tmp/waermepumpe 2>/dev/null
 
+# ---------------------------------------------------------------
+# 4. Nachzaehlen - und nur melden, was wirklich weg ist
+# ---------------------------------------------------------------
+# Bis 0.9.16 stand hier ein unbedingtes <OK>. Nachgestellt an einem leeren
+# Basisverzeichnis: gefunden wurde nichts, geloescht wurde nichts, gemeldet
+# wurde "Zugangsdaten ... entfernt" mit Rueckgabewert 0. Ein "alles entfernt"
+# nach einem fehlgeschlagenen rm ist die schlechteste Zeile einer solchen
+# Datei - der Betreiber hat danach keinen Anlass mehr nachzusehen.
+UEBRIG=""
+for f in "$CFGDIR/geheim.json" "$CFGDIR/geheim.json.vorher" "$ZWEITSCHRIFT" \
+         "$CFGDIR/.upgrade_pfad"; do
+    [ -e "$f" ] && UEBRIG="$UEBRIG $f"
+done
+for d in "$DATADIR" "$RUECKFALL" "$CFGDIR/.upgrade"; do
+    [ -e "$d" ] && UEBRIG="$UEBRIG $d"
+done
+
+if [ -n "$UEBRIG" ]; then
+    echo "<FAIL> Nicht alles liess sich entfernen. Bitte von Hand nachsehen:"
+    for r in $UEBRIG; do echo "<FAIL>   $r"; done
+    exit 1
+fi
 echo "<OK> Zugangsdaten, Anmeldemarken, Zwischenstaende und Arbeitsdateien entfernt."
+echo "<INFO> Nachgezaehlt: unter $CFGDIR und $DATADIR liegt nichts mehr,"
+echo "<INFO> und auch die Zweitschrift daneben ist weg."
 exit 0

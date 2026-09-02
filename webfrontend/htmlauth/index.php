@@ -148,7 +148,13 @@ if ($wp_post && isset($_POST['speichern_zugang'])) {
         // liefert keine verstaendliche Meldung, sondern eine Anmeldeseite, auf
         // der das Konto nicht existiert - deshalb wird gegen die Liste
         // geprueft und nicht gegen ein Muster.
-        $mk = wp_g('marke');
+        /* NUR auswerten, wenn das Feld auch abgeschickt wurde. Marke und
+         * Land stehen im Formular ausschliesslich dann, wenn Vaillant BEREITS
+         * gespeichert ist. Wer von einem anderen Hersteller herueberwechselt,
+         * schickt sie deshalb nicht mit - und bekam bis 0.9.16 die Meldung
+         * "Diese Marke gibt es bei myVAILLANT nicht", ohne je nach der Marke
+         * gefragt worden zu sein. Fehlt das Feld, bleibt der bisherige Wert. */
+        $mk = isset($_POST['marke']) ? wp_g('marke') : (string) $wp_cfg['marke'];
         // isset() nimmt nur Variablen, nicht das Ergebnis eines Aufrufs -
         // isset(wp_va_marken()[$mk]) waere ein Fehler beim Uebersetzen.
         $wp_marken = wp_va_marken();
@@ -156,7 +162,7 @@ if ($wp_post && isset($_POST['speichern_zugang'])) {
             $wp_fehler[] = wp_t('EINST.FEHLER_MARKE');
         } else {
             $wp_cfg['marke'] = $mk;
-            $ld = wp_g('land');
+            $ld = isset($_POST['land']) ? wp_g('land') : (string) $wp_cfg['land'];
             $erlaubt = wp_va_laender($mk);
             if (!$erlaubt) {
                 $wp_cfg['land'] = '';     // diese Marke kennt kein Land
@@ -173,11 +179,18 @@ if ($wp_post && isset($_POST['speichern_zugang'])) {
          * ob dort wirklich ein Gateway steht, sagt der Reiter Test. Wer
          * "ems-esp.local" ohne http:// eintraegt, bekommt es gesagt: sonst
          * schlaegt jeder Abruf fehl und niemand sieht, warum. */
-        $u = trim(wp_g('ems_url'));
-        if ($u !== '' && !preg_match('#^https?://#i', $u)) {
-            $wp_fehler[] = sprintf(wp_t('EINST.FEHLER_EMS_URL'), wp_e($u));
-        } else {
-            $wp_cfg['ems_url'] = rtrim($u, '/');
+        /* Auch hier: das Feld gibt es im Formular nur, wenn EMS-ESP schon
+         * gespeichert ist. Bis 0.9.16 wurde es beim Wechsel von einem anderen
+         * Hersteller trotzdem gelesen - kam als '' an und loeschte die
+         * Gatewayadresse stumm. Gemessen: emsesp -> onecta -> emsesp, danach
+         * war ems_url leer, ohne eine einzige Meldung. */
+        if (isset($_POST['ems_url'])) {
+            $u = trim(wp_g('ems_url'));
+            if ($u !== '' && !preg_match('#^https?://#i', $u)) {
+                $wp_fehler[] = sprintf(wp_t('EINST.FEHLER_EMS_URL'), wp_e($u));
+            } else {
+                $wp_cfg['ems_url'] = rtrim($u, '/');
+            }
         }
         $tk = wp_g('ems_token');
         if ($tk !== '') {
@@ -605,6 +618,11 @@ if ($wp_post && isset($_POST['wp_zurueck'])) {
                             . implode(' ', $wp_mangel);
         } elseif (wp_config_write($wp_neu)) {
             $wp_meldungen[] = sprintf(wp_t('EINST.SICH_UEBERNOMMEN'), $wp_n);
+            /* Angenommen UND trotzdem etwas zu sagen: eine Datei aus einer
+             * aelteren Fassung kennt nicht jeden Schluessel. Die fehlenden
+             * behalten ihren jetzigen Wert - das ist richtig so, aber es
+             * gehoert genannt. Sonst zaehlt jemand 30 statt 33 und sucht. */
+            foreach ($wp_mangel as $wp_m) { $wp_meldungen[] = $wp_m; }
         } else {
             $wp_fehler[] = wp_t('EINST.SICH_SCHREIBFEHLER');
         }
@@ -643,6 +661,26 @@ if (class_exists('LBWeb', false)) {
 .sm-tbl { border-collapse: collapse; width: 100%; margin: 8px 0; font-size: 0.9em; }
 .sm-tbl th, .sm-tbl td { border: 1px solid #ccc; padding: 5px 7px; text-align: left; vertical-align: top; }
 .sm-tbl th { background: #eef3e6; font-weight: 600; }
+/* Rollbehaelter fuer breite Tabellen. .sm-tbl hat width:100% und .sm-wrap
+   eine Hoechstbreite ohne Ueberlauf - eine Tabelle, die nicht hineinpasst,
+   waere ohne diese Regel nicht bloss unbequem, sondern in ihren rechten
+   Spalten UNERREICHBAR. Regel des Hausstandards: jede Tabelle mit mehr als
+   sechs Spalten oder mit Eingabefeldern kommt in <div class="sm-breit">.
+   Hier braucht sie derzeit keine - die breiteste hat fuenf Spalten. Die
+   Regel steht trotzdem da, damit die naechste nicht ohne sie entsteht. */
+.sm-breit { overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 10px 0; }
+.sm-breit .sm-tbl { margin: 0; min-width: 760px; }
+/* Ein Auswahlfeld muss man als Auswahlfeld erkennen. Ein <select> ueber die
+   volle Breite mit data-role="none" sieht sonst aus wie ein Textfeld: der
+   eingebaute Pfeil sitzt am rechten Rand und faellt dort nicht auf. Die
+   Raute im SVG steht als %23 - eine rohe Raute beendet in einer
+   CSS-Adresse den Wert. */
+.sm-wrap select {
+    appearance: none; -webkit-appearance: none; -moz-appearance: none;
+    background-image: url("data:image/svg+xml;charset=UTF-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='9' viewBox='0 0 14 9'%3E%3Cpath d='M1 1l6 6 6-6' fill='none' stroke='%234f7d17' stroke-width='2'/%3E%3C/svg%3E");
+    background-repeat: no-repeat; background-position: right 10px center;
+    padding-right: 32px; cursor: pointer; }
+.sm-tbl select { padding-right: 28px; background-position: right 7px center; }
 .sm-mono { font-family: Consolas, "Courier New", monospace; background: #f0f0f0;
     padding: 1px 4px; border-radius: 3px; font-size: 0.94em; word-break: break-all; }
 .sm-pre { background: #f4f4f4; border: 1px solid #ccc; padding: 10px; font-size: 0.85em;
@@ -1281,7 +1319,7 @@ if (wp_ww_moeglich($wp_cfg['hersteller'])) { ?>
 <table class="sm-tbl">
 <tr><th>#</th><th><?= wp_e(wp_t('LOX.T_BAUSTEIN')) ?></th><th><?= wp_e(wp_t('LOX.T_NAME')) ?></th>
     <th><?= wp_e(wp_t('LOX.T_PARAMETER')) ?></th><th><?= wp_e(wp_t('LOX.T_VERBINDEN')) ?></th></tr>
-<?php for ($wp_b = 1; $wp_b <= 8; $wp_b++) { ?>
+<?php for ($wp_b = 1; $wp_b <= 9; $wp_b++) { ?>
 <tr><td><?= $wp_b ?></td><td><?= wp_t('BAUSTEIN.B' . $wp_b . '_TYP') ?></td>
     <td><span class="sm-mono"><?= wp_t('BAUSTEIN.B' . $wp_b . '_NAME') ?></span></td>
     <td><?= wp_t('BAUSTEIN.B' . $wp_b . '_PARAM') ?></td>
@@ -1298,13 +1336,40 @@ if (wp_ww_moeglich($wp_cfg['hersteller'])) { ?>
 <h2><?= wp_e(wp_t('TEST.H_SELBSTTEST')) ?></h2>
 <div class="sm-hilfe"><?= wp_t('TEST.SELBSTTEST_TEXT') ?></div>
 <?php
+/* Die Selbstpruefung geht ins Netz - Anmeldung, Geraeteliste, Werte. Bis
+ * 0.9.16 lief sie bei JEDEM Seitenaufbau, weil alle Reiter im selben
+ * Durchlauf gebaut werden und die Reiterleiste nur im Browser umschaltet.
+ * Gemessen wurden dafuer 30,4 s, in denen die Oberflaeche stand - auch fuer
+ * jeden, der nur den Reiter Einstellungen sehen wollte.
+ *
+ * Jetzt laeuft sie nur, wenn der Reiter Test wirklich der angezeigte ist.
+ * Wer aus einem anderen Reiter herueberschaltet, bekommt einen Knopf; der
+ * ist ein gewoehnliches Formular auf denselben Reiter und laedt die
+ * Seite neu. POST und nicht GET, weil die Werkzeugkette jedes Formular
+ * dieser Oberflaeche als Sendung an index.php mit method=post zaehlt -
+ * ein GET-Formular haette dort ein Ziel ohne Formular ergeben. */
+if ($wp_tab !== 'tab-test') { ?>
+<div class="sm-hinweis"><?= wp_t('TEST.SELBSTTEST_SPAETER') ?></div>
+<form action="index.php" method="post" style="margin:0;">
+  <?php echo wp_fmt(); ?>
+  <input data-role="none" type="hidden" name="activetab" value="tab-test">
+  <div class="sm-legende"><span><i class="sm-punkt sm-b-lesen"></i> <?= wp_t('LEGENDE.LESEN') ?></span></div>
+  <div class="sm-knopfreihe">
+    <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="selbsttest" value="1"><?= wp_e(wp_t('TEST.K_SELBSTTEST')) ?></button>
+  </div>
+</form>
+<?php } else {
 $wp_pr = wp_pruefungen();
 $wp_schlecht = 0;
-foreach ($wp_pr as $wp_z) { if ($wp_z[0] === 0) { $wp_schlecht++; } }
+$wp_offen    = 0;
+foreach ($wp_pr as $wp_z) {
+    if ($wp_z[0] === 0)      { $wp_schlecht++; }
+    elseif ($wp_z[0] !== 1)  { $wp_offen++; }   // i = nicht pruefbar, kein Haken
+}
 ?>
 <div class="<?= $wp_schlecht ? 'sm-warnung' : 'sm-hinweis' ?>">
 <?= sprintf(wp_t($wp_schlecht ? 'TEST.SELBSTTEST_FEHL' : 'TEST.SELBSTTEST_OK'),
-            count($wp_pr) - $wp_schlecht, count($wp_pr)) ?>
+            count($wp_pr) - $wp_schlecht - $wp_offen, count($wp_pr)) ?>
 </div>
 <table class="sm-tbl">
 <tr><th style="width:34px;"></th><th style="width:34%;"><?= wp_e(wp_t('TEST.T_FRAGE')) ?></th><th><?= wp_e(wp_t('TEST.T_ANTWORT')) ?></th></tr>
@@ -1314,6 +1379,7 @@ foreach ($wp_pr as $wp_z) { if ($wp_z[0] === 0) { $wp_schlecht++; } }
     <td><?= $wp_z[1] ?></td><td><?= $wp_z[2] ?></td></tr>
 <?php } ?>
 </table>
+<?php } ?>
 
 <h2><?= wp_e(wp_t('TEST.H_KNOEPFE')) ?></h2>
 <div class="sm-legende">

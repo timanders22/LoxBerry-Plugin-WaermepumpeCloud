@@ -8,6 +8,12 @@ curl
 #       funktioniert, kennt aber weder eigene Kopfzeilen bei Umleitungen noch
 #       eine getrennte Zeitgrenze fuer den Verbindungsaufbau.
 php-curl
+# php-xml: liefert simplexml und libxml. Gebraucht wird es an genau einer
+#       Stelle - die Selbstpruefung im Reiter Test sieht damit nach, ob die
+#       beiden Loxone-Vorlagen wohlgeformt sind. Fehlt das Paket, faellt
+#       diese eine Zeile auf "nicht pruefbar" zurueck (siehe wp_test.php);
+#       der Rest des Plugins braucht es nicht.
+php-xml
 # php-json wird BEWUSST NICHT aufgefuehrt. Seit PHP 8.0 ist JSON fest in den
 # Kern eingebaut und laesst sich nicht mehr abwaehlen; ein Paket dieses
 # Namens ist dort bestenfalls ein Uebergangspaket. Ein Paket zu verlangen,

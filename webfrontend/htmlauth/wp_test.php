@@ -255,15 +255,25 @@ function wp_pruefungen()
     // Gehoert hierher, nicht erst in die Pruefung vor dem Ausliefern: eine
     // kaputte Vorlage merkt der Anwender sonst erst in Loxone Config, und
     // dort sucht er den Fehler bei sich.
-    $gut = true;
-    foreach (array(wp_vorlage_ein(), wp_vorlage_aus()) as $v) {
-        $alt = libxml_use_internal_errors(true);
-        if (simplexml_load_string($v[1]) === false) { $gut = false; }
-        libxml_clear_errors();
-        libxml_use_internal_errors($alt);
+    /* Erst fragen, ob es die Funktion gibt. simplexml und libxml stecken in
+     * php-xml; dpkg/apt fordert das Paket an, aber ein Aufruf ohne diese
+     * Wache waere auf einem System ohne das Paket ein "Call to undefined
+     * function" - ein Fataler Fehler, der die ganze Oberflaeche anhaelt, und
+     * zwar wegen einer Nebenpruefung. Fehlt es, ist die Antwort ein Hinweis
+     * und kein Haken: nicht geprueft ist nicht in Ordnung. */
+    if (!function_exists('simplexml_load_string')) {
+        $z[] = wp_pruefzeile(-1, wp_t('TEST.F_VORLAGE'), wp_t('TEST.A_VORLAGE_UNPRUEFBAR'));
+    } else {
+        $gut = true;
+        foreach (array(wp_vorlage_ein(), wp_vorlage_aus()) as $v) {
+            $alt = libxml_use_internal_errors(true);
+            if (simplexml_load_string($v[1]) === false) { $gut = false; }
+            libxml_clear_errors();
+            libxml_use_internal_errors($alt);
+        }
+        $z[] = wp_pruefzeile($gut ? 1 : 0, wp_t('TEST.F_VORLAGE'),
+            $gut ? wp_t('TEST.A_VORLAGE_OK') : wp_t('TEST.A_VORLAGE_KAPUTT'));
     }
-    $z[] = wp_pruefzeile($gut ? 1 : 0, wp_t('TEST.F_VORLAGE'),
-        $gut ? wp_t('TEST.A_VORLAGE_OK') : wp_t('TEST.A_VORLAGE_KAPUTT'));
 
     /* ---- Verdichtertakt: wird er ueberhaupt gezaehlt, und wie fein? ----
      *
@@ -361,7 +371,11 @@ function wp_pruefungen()
      * einzige Weg, die im Miniserver eingetragene Adresse zu pruefen, OHNE die
      * Waermepumpe zu schalten. */
     if ($gut) {
-        $z[] = wp_pruefzeile(1, wp_t('TEST.F_SELFTEST'),
+        /* Hinweis, kein Haken. Hier wird NICHTS gemessen - die Zeile zeigt
+         * nur die Adresse an. Ob der Miniserver sie erreicht, weiss allein
+         * der Miniserver. Bis 0.9.16 stand hier ein gruener Haken und hat
+         * eine Pruefung behauptet, die nie stattgefunden hat. */
+        $z[] = wp_pruefzeile(-1, wp_t('TEST.F_SELFTEST'),
             sprintf(wp_t('TEST.A_SELFTEST'), wp_e(wp_endpunkt('status') . '&selftest=1')));
     }
 
@@ -471,7 +485,10 @@ function wp_test_aktion($was, $zusatz = '')
             wp_config_write($cfg);
             list($ok, $grund, $getan) = wp_sg_durchsetzen($cfg);
             if (!$ok) {
-                return array(0, sprintf(wp_t('TEST.M_SG_FEHL'), $stufe, wp_e($grund)));
+                // wp_meld() macht aus dem Grund einen Satz. Ohne den Aufruf
+                // stand hier der nackte Schluessel - bei der Vorschau drei
+                // Zweige weiter unten war er von Anfang an dabei.
+                return array(0, sprintf(wp_t('TEST.M_SG_FEHL'), $stufe, wp_e(wp_meld($grund))));
             }
             return array(1, sprintf(wp_t('TEST.M_SG_OK'), $stufe,
                 wp_e(wp_t('SG.STUFE' . $stufe)), wp_e($getan)));
@@ -513,7 +530,12 @@ function wp_test_aktion($was, $zusatz = '')
             wp_probe(true);
             try {
                 list($ok, $grund, $getan) = wp_sg_anwenden($cfg, $stufe, wp_stand());
-            } catch (Exception $e) {
+            /* Throwable, nicht Exception: ein TypeError oder ein
+             * ArgumentCountError ist ein Error und damit KEINE Exception. Der
+             * waere hier vorbeigelaufen - der finally-Zweig haette den
+             * Probeschalter zwar noch zurueckgesetzt, die Seite waere aber
+             * mit einem Fatalen Fehler stehengeblieben. */
+            } catch (Throwable $e) {
                 $grund = $e->getMessage();
             } finally {
                 /* IMMER zuruecksetzen. Bliebe der Schalter stehen, taete der

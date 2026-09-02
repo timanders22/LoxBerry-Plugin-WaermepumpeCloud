@@ -66,7 +66,14 @@ if ($wp_lib === '') {
      * benannter Fehler ist dort etwas voellig anderes als ein leerer Rumpf. */
     http_response_code(500);
     echo "WP;OK=0;GRUND=BIBLIOTHEK_FEHLT\n";
-    foreach ($wp_kandidaten as $wp_kand) { echo '# gesucht: ' . $wp_kand . "\n"; }
+    /* Die Suchpfade gehoeren NICHT in den Rumpf. Dieser Endpunkt ist
+     * unangemeldet erreichbar - an dieser Stelle sogar noch vor der
+     * Tokenpruefung. Ein absoluter Pfad ist eine Auskunft ueber das System,
+     * und wer hier klopft, braucht sie nicht. Wer das Plugin repariert,
+     * findet sie im Fehlerprotokoll des Webservers; wp_log() steht hier
+     * nicht zur Verfuegung - es fehlt ja gerade die Bibliothek. */
+    error_log('Waermepumpe: wp_lib.php nicht gefunden. Gesucht: '
+              . implode(', ', $wp_kandidaten));
     exit;
 }
 require_once $wp_lib;
@@ -115,7 +122,11 @@ if ($soll === '' || !hash_equals($soll, $ist)) {
 }
 
 $erlaubte_aktionen = array('status', 'sgready', 'werte', 'ww_boost');
-$aktion = isset($_GET['aktion']) ? (string) $_GET['aktion'] : 'status';
+// is_array wie bei k1/k2: ?aktion[]=x waere sonst eine "Array to string
+// conversion" - unsichtbar, weil display_errors oben auf 0 steht, aber im
+// Fehlerprotokoll des Webservers bei jedem Aufruf.
+$aktion = isset($_GET['aktion']) && !is_array($_GET['aktion'])
+        ? (string) $_GET['aktion'] : 'status';
 if (!in_array($aktion, $erlaubte_aktionen, true)) {
     wp_ende(400, "WP;OK=0;GRUND=UNBEKANNTE_AKTION\n"
                  . 'Erlaubt: ' . implode(', ', $erlaubte_aktionen));
@@ -182,6 +193,10 @@ if (empty($cfg['sg_ein'])) {
 // an zwei Ausgaengen -, aber die Nummer ist bequemer.
 $stufe = 0;
 if (isset($_GET['stufe'])) {
+    // Dieselbe Wache wie unten bei den Klemmen. Sie fehlte hier als einzige.
+    if (is_array($_GET['stufe'])) {
+        wp_ende(400, 'WP;OK=0;GRUND=STUFE_UNGUELTIG');
+    }
     $roh = (string) $_GET['stufe'];
     if (!preg_match('/^[1-4]$/', $roh)) {
         wp_ende(400, 'WP;OK=0;GRUND=STUFE_UNGUELTIG');

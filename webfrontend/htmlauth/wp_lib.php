@@ -32,10 +32,51 @@
  * schlimmer als keine.
  */
 
-// Die Fassung steht an EINER Stelle. Bis 0.9.10 trug der User-Agent fest die
-// 0.9.2, waehrend die plugin.cfg laengst 0.9.10 fuehrte - wer beim Hersteller
-// ein Protokoll liest, ordnet Meldungen dann der falschen Fassung zu.
-define('WP_FASSUNG', '0.9.12');
+/* Die Fassung wird GELESEN, nicht eingetragen.
+ *
+ * Hier stand bis 0.9.16 eine feste Zeichenkette - und zwar '0.9.12', waehrend
+ * die plugin.cfg laengst 0.9.16 fuehrte. Der Kommentar an dieser Stelle
+ * beschrieb genau diesen Fehler als seit 0.9.10 behoben; er war es nicht,
+ * nur um vier Fassungen verschoben. Der Wert geht als User-Agent an die
+ * Herstellerclouds - wer dort ein Protokoll liest, ordnet Meldungen der
+ * falschen Fassung zu.
+ *
+ * Eine Konstante hilft dagegen nicht: sie ist eine VIERTE Stelle mit der
+ * Nummer, und fassung_setzen.py kennt nur die drei .cfg und die README. Was
+ * an einer Stelle mehr steht, laeuft frueher oder spaeter auseinander -
+ * dieser Fall ist der Beleg.
+ *
+ * Gelesen wird deshalb aus der Plugin-Datenbank des LoxBerry, und zwar ueber
+ * den ORDNERNAMEN: der MD5-Schluessel darin entsteht aus Autorenname,
+ * E-Mail und Plugin-Name und aendert sich, sobald einer davon angefasst wird.
+ * Die plugin.cfg selbst taugt nicht - sie liegt im installierten Zustand gar
+ * nicht im Webbaum, und PHPs INI-Zerleger scheitert ohnehin an ihren
+ * '#'-Kommentaren.
+ */
+function wp_fassung()
+{
+    static $f = null;
+    if ($f !== null) { return $f; }
+    $f = 'unbekannt';
+    $p = wp_paths();
+    $db = $p['home'] . '/data/system/plugindatabase.json';
+    if ($p['home'] !== '' && is_file($db)) {
+        $d = json_decode((string) @file_get_contents($db), true);
+        if (isset($d['plugins']) && is_array($d['plugins'])) {
+            foreach ($d['plugins'] as $e) {
+                if (is_array($e) && isset($e['folder']) && $e['folder'] === $p['plugin']
+                    && isset($e['version']) && is_scalar($e['version'])) {
+                    $f = (string) $e['version'];
+                    break;
+                }
+            }
+        }
+    }
+    /* 'unbekannt' ist die richtige Antwort, wenn die Datenbank nicht lesbar
+     * ist - eine geratene Nummer waere schlechter als gar keine. Sie steht
+     * dann so im User-Agent, und das ist eine Auskunft. */
+    return $f;
+}
 define('WP_STUFEN', 4);          // SG Ready kennt genau vier Zustaende
 define('WP_SPERRE_MAX', 120);    // Minuten, danach faellt die Sperre von selbst
 define('WP_ZUORDNUNG_MAX', 4000);
@@ -430,20 +471,95 @@ function wp_vorgaben()
 }
 
 /**
- * @param bool $token_anlegen  Nur die angemeldete Oberflaeche darf das
- *                             Aktionstoken erzeugen - siehe unten.
+ * @param bool $token_anlegen  Nur wo geschrieben werden darf: die angemeldete
+ *                             Oberflaeche und der Abrufdienst. Der Endpunkt
+ *                             ruft mit false - er legt weder ein Token an noch
+ *                             heilt er etwas, siehe unten.
  */
 function wp_config($token_anlegen = true)
 {
     $p = wp_paths();
-    // Selbstheilung: fehlende oder leere Konfiguration aus der Zweitschrift
-    // holen (Hausmuster Weissware/Kodi, nachgeruestet 13.08.2026).
     $roh = is_file($p['config']) ? trim((string) @file_get_contents($p['config'])) : '';
-    if (($roh === '' || $roh === '{}') && isset($p['sicherung']) && is_file($p['sicherung'])) {
-        @mkdir($p['configdir'], 0775, true);
-        @copy($p['sicherung'], $p['config']);
+
+    /* DREI LAGEN, NICHT ZWEI - und das ist der Kern dieser Fassung.
+     *
+     * Bis 0.9.16 fragte die Selbstheilung nur nach "leer oder {}". Eine Datei,
+     * die weder das eine noch das andere ist, aber kein gueltiges JSON - eine
+     * abgebrochene Schreibung, eine von Hand verstellte Zeile -, fiel durch
+     * beide Bedingungen. json_decode() ergab null, daraus wurde ein leeres
+     * Feld, und array_merge() machte daraus die Werkseinstellung.
+     *
+     * Gemessen an 0.9.16 unter 7.4.33 und 8.4.24, ausgeloest durch nichts
+     * weiter als das Oeffnen der Oberflaeche:
+     *
+     *     Hersteller     melcloud          ->  leer
+     *     Themen-Praefix waermepumpe/eg    ->  waermepumpe
+     *     Aktionstoken   AAAAbbbb...       ->  NEU GEWUERFELT
+     *     Zweitschrift   heil              ->  MIT DER WERKSEINSTELLUNG
+     *                                          UEBERSCHRIEBEN
+     *     Protokoll      keine Zeile
+     *
+     * Damit war jede Adresse im Miniserver auf 403, die Einstellungen weg und
+     * die letzte heile Sicherung dazu. Fehlerklasse EVCC/Govee/Matter2Lox.
+     *
+     * Die drei Lagen werden jetzt getrennt:
+     *   Datei fehlt oder ist leer/{}  ->  Neuinstallation oder Update, heilen
+     *   Datei ist beschaedigt         ->  FEHLER: einmal beiseitelegen,
+     *                                     einmal melden, dann heilen
+     *   Datei ist lesbar              ->  nichts anfassen
+     */
+    $cfg    = null;
+    $kaputt = false;
+    if ($roh !== '' && $roh !== '{}') {
+        $cfg = json_decode($roh, true);
+        if (!is_array($cfg)) {
+            $cfg    = null;
+            $kaputt = true;
+        }
     }
-    $cfg = is_file($p['config']) ? json_decode((string) @file_get_contents($p['config']), true) : array();
+
+    /* Geheilt wird NUR, wo geschrieben werden darf.
+     *
+     * Bis 0.9.16 stand dieser Block vor jeder Tokenpruefung und war von
+     * $token_anlegen nicht betroffen. Gemessen: ein einziger Aufruf des
+     * unangemeldeten Endpunkts OHNE Token legte config/plugins/<ordner>/ und
+     * waermepumpe.json an, sobald eine Zweitschrift danebenlag - also im
+     * Regelfall jeder eingerichteten Anlage. Die Zusicherung zwei Zeilen
+     * weiter oben im Endpunkt ("schreibt ueberhaupt nichts") galt nur fuer
+     * das Token, nicht fuer die Heilung.
+     *
+     * Es geht dabei nichts verloren: der Abrufdienst laeuft im Minutentakt
+     * und ruft wp_config() mit der Vorgabe true - er heilt also binnen einer
+     * Minute, ebenso die Oberflaeche beim naechsten Oeffnen. Bis dahin weist
+     * der Endpunkt mit GRUND=TOKEN ab, und das ist die richtige Antwort:
+     * wer sich nicht ausweisen kann, loest auch nichts aus. */
+    if ($cfg === null && $token_anlegen) {
+        if ($kaputt) {
+            /* Die beschaedigte Datei bleibt liegen, sie wird nicht
+             * ueberschrieben - darin koennen Einstellungen stehen, die die
+             * Zweitschrift noch nicht kennt. Nur EINMAL: ein zweiter Lauf
+             * duerfte den ersten Beleg nicht zerstoeren. */
+            if (!is_file($p['config'] . '.kaputt')) {
+                @rename($p['config'], $p['config'] . '.kaputt');
+            }
+            wp_log('Die Konfiguration war unlesbar (kein gueltiges JSON) und liegt jetzt '
+                 . 'als waermepumpe.json.kaputt daneben.', 'cfg_kaputt');
+        }
+        if (isset($p['sicherung']) && is_file($p['sicherung'])) {
+            /* Die Zweitschrift wird GELESEN, nicht blind kopiert: eine
+             * Sicherung, die selbst kein gueltiges JSON traegt, waere keine. */
+            $z = json_decode(trim((string) @file_get_contents($p['sicherung'])), true);
+            if (is_array($z) && $z) {
+                @mkdir($p['configdir'], 0775, true);
+                if (@copy($p['sicherung'], $p['config'])) {
+                    $cfg = $z;
+                    wp_log('Die Konfiguration wurde aus der Zweitschrift wiederhergestellt.',
+                           'cfg_geheilt');
+                }
+            }
+        }
+    }
+
     if (!is_array($cfg)) { $cfg = array(); }
     $cfg = array_merge(wp_vorgaben(), $cfg);
 
@@ -603,7 +719,29 @@ function wp_config_write($cfg)
     $p = wp_paths();
     @mkdir($p['configdir'], 0775, true);
     if (!wp_json_schreiben($p['config'], $cfg)) { return false; }
-    if (isset($p['sicherung'])) { @copy($p['config'], $p['sicherung']); }
+
+    /* DIE ZWEITSCHRIFT DARF NIE SCHLECHTER WERDEN ALS DAS, WAS SIE SICHERT.
+     *
+     * Bis 0.9.16 wurde hier bedingungslos kopiert. Zusammen mit der
+     * Selbstheilung eine Etage darueber ergab das eine Kette, die genau das
+     * vernichtete, wofuer es die Zweitschrift gibt: beschaedigte Datei ->
+     * Werkseinstellung -> Token fehlt -> neues Token -> geschrieben -> und
+     * die heile Zweitschrift mit der Werkseinstellung ueberbuegelt.
+     *
+     * Mitgezogen wird deshalb nur ein Stand, der das Aktionstoken wirklich
+     * traegt. Es ist der Wert, an dem in Loxone jede Adresse haengt - und
+     * damit das brauchbarste Merkmal dafuer, dass hier kein Werkszustand
+     * gesichert wird. Fehlt es, bleibt die vorige Sicherung stehen.
+     *
+     * Und die Rechte: wp_json_schreiben() legt die Zieldatei mit 0600 an,
+     * bevor sie gefuellt wird. Die Kopie erbte statt dessen die umask - auf
+     * einem LoxBerry ueblich 0644 -, und sie enthaelt dasselbe Token. */
+    $tok = isset($cfg['aktionstoken']) ? (string) $cfg['aktionstoken'] : '';
+    if (isset($p['sicherung']) && preg_match('/^[A-Za-z0-9]{24,}$/', $tok)) {
+        if (@copy($p['config'], $p['sicherung'])) {
+            @chmod($p['sicherung'], 0600);
+        }
+    }
     return true;
 }
 
@@ -661,7 +799,7 @@ function wp_token($laenge = 32)
  */
 function wp_http($methode, $url, $kopf = array(), $koerper = null, $zeit = 20)
 {
-    $kopf[] = 'User-Agent: LoxBerry-Waermepumpe/' . WP_FASSUNG;
+    $kopf[] = 'User-Agent: LoxBerry-Waermepumpe/' . wp_fassung();
     $kopf[] = 'Accept: application/json';
     // Vier Kopfzeilen, nicht zwei: vor mancher Schnittstelle sitzt ein
     // Waechter, der eine unvollstaendige Kennung abweist - und die Meldung
@@ -1540,11 +1678,20 @@ function wp_oc_geraete()
     $info = wp_hersteller_info('onecta');
     $a = wp_http('GET', $info['basis'] . '/v1/gateway-devices', array('Authorization: Bearer ' . $t), null, 25);
     wp_budget_buchen('onecta');
+    /* Der Statuscode entscheidet, nicht das blosse Ankommen von Bytes.
+     * wp_oc_lesen() macht das richtig vor; hier fehlte es. Gemessen: auf eine
+     * Fehler-LISTE wie [{"code":401,"message":"no"}] entstand eine Geisterzeile
+     * {"id":"","name":"Daikin"} in der Geraeteliste - ein Geraet, das es nicht
+     * gibt, sieht dort aus wie eines, das es gibt. */
+    if ((int) $a['code'] !== 200) { return array(); }
     $d = wp_json($a);
     if (!is_array($d)) { return array(); }
     $out = array();
     foreach ($d as $dev) {
         if (!is_array($dev)) { continue; }
+        // Ein Eintrag ohne Kennung ist keiner - er waere in jeder Auswahl ein
+        // leerer Posten, den man anklicken kann.
+        if (!isset($dev['id']) || (string) $dev['id'] === '') { continue; }
         $out[] = array(
             'id'     => isset($dev['id']) ? (string) $dev['id'] : '',
             'name'   => isset($dev['deviceModel']) ? (string) $dev['deviceModel'] : 'Daikin',
@@ -2946,13 +3093,30 @@ function wp_sg_anwenden($cfg, $stufe, $stand = null)
             $getan[] = 'climateControl.onOffMode=on';
             if (!$ok) { return array(0, $grund, implode(' ', $getan)); }
 
-            if ($basis > 0) {
-                $soll = $basis + ($stufe === 3 ? $cfg['anhebung_3'] : ($stufe === 4 ? $cfg['anhebung_4'] : 0));
-                list($ok, $grund) = wp_oc_setzen($cfg, 'climateControl', 'temperatureControl', $soll,
-                    '/operationModes/heating/setpoints/roomTemperature');
-                $getan[] = 'Sollwert=' . $soll;
-                if (!$ok) { return array(0, $grund, implode(' ', $getan)); }
+            /* OHNE GEMERKTEN GRUNDSOLLWERT WIRD ABGESAGT, NICHT GEMELDET.
+             *
+             * Bis 0.9.16 stand hier nur "if ($basis > 0)". Fehlte der
+             * Grundsollwert, wurde die Anhebung stillschweigend uebersprungen
+             * und der $ok des Einschaltbefehls zurueckgegeben - also ok=1.
+             * myVAILLANT und EMS-ESP sagen an derselben Stelle korrekt
+             * KEIN_GRUNDSOLLWERT ab; Onecta und MELCloud taten es nicht.
+             *
+             * Die Folge war nicht nur eine falsche Erfolgsmeldung, sondern
+             * eine Sackgasse: wp_sg_durchsetzen() merkt sich daraufhin
+             * stufe_gesetzt=3, und die Lernbedingung weiter unten in
+             * wp_abrufen() verlangt ausdruecklich stufe_gesetzt===2. Der
+             * Grundsollwert konnte danach NIE mehr gelernt werden, und weil
+             * stufe_gesetzt bereits dem Wunsch entsprach, wurde auch nie
+             * wieder geschaltet. In Loxone stand "Stufe 3", angehoben hat nie
+             * jemand etwas. */
+            if ($basis <= 0) {
+                return array(0, 'KEIN_GRUNDSOLLWERT', implode(' ', $getan));
             }
+            $soll = $basis + ($stufe === 3 ? $cfg['anhebung_3'] : ($stufe === 4 ? $cfg['anhebung_4'] : 0));
+            list($ok, $grund) = wp_oc_setzen($cfg, 'climateControl', 'temperatureControl', $soll,
+                '/operationModes/heating/setpoints/roomTemperature');
+            $getan[] = 'Sollwert=' . $soll;
+            if (!$ok) { return array(0, $grund, implode(' ', $getan)); }
             if ($stufe === 4 && $cfg['ww_boost_4']) {
                 list($ok, $grund) = wp_oc_setzen($cfg, 'domesticHotWaterTank', 'powerfulMode', 'on');
                 $getan[] = 'Warmwasser-Zwang=on';
@@ -2972,10 +3136,16 @@ function wp_sg_anwenden($cfg, $stufe, $stand = null)
                 return array($ok, $grund, 'Power=false');
             }
             $felder['Power'] = true;
-            if ($basis > 0) {
-                $felder['SetTemperatureZone1'] = $basis
-                    + ($stufe === 3 ? $cfg['anhebung_3'] : ($stufe === 4 ? $cfg['anhebung_4'] : 0));
+            /* Dieselbe Absage wie bei Onecta, myVAILLANT und EMS-ESP - siehe
+             * die ausfuehrliche Begruendung im Onecta-Zweig. Ohne
+             * Grundsollwert gaebe es hier nur Power=true, und das waere die
+             * Meldung "Stufe 3 gesetzt" fuer einen Vorgang, bei dem nichts
+             * angehoben wurde. */
+            if ($basis <= 0) {
+                return array(0, 'KEIN_GRUNDSOLLWERT', 'Power=true');
             }
+            $felder['SetTemperatureZone1'] = $basis
+                + ($stufe === 3 ? $cfg['anhebung_3'] : ($stufe === 4 ? $cfg['anhebung_4'] : 0));
             if ($cfg['ww_boost_4']) {
                 $felder['ForcedHotWaterMode'] = ($stufe === 4);
             }
@@ -3413,13 +3583,52 @@ function wp_abrufen($erzwingen = false)
 
     if ($cfg['hersteller'] === '') { return array(0, 'KEIN_HERSTELLER'); }
 
-    if (!$erzwingen && $stand['zeit'] > 0 && (time() - (int) $stand['zeit']) < (int) $cfg['takt']) {
+    /* DIE BREMSE HAENGT AM LETZTEN VERSUCH, NICHT AM LETZTEN ERFOLG.
+     *
+     * Bis 0.9.16 stand hier $stand['zeit'] - dieselbe Marke, die ALTER
+     * traegt. Die wird mit gutem Grund nur fortgeschrieben, wenn wirklich
+     * Werte kamen (weiter unten, im Zweig $u['werte']): sonst saehe ein toter
+     * Abruf in Loxone aus wie ein frischer. Fuer den Takt ist genau das aber
+     * die falsche Marke. Sobald ein Abruf scheitert, bleibt sie stehen, die
+     * Bedingung ist dauerhaft falsch, und cron.01min schickt JEDE MINUTE eine
+     * echte Anfrage an die Herstellercloud.
+     *
+     * Gemessen (EMS-ESP auf 192.0.2.1, Takt 300 s, vier Cron-Laeufe):
+     *
+     *     letzter Erfolg 10 s her    0 von 4 gingen ins Netz   (gebremst)
+     *     letzter Erfolg 420 s her   4 von 4 gingen ins Netz   <-- der Fehler
+     *
+     * Der Mindesttakt des Herstellers ist damit ausgerechnet im Stoerfall
+     * wirkungslos - und der Stoerfall "Kennwort abgelehnt" ist der, bei dem
+     * MELCloud laut dem Kopfkommentar dieser Datei das ganze Konto fuer
+     * Stunden sperrt.
+     *
+     * Deshalb zwei Marken statt einer:
+     *   zeit    - letzter Durchlauf MIT Werten. Traegt ALTER. Unveraendert.
+     *   versuch - letzter Durchlauf ueberhaupt. Traegt die Bremse.
+     *
+     * Der Rueckfall auf 'zeit' faengt den Uebergang ab: auf einer Anlage, die
+     * von 0.9.16 kommt, gibt es 'versuch' noch nicht. */
+    $letzter = max((int) (isset($stand['versuch']) ? $stand['versuch'] : 0),
+                   (int) $stand['zeit']);
+    if (!$erzwingen && $letzter > 0 && (time() - $letzter) < (int) $cfg['takt']) {
         return array(1, 'NOCH_FRISCH');
     }
     if (!wp_budget_frei($cfg['hersteller'])) {
         wp_log('Tagesbudget aufgebraucht - kein Abruf', 'budget_leer');
         return array(0, 'BUDGET_LEER');
     }
+
+    /* Ab hier geht wirklich eine Anfrage hinaus - also wird die Bremsmarke
+     * gesetzt, und zwar VOR dem Abruf und sofort auf die Platte.
+     *
+     * Erst hinterher zu schreiben hiesse: ein Lauf, der in einer Zeitgrenze
+     * haengenbleibt oder abgeraeumt wird, hinterliesse keine Marke - und der
+     * naechste Cronlauf ginge eine Minute spaeter wieder hinaus, ausgerechnet
+     * gegen eine Gegenstelle, die gerade nicht mag. Das ist ein Schreibvorgang
+     * je tatsaechlichem Abruf, nicht je Minute. */
+    $stand['versuch'] = time();
+    wp_stand_write($stand);
 
     /* Zufaellige Verzoegerung vor dem tatsaechlichen Abruf.
      *
@@ -3822,6 +4031,28 @@ function wp_t($schluessel)
  *
  * Rueckgabe: array(Konfiguration|null, Beanstandungen[], uebernommene Werte).
  */
+/**
+ * Taugt ein Wert ueberhaupt fuer eine Einstellung dieses Plugins?
+ *
+ * Bis 0.9.16 wurde nur der SCHLUESSEL geprueft und der Wert ungeprueft
+ * uebernommen. Gemessen an 0.9.16, jeweils angenommen und gespeichert:
+ * ein Feld statt einer Zeichenkette (danach "Array to string conversion" bei
+ * JEDEM Seitenaufbau, auch im Cron und im Endpunkt, weil alle dieselbe
+ * Bibliothek laden), ein Wert mit 100 000 Zeichen (der Reiter MQTT wuchs auf
+ * 2,8 MB), ein Wahrheitswert im Zahlenfeld und ein Zeilenumbruch im
+ * MQTT-Thema.
+ *
+ * Geprueft wird die FORM, nicht der Inhalt: was inhaltlich zulaessig ist,
+ * entscheidet weiterhin wp_config() an einer Stelle fuer alle Wege.
+ */
+function wp_wert_taugt($w)
+{
+    if (is_array($w) || is_object($w) || is_bool($w) || is_null($w)) { return false; }
+    $s = (string) $w;
+    if (strlen($s) > WP_ZUORDNUNG_MAX) { return false; }
+    return preg_match('/[\x00-\x08\x0A-\x1F\x7F]/', $s) !== 1;
+}
+
 function wp_sicherung_lesen($roh)
 {
     $mangel = array();
@@ -3829,20 +4060,65 @@ function wp_sicherung_lesen($roh)
     if (!is_array($daten)) {
         return array(null, array(wp_t('EINST.SICH_KEIN_JSON')), 0);
     }
-    $neu = wp_vorgaben();
-    $bekannt = array_keys($neu);
+
+    /* DIE GRUNDLAGE IST DER JETZIGE STAND, NICHT DIE WERKSEINSTELLUNG.
+     *
+     * Bis 0.9.16 stand hier $neu = wp_vorgaben(). Damit setzte eine Datei,
+     * die nur zwei Schluessel trug, die uebrigen 31 stillschweigend auf Werk
+     * zurueck - einschliesslich des AKTIONSTOKENS. Gemessen an 0.9.16 mit
+     * {"takt":600,"mqtt_topic":"nurzwei"}:
+     *
+     *     vorher   hersteller=melcloud geraet=MEINGERAET basis_soll=38
+     *              aktionstoken=cMpvmRvC...
+     *     Meldung  "2 Werte uebernommen", keine Beanstandung
+     *     nachher  hersteller='' geraet='' basis_soll=0 aktionstoken=''
+     *
+     * Das leere Token wurde beim naechsten Seitenaufbau neu gewuerfelt, und
+     * danach holte kein virtueller Eingang im Miniserver mehr einen Wert -
+     * ohne Meldung. Der Kommentar ueber dieser Funktion sicherte dabei seit
+     * jeher zu, eine halb gueltige Datei ueberschreibe GAR NICHTS. Sie tat es.
+     *
+     * Der jetzige Stand als Grundlage loest beides: ein Schluessel, den die
+     * Datei nicht nennt, behaelt seinen Wert, und nichts faellt still auf
+     * Werk zurueck. So haelt es auch Intercom. Was gefehlt hat, wird
+     * trotzdem GENANNT - sonst waere die Uebernahme wieder stumm. */
+    $neu = wp_config();
+    $bekannt = array_keys(wp_vorgaben());
     $anzahl = 0;
+    $fehlend = array();
     foreach ($daten as $k => $w) {
+        /* Der lesbare Kopf wird UEBERGANGEN, nicht beanstandet. Er ist
+         * Hausvorgabe; wer ihn ergaenzt, ohne diese Zeile zu haben, baut ein
+         * Plugin, das seine eigene Sicherung ablehnt. */
+        if ((string) $k !== '' && $k[0] === '_') { continue; }
         if (!in_array($k, $bekannt, true)) {
             $mangel[] = sprintf(wp_t('EINST.SICH_FREMD'),
+                                 htmlspecialchars((string) $k, ENT_QUOTES, 'UTF-8'));
+            continue;
+        }
+        if (!wp_wert_taugt($w)) {
+            $mangel[] = sprintf(wp_t('EINST.SICH_WERT'),
                                  htmlspecialchars((string) $k, ENT_QUOTES, 'UTF-8'));
             continue;
         }
         $neu[$k] = $w;
         $anzahl++;
     }
+    foreach ($bekannt as $k) {
+        if (!array_key_exists($k, $daten)) { $fehlend[] = $k; }
+    }
     if ($anzahl === 0) {
         $mangel[] = wp_t('EINST.SICH_LEER');
+    }
+    if ($fehlend && !$mangel) {
+        /* Kein Grund zur Ablehnung - die Datei kann aus einer aelteren
+         * Fassung stammen, und der jetzige Wert bleibt ja stehen. Aber gesagt
+         * wird es: ein Anwender, der 33 Einstellungen erwartet und 30 bekommt,
+         * soll das lesen und nicht suchen. */
+        $mangel[] = sprintf(wp_t('EINST.SICH_UNVOLLSTAENDIG'),
+                            count($fehlend),
+                            htmlspecialchars(implode(', ', $fehlend), ENT_QUOTES, 'UTF-8'));
+        return array($neu, $mangel, $anzahl);
     }
     return array($mangel ? null : $neu, $mangel, $anzahl);
 }
@@ -3900,9 +4176,16 @@ function wp_merkwort()
     }
     /* Rechte VOR dem Inhalt: zwischen Anlegen und chmod laege sonst ein
      * Fenster, in dem das Merkwort fuer alle lesbar ist. */
-    $tmp = $datei . '.tmp';
+    $tmp = $datei . '.tmp.' . getmypid();
+    /* Erst leer anlegen, DANN die Rechte, dann fuellen. Bis 0.9.16 stand hier
+     * file_put_contents vor dem chmod - also genau das Fenster, das der
+     * Kommentar darueber schliessen will. wp_json_schreiben() macht es
+     * richtig vor. Und die Prozessnummer im Namen, weil Cron, Oberflaeche und
+     * Endpunkt dieselbe Datei schreiben koennen. */
+    if (is_file($tmp)) { @unlink($tmp); }
+    @touch($tmp);
+    @chmod($tmp, 0600);
     if (@file_put_contents($tmp, $neu) !== false) {
-        @chmod($tmp, 0600);
         if (@rename($tmp, $datei)) {
             @chmod($datei, 0600);
         } else {

@@ -5,4 +5,15 @@
 #
 # Ueber den Interpreter aufgerufen, nicht ueber die Raute-Zeile: geht beim
 # Entpacken das Ausfuehrungsrecht verloren, laeuft der Abruf trotzdem an.
-/usr/bin/php REPLACELBPBINDIR/wp_abruf.php >/dev/null 2>&1
+# WARUM DIE FEHLERAUSGABE NICHT MEHR NACH /dev/null GEHT
+# Bis 0.9.16 stand hier ">/dev/null 2>&1". Damit war JEDE Meldung fort, die
+# der Dienst nicht selbst ins Protokoll schreibt - ein "Failed opening
+# required" beim Einbinden der Bibliothek etwa faellt an, BEVOR wp_log()
+# ueberhaupt zur Verfuegung steht. Der Takt liefe dann Fassungen lang leer,
+# ohne dass irgendwo etwas davon stuende. Dieselbe Klasse hat den
+# EVCC-Abrufdienst der Fassung 0.9.8 gekostet.
+#
+# Die regulaere Ausgabe bleibt still - sonst schreibt der Cron jede Minute.
+# Die FEHLERausgabe landet neben dem Protokoll und ist im Reiter Logdateien
+# zu sehen.
+/usr/bin/php REPLACELBPBINDIR/wp_abruf.php >/dev/null 2>>REPLACELBPLOGDIR/cron.err

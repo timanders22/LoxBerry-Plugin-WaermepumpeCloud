@@ -50,6 +50,176 @@ Ein Knopf im Reiter *Test* fragt das Gateway, **was sich schreiben lässt**
 Liste kommt vom Gerät und stimmt auch bei einem Modell, das dieses Plugin nie
 gesehen hat.
 
+## Neu in 0.9.17
+
+Diese Fassung ist das Ergebnis einer zeilenweisen Durchsicht der 0.9.16. Sie
+behebt **acht Fehler, die im Betrieb Schaden anrichten**, und dazu eine Reihe
+kleinerer Punkte. Jeder Befund unten ist an einem Prüfstand nachgemessen —
+mit einem grünen Kontrollfall und einer Gegenprobe, die zeigt, dass die
+Korrektur nicht bloß durchwinkt. Was **nicht** gemessen werden konnte, steht
+am Ende dieses Abschnitts.
+
+> Für 0.9.13 bis 0.9.16 gibt es hier keine Abschnitte. Das ist kein Versehen
+> dieser Fassung: ein Abschnitt je Fassung ist im Hausbestand nicht die Regel
+> (von 105 Plugin-Ständen tragen 88 überhaupt einen, 17 keinen einzigen), und
+> nachträglich zu beschreiben, was ich nicht gebaut habe, hieße raten.
+
+### Acht Fehler, die repariert werden mussten
+
+**Eine beschädigte Konfiguration hat still alles zurückgesetzt.** Stand in
+`waermepumpe.json` etwas, das kein gültiges JSON ist — ein abgebrochener
+Schreibvorgang, ein Dateisystemfehler —, lieferte `wp_config()` die
+Werkseinstellungen, erzeugte ein **neues Aktionstoken** und überschrieb damit
+die Zweitschrift, in der der alte Stand noch lag. Danach war der alte Stand
+fort, sämtliche Adressen im Miniserver zeigten ins Leere, und in keinem
+Protokoll stand ein Wort darüber. Gemessen unter PHP 7.4 und 8.4, beide
+gleich. Jetzt kennt die Funktion drei Lagen statt zwei: *heil* bleibt
+unangetastet, *leer* wird aus der Zweitschrift geheilt, *unlesbar* legt die
+kaputte Datei als `waermepumpe.json.kaputt` beiseite, holt den Stand aus der
+Zweitschrift zurück und schreibt zwei Zeilen ins Protokoll.
+
+**Der Rückfallweg beim Aktualisieren zeigte in den Ordner, den der Installer
+abräumt.** `preupgrade.sh` legte seine Sicherung nach
+`$LBPCONFIG/<ordner>/.upgrade`, falls das Skript ohne sechstes Argument
+aufgerufen wird. Genau dieses Verzeichnis löscht `plugininstall.pl` in
+`purge_installation` (Zeilen 1629/1631, aufgerufen im Upgrade-Zweig bei 886).
+Nachgestellt: **mit** sechstem Argument überlebt alles, **ohne** es gingen das
+Aktionstoken und `geheim.json` — also die Zugangsdaten der Herstellercloud —
+verloren, während `waermepumpe.json` sich über die Zweitschrift wieder
+einfand. Die Sicherung liegt jetzt **neben** dem Ordner
+(`<ordner>.upgrade`), `postupgrade.sh` holt sie von dort und räumt sie weg;
+beide Wege sind gemessen und grün.
+
+**Die Deinstallation konnte einen fremden Ordner löschen und `<OK>` melden.**
+Die Wache davor verglich `basename` mit sich selbst und war damit immer wahr.
+Mit einem um eine Ebene verschobenen `LBPDATA` — genau der Fall, den die
+Fassung 0.9.11 an dieser Datei schon einmal behoben hat — löschte das Skript
+einen fremden Plugin-Ordner, ließ die eigene Tokendatei stehen und meldete
+Erfolg. Jetzt müssen **beide** Bäume vorhanden sein und die Elternpfade
+wörtlich auf `config/plugins` und `data/plugins` enden; am Ende wird
+nachgezählt, und was übrig bleibt, führt zu `<FAIL>` mit Rückgabewert 1.
+
+**Der unangemeldete Endpunkt hat geschrieben.** Er ruft `wp_config()` auf; die
+Selbstheilung darin legte bei vorhandener Zweitschrift Dateien an. Gemessen:
+mit Zweitschrift wuchs der Baum bei einem Aufruf **ohne Token** von 9 auf 11
+Einträge, ohne Zweitschrift blieb er bei 8 — deshalb war der erste Messversuch
+grün und der Befund erst in der Gegenprobe zu sehen. Die Selbstheilung hängt
+jetzt an `wp_config($token_anlegen)`, und der Endpunkt ruft sie mit `false`
+auf. Er liest, er schreibt nicht, er legt nichts an.
+
+**Die Taktbremse hing am letzten *Erfolg*.** Damit war sie ausgerechnet im
+Störfall wirkungslos: sobald ein Abruf scheiterte, blieb die Marke stehen, die
+Bedingung war dauerhaft falsch, und `cron.01min` schickte **jede Minute** eine
+echte Anfrage hinaus — gegen eine Gegenstelle, die gerade nicht antwortet.
+Gemessen (EMS-ESP auf 192.0.2.1, Takt 300 s, vier Cron-Läufe): 4 von 4 gingen
+ins Netz. Jetzt trägt eine zweite Marke die Bremse — `versuch`, der letzte
+Durchlauf überhaupt, vor dem Abruf gesetzt und sofort geschrieben. Dieselbe
+Messung: **1 von 4**, und das ist der richtige Wert (der erste Lauf war
+fällig). Der Kontrollfall — letzter Erfolg 10 s her — bleibt in beiden
+Fassungen bei 0 von 4.
+
+**Zustand 3 und 4 meldeten Erfolg, ohne etwas getan zu haben.** Bei Daikin und
+Mitsubishi wird SG Ready nachgebildet, indem der Sollwert angehoben wird —
+dafür braucht es den gemerkten Grundsollwert. Fehlte er, wurde nichts
+angehoben und trotzdem Erfolg gemeldet. Das ist eine Sackgasse: die
+Lernbedingung für den Grundsollwert verlangt `stufe_gesetzt === 2`, und den
+erreicht die Anlage nach einem gemeldeten Erfolg nicht mehr von selbst. Jetzt
+antworten beide Zweige mit `KEIN_GRUNDSOLLWERT`.
+
+**Das Zurückspielen einer Sicherung setzte 31 von 33 Einstellungen zurück.**
+Grundlage war `wp_vorgaben()` statt des jetzigen Standes: alles, was die Datei
+nicht kannte, fiel auf die Werkseinstellung — einschließlich des
+Aktionstokens, also sämtlicher Adressen im Miniserver. Gemeldet wurde
+„übernommen". Jetzt ist der jetzige Stand die Grundlage, fehlende Schlüssel
+behalten ihren Wert und werden benannt, unbrauchbare Werte werden abgewiesen
+statt übernommen, und Schlüssel mit führendem `_` werden übersprungen.
+
+**Die Texte zur Sicherung behaupteten das Gegenteil der Wahrheit.** Dort stand
+„Die Datei enthält Ihre Zugangsdaten" — sie enthält sie **nicht**; die liegen
+in `geheim.json` und werden nicht ausgegeben. Sie enthält aber das
+**Aktionstoken**, und damit kann jeder, der die Datei hat, über den
+unangemeldeten Endpunkt SG-Ready-Zustände setzen. Beide Sätze sind
+richtiggestellt, in beiden Sprachen.
+
+### Weitere Korrekturen
+
+* **Die Selbstprüfung lief bei jedem Seitenaufbau** und ging dabei ins Netz —
+  Anmeldung, Geräteliste, Werte. Alle Reiter entstehen im selben Durchlauf,
+  die Reiterleiste schaltet nur im Browser um; wer den Reiter *Einstellungen*
+  sehen wollte, wartete trotzdem. Gemessen: **30,9 s** für `?form=settings`.
+  Jetzt läuft sie nur auf dem Reiter *Test*; wer von woanders kommt, bekommt
+  einen Knopf. Nachgemessen: 0,96 s statt 30,9 s, und der Knopf löst die
+  Prüfung wirklich aus (30,15 s, Tabelle da).
+* **Die Zeile „Selbsttest des Endpunkts" stand fest auf einem grünen Haken**,
+  obwohl dort nichts gemessen wird — sie zeigt nur die Adresse an. Sie ist
+  jetzt ein Hinweis. Ebenso zählt die Zusammenfassung Hinweise nicht mehr als
+  bestanden.
+* **Der Herstellerwechsel löschte die Gatewayadresse.** Das Feld `ems_url`
+  steht im Formular nur, wenn EMS-ESP bereits gespeichert ist; beim Wechsel
+  von einem anderen Hersteller kam es als leer an und überschrieb den Wert —
+  ohne eine einzige Meldung. Gemessen über `emsesp → onecta → emsesp`.
+  Dieselbe Ursache meldete beim Wechsel auf Vaillant „Diese Marke gibt es bei
+  myVAILLANT nicht", obwohl nach der Marke nie gefragt wurde. Beide Felder
+  werden nur noch ausgewertet, wenn sie auch abgeschickt wurden; die
+  Formprüfung greift unverändert, sobald sie da sind.
+* **`simplexml` wurde ohne Wache aufgerufen.** Fehlt `php-xml`, wäre das ein
+  „Call to undefined function" — ein fataler Fehler, der die ganze Oberfläche
+  anhält, wegen einer Nebenprüfung. Jetzt fragt der Code erst nach der
+  Funktion, und `dpkg/apt` fordert das Paket an.
+* **Der unangemeldete Endpunkt druckte absolute Pfade in den Rumpf**, wenn er
+  die Bibliothek nicht fand — vor jeder Tokenprüfung. Sie gehen jetzt an
+  `error_log()`.
+* **Die Fehlerausgabe des Cron ging nach `/dev/null`.** Damit wäre jede
+  Meldung fort, die vor `wp_log()` anfällt — genau die Klasse Fehler, die das
+  EVCC-Plugin eine Fassung lang unbemerkt lahmgelegt hat. Sie landet jetzt in
+  `cron.err` neben dem Protokoll.
+* **Die Fassungsnummer stand doppelt.** `WP_FASSUNG` war fest auf `0.9.12`
+  verdrahtet, während `plugin.cfg` 0.9.16 trug; die Konstante ging als
+  User-Agent hinaus. Die Nummer kommt jetzt aus
+  `data/system/plugindatabase.json`, also aus einer Quelle.
+* **Das Merkwort wurde erst gefüllt und dann geschützt.** Zwischen Anlegen und
+  `chmod` lag ein Fenster, in dem es für alle lesbar war — der Kommentar
+  darüber versprach genau das Gegenteil. Jetzt: leer anlegen, Rechte, füllen.
+  Der Name trägt zusätzlich die Prozessnummer, weil Cron, Oberfläche und
+  Endpunkt dieselbe Datei schreiben können.
+* **Eine Fehlerliste von Daikin wurde als Geräteliste gelesen** und ergab eine
+  Geisterzeile `{"id":"","name":"Daikin"}`. Jetzt entscheidet der Statuscode,
+  und Einträge ohne `id` fallen heraus.
+* **Der Bausteinliste fehlte der Rückweg.** Die vier SG-Ready-Ausgänge haben
+  bewusst keinen Aus-Befehl — jeder sendet nur, wenn er auf 1 geht. Die Liste
+  verdrahtete `WP_SGREADY_4` und `WP_SGREADY_1`, aber `WP_SGREADY_2` kam nicht
+  vor: wer sie von oben nach unten abarbeitet, baut eine Einbahnstraße. Neuer
+  Baustein **#9**.
+* **Kleineres:** `catch (Exception)` fing keinen `Error` (jetzt `Throwable`);
+  eine SG-Meldung zeigte den nackten Schlüssel statt eines Satzes; `?stufe[]=`
+  und `?aktion[]=` bekommen dieselbe `is_array`-Wache wie die Klemmen; die
+  Auswahlfelder bekommen den Pfeil des Hausstandards, und `.sm-breit` fehlte
+  als einzige Klasse des Hausblocks.
+* **Texte:** Zählfehler („die drei Schnittstellen" bei fünf Wegen, „drei
+  Wolken" bei vier), ein Tippfehler, der Reitername *Logdateien*, ein
+  Suchmuster mit Umlaut, das ohne `/u` nie traf, und drei Stellen zur
+  Nachbildung, die Vaillant und das EMS-Gateway verschwiegen. Zwei tote
+  Schlüssel entfernt, vier neue aufgenommen.
+
+### Was in dieser Fassung *nicht* gemessen ist
+
+Das gehört genauso hierher wie der Rest:
+
+* **`retain` am laufenden MQTT-Gateway** und das **Mithören fremder Themen am
+  Broker** sind ungemessen. Auf dem LoxBerry dieses Hauses läuft **MQTT
+  Gateway Version 1**; über das Verhalten einer anderen Fassung steht hier
+  nichts.
+* Es hing bei dieser Durchsicht **keine Wärmepumpe und kein Herstellerkonto**
+  am Prüfstand. Alle Messungen laufen gegen `192.0.2.1` (RFC 5737) oder gegen
+  nachgestellte Antworten. Was die echten Clouds tatsächlich zurückgeben,
+  bleibt unverändert das, was die früheren Fassungen dazu sagen.
+* **Bewusst nicht geändert**, weil es eine Entscheidung des Betreibers ist und
+  nicht die einer Durchsicht: der Probemodus prüft weiterhin nicht die ganze
+  Kette, bevor er das Senden unterlässt; `wp_ml_setzen()` schreibt weiterhin
+  auch bei noch unbekanntem Gerätetyp; die Zugangsdaten bleiben aus der
+  Sicherungsdatei heraus; und die Loxone-Vorlage bietet weiterhin Felder an,
+  die nicht jeder Hersteller liefert.
+
 ## Neu in 0.9.12
 
 **Die Bedienoberfläche war auf dem Gerät nicht erreichbar.** Jeder Aufruf von
@@ -384,7 +554,7 @@ optional mit Faktor: `#2305|0.0001`.
 | Richtung | Weg |
 |---|---|
 | Wärmepumpe → Loxone | MQTT (Regelweg) und ein virtueller HTTP-Eingang mit einer Statuszeile |
-| Loxone → Wärmepumpe | Token-Endpunkt, vier virtuelle Ausgänge (einer je SG-Ready-Zustand) |
+| Loxone → Wärmepumpe | Token-Endpunkt, fünf virtuelle Ausgänge: einer je SG-Ready-Zustand, dazu die Warmwasser-Zwangsladung |
 
 Der HTTP-Eingang **löst keinen Cloud-Abruf aus** — er liest nur den
 Zwischenstand. Ein zu häufig fragender Eingang kann damit weder das
@@ -414,7 +584,7 @@ Inhalt nein. Beim Deinstallieren werden sie gelöscht.
 ```
 bin/wp_abruf.php                   Abrufdienst (aus cron.01min)
 webfrontend/htmlauth/index.php     Bedienoberflaeche, sechs Reiter
-webfrontend/htmlauth/wp_lib.php    Konfiguration, drei Hersteller-Adapter,
+webfrontend/htmlauth/wp_lib.php    Konfiguration, fuenf Hersteller-Adapter,
                                    SG-Ready-Uebersetzer, Vorlagen
 webfrontend/htmlauth/wp_test.php   Selbstpruefung und Test-Aktionen
 webfrontend/html/index.php         Token-Endpunkt fuer den Miniserver
