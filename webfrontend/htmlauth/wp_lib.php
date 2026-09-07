@@ -72,9 +72,28 @@ function wp_fassung()
             }
         }
     }
-    /* 'unbekannt' ist die richtige Antwort, wenn die Datenbank nicht lesbar
-     * ist - eine geratene Nummer waere schlechter als gar keine. Sie steht
-     * dann so im User-Agent, und das ist eine Auskunft. */
+    /* NEU 0.9.19: bevor 'unbekannt' stehenbleibt, wird die plugin.cfg
+     * gefragt. Am Pruefstand gemessen (07.09.2026): installiert stimmt die
+     * Fassung, im AUSPACKORDNER stand 'unbekannt' - dort gibt es keine
+     * Datenbank. Das betraf jeden Lauf im Arbeitsordner, also auch die
+     * Sicherungsdatei und die Freigabenotiz.
+     *
+     * Die Reihenfolge bleibt: auf einer Installation gibt es die plugin.cfg
+     * nicht, deshalb steht sie hinten. */
+    if ($f === 'unbekannt') {
+        foreach (array(dirname(dirname(__DIR__)) . '/plugin.cfg',
+                       dirname(dirname(dirname(__DIR__))) . '/plugin.cfg') as $k) {
+            if (!is_readable($k)) { continue; }
+            $roh = (string) @file_get_contents($k);
+            if (preg_match('/^\s*VERSION\s*=\s*([^\r\n]+)/mi', $roh, $m)) {
+                $f = trim($m[1], " \t\"'");
+                break;
+            }
+        }
+    }
+    /* 'unbekannt' bleibt die richtige Antwort, wenn beide Wege ausfallen -
+     * eine geratene Nummer waere schlechter als gar keine. Sie steht dann so
+     * im User-Agent, und das ist eine Auskunft. */
     return $f;
 }
 define('WP_STUFEN', 4);          // SG Ready kennt genau vier Zustaende
