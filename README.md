@@ -50,6 +50,12 @@ Ein Knopf im Reiter *Test* fragt das Gateway, **was sich schreiben lässt**
 Liste kommt vom Gerät und stimmt auch bei einem Modell, das dieses Plugin nie
 gesehen hat.
 
+## Neu in 0.9.18
+
+Die erzeugten Loxone-Vorlagen nannten das Plugin „Waermepumpe"; in der
+Plugin-Verwaltung hieß es längst „Wärmepumpe Cloud". Jetzt sagen beide
+dasselbe.
+
 ## Neu in 0.9.17
 
 Diese Fassung ist das Ergebnis einer zeilenweisen Durchsicht der 0.9.16. Sie

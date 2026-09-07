@@ -3446,10 +3446,10 @@ function wp_vorlage_ein()
     }
     $cfg = wp_config();
     return array('VI_waermepumpe.xml', wp_xml_virtual_in_http(array(
-        'title'   => 'Waermepumpe Cloud',
+        'title'   => 'Wärmepumpe Cloud',
         'address' => wp_endpunkt('status'),
         'polling' => (string) max(60, (int) $cfg['takt']),
-        'comment' => 'Erzeugt vom LoxBerry-Plugin Waermepumpe Cloud (' . date('d.m.Y') . '). '
+        'comment' => 'Erzeugt vom LoxBerry-Plugin Wärmepumpe Cloud (' . date('d.m.Y') . '). '
                    . 'Loxone Config legt beim Import neu an und ueberschreibt nichts - '
                    . 'zweimal eingelesen ergibt doppelte Bausteine.',
     ), $cmds));
@@ -3496,9 +3496,9 @@ function wp_vorlage_aus()
         ? preg_replace('/[^A-Za-z0-9\.\-:]/', '', (string) $_SERVER['HTTP_HOST'])
         : (gethostname() ?: 'loxberry');
     return array('VQ_waermepumpe.xml', wp_xml_virtual_out(array(
-        'title'   => 'Waermepumpe SG Ready',
+        'title'   => 'Wärmepumpe SG Ready',
         'address' => 'http://' . $host,
-        'comment' => 'Erzeugt vom LoxBerry-Plugin Waermepumpe Cloud (' . date('d.m.Y') . '). '
+        'comment' => 'Erzeugt vom LoxBerry-Plugin Wärmepumpe Cloud (' . date('d.m.Y') . '). '
                    . 'Je Zustand ein Ausgang - immer nur einen gleichzeitig auf 1 setzen.',
         'close'   => 1,
         'cmdsep'  => '',
