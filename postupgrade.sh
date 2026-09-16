@@ -50,6 +50,26 @@ done
 chmod 0600 "$CFGDIR/waermepumpe.json" 2>/dev/null
 chmod 0600 "$CFGDIR/geheim.json" 2>/dev/null
 
+# Rechte BEIDER Zweitschriften neben dem Ordner nachziehen (NEU 0.9.20).
+#
+# Am Geraet gemessen (17.09.2026): waermepumpe.backup.waermepumpe.json lag mit
+# -rw-rw-r-- da, Stand 17.08.2026, mit dem Aktionstoken darin. Kein
+# Hakenskript hatte sie je angefasst, und die PHP-Seite setzt 0600 nur, wenn
+# sie die Datei neu schreibt. Gemeldet wird, was nachgelesen wurde, nicht was
+# beabsichtigt war (Regeln/06).
+for ZW in "$(dirname "$CFGDIR")/$PFOLDER.backup.waermepumpe.json" \
+          "$(dirname "$CFGDIR")/$PFOLDER.backup.geheim.json"; do
+    [ -f "$ZW" ] || continue
+    VORHER=$(stat -c %a "$ZW" 2>/dev/null)
+    chmod 0600 "$ZW" 2>/dev/null
+    NACHHER=$(stat -c %a "$ZW" 2>/dev/null)
+    if [ "$VORHER" != "$NACHHER" ]; then
+        echo "<INFO> Rechte von $(basename "$ZW"): $VORHER -> $NACHHER."
+    elif [ "$NACHHER" != "600" ]; then
+        echo "<WARNING> Rechte von $(basename "$ZW") stehen auf $NACHHER und liessen sich nicht aendern."
+    fi
+done
+
 # Hier stand "rm -f $MERKER". Mit dem Merker ist auch das entfallen - die
 # Variable gab es danach nicht mehr, und "rm -f ''" ist kein Aufraeumen.
 # Der Arbeitsordner des Installers wird von LoxBerry selbst aufgeraeumt.

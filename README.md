@@ -50,6 +50,115 @@ Ein Knopf im Reiter *Test* fragt das Gateway, **was sich schreiben lässt**
 Liste kommt vom Gerät und stimmt auch bei einem Modell, das dieses Plugin nie
 gesehen hat.
 
+## Neu in 0.9.20
+
+Diese Fassung ist das Ergebnis einer Messung **am installierten 0.9.19** auf
+dem LoxBerry des Hauses (17.09.2026, SSH und Browser) und eines Durchgangs
+gegen die seit dem 02.09.2026 fortgeschriebenen Hausregeln. Jeder Punkt unten
+ist gemessen — am Gerät, am nachgebauten Gerät oder über einen echten
+Webserver —, und zwar 0.9.19 und 0.9.20 unter derselben Bedingung.
+
+### Am Gerät gefunden
+
+* **Die Zweitschrift der Konfiguration war für jeden lesbar.**
+  `waermepumpe.backup.waermepumpe.json` lag mit `-rw-rw-r--` neben dem
+  Ordner, Stand 17.08.2026, mit dem Aktionstoken darin. Die Schreibfunktion
+  setzt seit 0.9.17 zwar 0600 — aber nur, wenn sie die Datei neu schreibt,
+  und das war seither nicht geschehen. Jetzt ziehen `postinstall.sh`,
+  `postupgrade.sh` und die Lesefunktion die Rechte beider Zweitschriften und
+  beider Originale nach und melden, was sie **nachgelesen** haben.
+  Im Sandkasten am Gerät gemessen: 664 → 600; 0.9.19 blieb bei 664.
+* **Eine aus der Zweitschrift geheilte Konfiguration entstand mit 644.**
+  `copy()` nimmt die umask. Jetzt unteilbar mit 0600 (gemessen: 0.9.19 644,
+  0.9.20 600).
+* **Die Zugangsdaten hatten keine Zweitschrift, und eine unlesbare
+  `geheim.json` wurde stumm zu leeren Feldern.** Jetzt dieselben drei Lagen
+  wie bei der Konfiguration: heil bleibt heil, leer wird aus der Zweitschrift
+  `waermepumpe.backup.geheim.json` geheilt, unlesbar wird als
+  `geheim.json.kaputt` beiseitegelegt und geheilt — mit einer Protokollzeile.
+* **Eine Altlast aus Fassungen bis 0.9.10** lag flach in `config/plugins`:
+  `waermepumpe.json`, 3 Byte `{}`, vom 16.08.2026. `postinstall.sh` und die
+  Deinstallation räumen sie weg, **aber nur, wenn sie genau `{}` enthält**;
+  mit Inhalt wird sie genannt und bleibt liegen.
+* **Das Installationsprotokoll sagte bei jedem Update „angelegt"** und riet,
+  einen Hersteller zu wählen — auf einer Anlage mit eingetragenem Hersteller.
+  Jetzt steht dort, was wirklich angelegt wurde, und der Rat nur, solange die
+  Konfiguration leer ist.
+* **Die Statuszeile nannte vor dem ersten Abruf `ALTER=86400`**, dieselbe
+  Anfrage mit `aktion=werte` `"alter":-1`. Jetzt antworten beide mit
+  **HTTP 503** und `GRUND=NOCH_KEINE_DATEN;FEHLER=…` (Hausregel: vor den
+  ersten Daten 503 mit Grund). Nach dem ersten Erfolg bleibt es bei 200.
+* **Die Selbstprüfung rechnete „rund 12245 Minuten ohne neue Werte"** als
+  Folge mal Takt — auf einer Anlage, die nie Werte hatte. Jetzt steht dort,
+  seit wann die Folge läuft (gemessen, ab dieser Fassung) und wann die letzten
+  Werte kamen, oder dass nie welche kamen.
+* **„Antwortet die Cloud? Nein. Zugangsdaten prüfen"** stand direkt unter
+  „keine Zugangsdaten hinterlegt". Ohne Zugangsdaten wird die Cloud nicht
+  gefragt; die Zeile sagt jetzt „nicht geprüft".
+* **Bei myVAILLANT hießen die Felder „MELCloud-E-Mail" und
+  „MELCloud-Passwort".**
+
+### Das MQTT-Abo trägt das Plugin selbst ein
+
+Entscheidung des Hausherrn am 17.09.2026. Das Archiv liefert
+`config/mqtt_subscriptions.cfg` mit `waermepumpe/#` aus; das MQTT-Gateway
+liest diese Datei und abonniert daraus (im Quelltext des Gateways und am
+laufenden Gateway V1 belegt, Regeln/07). Bis 0.9.19 musste das Abo von Hand
+unter *System → MQTT Gateway → Abonnements* stehen — am Gerät stand es nicht,
+es kam also nichts am Miniserver an. Wer das Themenpräfix ändert, bekommt die
+Datei beim Speichern und im Minutentakt nachgezogen (nach einem Update
+liefert das Archiv wieder die Vorgabe); ist MQTT aus, bleibt sie leer. Eine
+Prüfzeile im Reiter *Test* sagt, ob sie stimmt. Ein zusätzlicher Eintrag von
+Hand schadet nicht.
+
+### Gegen die Hausregeln
+
+* **MQTT: Zustände gehen jetzt zurückbehalten hinaus** (Hausstandard seit
+  03.09.2026). Am Gerät gemessen: `--retained-only` auf `waermepumpe/#`
+  lieferte null Themen. Die Entscheidung steht je Thema in einer Tabelle
+  (`wp_retain_tabelle()`), die Oberfläche zeigt sie als Spalte, und eine
+  Prüfzeile hält sie in beide Richtungen gegen die gesendeten Themen.
+  Zurückbehalten: `OK`, `STUFE`, `STOERUNG`, die Sollwerte, `HEIZKURVE`,
+  `KOMPRESSOR`, `WWZWANG`, `EIN`, `COP`, `STROM`, `WAERME`. Nicht: `ALTER`
+  (das Lebenszeichen), `BUDGET`, die Messwerte, `SPREIZUNG`, `TAKTE`,
+  `LAUFZEIT`, `LAUFANTEIL`. Ein leerer Wert geht nie zurückbehalten hinaus.
+  Über einen UDP-Horcher gemessen: 0.9.19 0 retain / 13 publish, 0.9.20
+  6 retain / 7 publish bei derselben Wertemenge. Ein Vollversand nach dem
+  Update ist nicht nötig: das Plugin sendet bei jedem Durchlauf alle Werte.
+* **5 ms Pause zwischen den Datagrammen.** Der UDP-Eingang des Gateways
+  verwirft unter Last; ein Abstand hilft messbar, hebt den Verlust aber nicht
+  auf.
+* **Die Sicherungsdatei trägt jetzt die Zugangsdaten** (Hausstandard seit
+  03.09.2026: ohne sie ist die Sicherung für den Umzug wertlos). Eine
+  Sicherung aus 0.9.19 oder früher bleibt zurückspielbar; die jetzigen
+  Zugangsdaten bleiben dann stehen, und das wird gesagt. Wer Konto oder
+  Kennwort tauscht, verliert jetzt auch die zwischengespeicherte Anmeldung
+  des alten Kontos — bis 0.9.19 lieferte sie bis zu ihrem Ablauf weiter.
+* **Jeder POST endet mit einer Umleitung (303)**, das Ergebnis erscheint
+  genau einmal. Bis 0.9.19 wiederholte ein Neuladen die Handlung — bei den
+  orangen Knöpfen im Reiter *Test* ein weiterer Schaltbefehl.
+* **Die Reiterleiste ist ausgeschrieben**, nicht mehr eine Schleife. Das
+  Hauswerkzeug für die Reiter brach an der Schleife mit „nichts gemessen" ab.
+* **Zwei neue Prüfzeilen** im Reiter *Test*: ob `waermepumpe.json` und
+  `geheim.json` beim Lesen heil waren — der Zustand wird beim ersten Lesen
+  festgehalten, bevor die Selbstheilung ihn beseitigt.
+* **Die Eingangsvorlage** bekommt kurze Kachelnamen (sechs Kommentare waren
+  über 40 Zeichen, der längste 69) und Einheiten an den analogen Eingängen.
+  Titel, Suchtexte und Grenzen sind **byteweise unverändert** (149 Felder
+  gegen 0.9.19 verglichen) — ein erneuter Import legt also nichts doppelt an,
+  und wer nicht neu importiert, verliert nichts.
+* **`mkdir()` auf ein vorhandenes Verzeichnis** und vier Dateien mit CRLF
+  (`plugin.cfg`, `release.cfg`, `prerelease.cfg`, `htmlauth/index.php`) —
+  beides jetzt nach Hausregel.
+
+### Nicht gemessen
+
+* Es hängt weiterhin **keine Wärmepumpe und kein Herstellerkonto** am
+  Prüfstand; auf dem Gerät des Hauses ist myVAILLANT ohne Zugangsdaten
+  eingetragen. Alle Cloud-Wege sind also so ungemessen wie zuvor.
+* Ob der Zustand nach einem Neustart des Miniservers dank Retain wirklich
+  sofort ansteht, ist erst messbar, wenn das Plugin Werte hat.
+
 ## Neu in 0.9.18
 
 Die erzeugten Loxone-Vorlagen nannten das Plugin „Waermepumpe"; in der
@@ -573,17 +682,21 @@ Daikin-Budget leeren noch das MELCloud-Konto aussperren.
 2. *Test* → **Geräte suchen**, Kennung übernehmen, speichern.
 3. *Test* → **Jetzt abrufen**, dann **Feldwege zeigen**.
 4. *SG Ready* → ansehen, was die vier Zustände hier bewirken; Grenzen setzen.
-5. *MQTT* → das Abo ins Gateway eintragen
-   (System → MQTT Gateway → Subscriptions). **Ohne diesen Eintrag kommt am
-   Miniserver nichts an.**
+5. *MQTT* → nachsehen, dass das Abo bereitsteht. Seit 0.9.20 trägt das
+   Plugin es über `mqtt_subscriptions.cfg` selbst ein; von Hand
+   (System → MQTT Gateway → Reiter *Abonnements*) nur nötig, wenn die
+   Prüfzeile im Reiter *Test* rot ist.
 6. *Einbindung in Loxone* → beide Vorlagen herunterladen und einlesen.
 
 ## Zugangsdaten
 
-Liegen in einer **eigenen Datei** unter `$LBPCONFIG/geheim.json` mit Rechten
-`0600` — getrennt von der Konfiguration, die die Oberfläche anzeigt. Im
-Protokoll und in der Selbstprüfung erscheinen sie nur maskiert: Länge ja,
-Inhalt nein. Beim Deinstallieren werden sie gelöscht.
+Liegen in einer **eigenen Datei** unter `config/plugins/waermepumpe/geheim.json`
+mit Rechten `0600` — getrennt von der Konfiguration, die die Oberfläche
+anzeigt. Seit 0.9.20 liegt daneben eine Zweitschrift
+`config/plugins/waermepumpe.backup.geheim.json` (0600), und die Datei aus
+*Einstellungen sichern* trägt sie mit. Im Protokoll und in der
+Selbstprüfung erscheinen sie nur maskiert: Länge ja, Inhalt nein. Beim
+Deinstallieren werden Datei und Zweitschrift überschrieben und gelöscht.
 
 ## Verzeichnis
 

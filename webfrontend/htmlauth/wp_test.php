@@ -19,6 +19,32 @@ function wp_pruefungen()
     $g = wp_geheim();
     $stand = wp_stand();
     $z = array();
+    $zugang_da = false;
+
+    /* ---- Sind Konfiguration und Zugangsdaten heil? (NEU 0.9.20) ----
+     *
+     * Gelesen wird die Lage, die sich der Prozess beim ERSTEN Lesen gemerkt
+     * hat (wp_lage), nicht der Zustand jetzt - die Selbstheilung beim ersten
+     * Lesen haette ihn sonst schon beseitigt, und die Zeile saehe immer heil
+     * aus (Regeln/05, Robonect 1.1.0). Geheilt ist nicht heil: die Zweitschrift
+     * kann aelter sein als das, was verlorenging. */
+    foreach (array('config' => 'waermepumpe.json', 'geheim' => 'geheim.json') as $wp_art => $wp_datei) {
+        $wp_l = wp_lage($wp_art);
+        if ($wp_l === 'ok' || $wp_l === 'leer') {
+            $z[] = wp_pruefzeile($wp_l === 'ok' ? 1 : -1, sprintf(wp_t('TEST.F_DATEI'), $wp_datei),
+                wp_t($wp_l === 'ok' ? 'TEST.A_DATEI_OK' : 'TEST.A_DATEI_LEER'));
+        } elseif ($wp_l === 'geheilt') {
+            $z[] = wp_pruefzeile(0, sprintf(wp_t('TEST.F_DATEI'), $wp_datei), wp_t('TEST.A_DATEI_GEHEILT'));
+        } elseif ($wp_l === 'kaputt_geheilt') {
+            $z[] = wp_pruefzeile(0, sprintf(wp_t('TEST.F_DATEI'), $wp_datei),
+                sprintf(wp_t('TEST.A_DATEI_KAPUTT_GEHEILT'), wp_e($wp_datei . '.kaputt')));
+        } elseif ($wp_l === 'kaputt_ohne_zweitschrift') {
+            $z[] = wp_pruefzeile(0, sprintf(wp_t('TEST.F_DATEI'), $wp_datei),
+                sprintf(wp_t('TEST.A_DATEI_KAPUTT'), wp_e($wp_datei . '.kaputt')));
+        } else {
+            $z[] = wp_pruefzeile(-1, sprintf(wp_t('TEST.F_DATEI'), $wp_datei), wp_t('TEST.A_DATEI_UNBEKANNT'));
+        }
+    }
 
     /* ---- Hersteller gewaehlt? ---- */
     $info = wp_hersteller_info($cfg['hersteller']);
@@ -46,12 +72,14 @@ function wp_pruefungen()
         }
     } elseif ($cfg['hersteller'] === 'melcloud' || $cfg['hersteller'] === 'vaillant') {
         $da = $g['benutzer'] !== '' && $g['passwort'] !== '';
+        $zugang_da = $da;
         $z[] = wp_pruefzeile($da ? 1 : 0, wp_t('TEST.F_ZUGANG'),
             $da ? sprintf(wp_t('TEST.A_ZUGANG_MELCLOUD'), wp_e($g['benutzer']),
                           wp_e(wp_maske($g['passwort'])))
                 : wp_t('TEST.A_ZUGANG_FEHLT'));
     } else {
         $da = $g['client_id'] !== '' && $g['client_secret'] !== '';
+        $zugang_da = $da;
         $z[] = wp_pruefzeile($da ? 1 : 0, wp_t('TEST.F_ZUGANG'),
             $da ? sprintf(wp_t('TEST.A_ZUGANG_OAUTH'), wp_e(wp_maske($g['client_id'])),
                           wp_e(wp_maske($g['client_secret'])))
@@ -80,6 +108,15 @@ function wp_pruefungen()
         }
     } else {
 
+    /* Ohne Zugangsdaten wird die Cloud nicht gefragt - dann ist die Antwort
+     * "nicht geprueft", kein Kreuz mit dem Rat, im Protokoll nachzusehen.
+     * Bis 0.9.19 stand dort "Nein. Zugangsdaten pruefen; Naeheres steht im
+     * Protokoll" (am Geraet 17.09.2026) - direkt unter der Zeile, die schon
+     * sagte, dass es keine gibt, und das Protokoll hatte log_maint.pl laengst
+     * geleert. */
+    if (empty($zugang_da)) {
+        $z[] = wp_pruefzeile(-1, wp_t('TEST.F_ANMELDUNG'), wp_t('TEST.A_ANMELDUNG_OHNE_ZUGANG'));
+    } else {
     $token = '';
     switch ($cfg['hersteller']) {
         case 'myuplink': $token = wp_mu_token(); break;
@@ -97,6 +134,7 @@ function wp_pruefungen()
     } else {
         $z[] = wp_pruefzeile(0, wp_t('TEST.F_ANMELDUNG'), wp_t('TEST.A_ANMELDUNG_FEHL'));
     }
+    }   /* Ende: Zugangsdaten vorhanden */
 
     }   /* Ende: alles ausser EMS-ESP */
 
@@ -251,6 +289,40 @@ function wp_pruefungen()
             sprintf(wp_t('TEST.A_MQTT_OK'), (int) $m['udpport'], wp_e($cfg['mqtt_topic'])));
     }
 
+    /* ---- Abo-Datei fuer das Gateway (NEU 0.9.20) ---- */
+    list($wp_al, $wp_ai, $wp_as) = wp_abo_datei($cfg);
+    if (empty($cfg['mqtt_ein'])) {
+        $z[] = wp_pruefzeile(-1, wp_t('TEST.F_ABO'), wp_t('TEST.A_ABO_AUS'));
+    } elseif ($wp_al === 'ok') {
+        $z[] = wp_pruefzeile(1, wp_t('TEST.F_ABO'), sprintf(wp_t('TEST.A_ABO_OK'), wp_e($wp_as)));
+    } else {
+        $z[] = wp_pruefzeile(0, wp_t('TEST.F_ABO'), sprintf(wp_t('TEST.A_ABO_FEHL'),
+            wp_e($wp_al === 'fehlt' ? '-' : $wp_ai), wp_e($wp_as)));
+    }
+
+    /* ---- Retain-Tabelle deckt jedes Thema, in BEIDE Richtungen ----
+     *
+     * Regeln/07: eine Liste, die nur in eine Richtung geprueft wird, ist umso
+     * gruener, je kuerzer sie ist. Gezaehlt wird also: gesendet, aber ohne
+     * Eintrag (ginge still 'publish' hinaus) UND eingetragen, aber nie
+     * gesendet (eine Zusage ohne Deckung). Dazu die eine Regel, die nie
+     * brechen darf: das Lebenszeichen ALTER ist nicht retained. */
+    $wp_ret = wp_retain_tabelle();
+    $wp_sf  = wp_statusfelder();
+    $ohne   = array_diff(array_keys($wp_sf), array_keys($wp_ret));
+    $zuviel = array_diff(array_keys($wp_ret), array_keys($wp_sf));
+    $leben  = !empty($wp_ret['ALTER']);
+    if (!$wp_sf) {
+        $z[] = wp_pruefzeile(0, wp_t('TEST.F_RETAIN'), wp_t('TEST.A_RETAIN_LEER'));
+    } elseif ($ohne || $zuviel || $leben) {
+        $z[] = wp_pruefzeile(0, wp_t('TEST.F_RETAIN'), sprintf(wp_t('TEST.A_RETAIN_LUECKE'),
+            wp_e($ohne ? implode(', ', $ohne) : '-'), wp_e($zuviel ? implode(', ', $zuviel) : '-'),
+            $leben ? wp_t('TEST.A_RETAIN_ALTER') : ''));
+    } else {
+        $z[] = wp_pruefzeile(1, wp_t('TEST.F_RETAIN'), sprintf(wp_t('TEST.A_RETAIN_OK'),
+            count($wp_sf), count(array_filter($wp_ret))));
+    }
+
     /* ---- Vorlage wohlgeformt? ---- */
     // Gehoert hierher, nicht erst in die Pruefung vor dem Ausliefern: eine
     // kaputte Vorlage merkt der Anwender sonst erst in Loxone Config, und
@@ -320,17 +392,17 @@ function wp_pruefungen()
         preg_match_all('/id="tab-([a-z0-9]+)"/', $quelle, $mb);
         $bereiche = array_values(array_unique($mb[1]));
 
-        /* Die Beschriftung wird aus der ECHTEN Zuordnung in index.php gelesen,
-         * nicht aus strtoupper($r) geraten: der Reiter heisst 'settings', sein
-         * Schluessel aber REITER.EINSTELLUNGEN. Der erste Entwurf dieser
-         * Pruefung hat genau das geraten und daraufhin dauerhaft ein Kreuz
-         * gezeigt - ein Kreuz an der ersten Stelle einer Pruefkette, das nichts
-         * bedeutet, ist schlimmer als keine Pruefung. Gemessen am 16.08.2026. */
+        /* Seit 0.9.20 ist die Leiste ausgeschrieben. Gelesen wird je Eintrag
+         * dreierlei, und alles muss zusammenpassen: data-ziel, die Adresse
+         * index.php?form=... und der Sprachschluessel der Beschriftung. Ein
+         * Eintrag, dessen Adresse auf einen anderen Reiter zeigt als sein
+         * data-ziel, landet beim Neuladen im falschen Bereich. */
         $schluessel = array();
-        if (preg_match('/\$wp_beschriftung\s*=\s*array\((.*?)\);/s', $quelle, $mz)) {
-            preg_match_all("/'([a-z0-9]+)'\s*=>\s*'(REITER\.[A-Z0-9_]+)'/", $mz[1], $ms,
-                           PREG_SET_ORDER);
-            foreach ($ms as $paar) { $schluessel[$paar[1]] = $paar[2]; }
+        $leiste = array();
+        preg_match_all('/data-ziel="tab-([a-z0-9]+)"\s+href="index\.php\?form=([a-z0-9]+)"><\?= wp_e\(wp_t\(\'(REITER\.[A-Z0-9_]+)\'\)\) \?><\/a>/',
+                       $quelle, $ms, PREG_SET_ORDER);
+        foreach ($ms as $m3) {
+            if ($m3[1] === $m3[2]) { $leiste[] = $m3[1]; $schluessel[$m3[1]] = $m3[3]; }
         }
         $fehlend = array();
         foreach ($liste as $r) {
@@ -338,12 +410,13 @@ function wp_pruefungen()
                 $fehlend[] = $r;
             }
         }
-        sort($liste); sort($bereiche);
-        $gleich = $liste && $liste === $bereiche && !$fehlend;
+        sort($liste); sort($bereiche); sort($leiste);
+        $gleich = $liste && $liste === $bereiche && $liste === $leiste && !$fehlend;
         $z[] = wp_pruefzeile($gleich ? 1 : 0, wp_t('TEST.F_REITER'),
             $gleich ? sprintf(wp_t('TEST.A_REITER_OK'), count($liste))
                     : sprintf(wp_t('TEST.A_REITER_ABWEICHUNG'),
-                        wp_e(implode(', ', $liste)), wp_e(implode(', ', $bereiche)),
+                        wp_e(implode(', ', $liste)), wp_e(implode(', ', $leiste)),
+                        wp_e(implode(', ', $bereiche)),
                         wp_e($fehlend ? implode(', ', $fehlend) : '-')));
     }
 
@@ -354,10 +427,21 @@ function wp_pruefungen()
             (int) $stand['zeit'] > 0 ? wp_t('TEST.A_STOERUNG_KEINE')
                                      : wp_t('TEST.A_STOERUNG_NOCH_NICHTS'));
     } else {
+        /* Gemessene Zeiten, keine gerechneten. Bis 0.9.19 stand hier
+         * Folge mal Takt ("rund 12245 Minuten ohne neue Werte", am Geraet
+         * 17.09.2026) - auf einer Anlage, die NIE Werte hatte. */
+        $seit = (int) (isset($stand['fehler_seit']) ? $stand['fehler_seit'] : 0);
+        if ((int) $stand['zeit'] <= 0) {
+            $wann = wp_t('TEST.A_STOERUNG_NIE');
+        } else {
+            $wann = sprintf(wp_t('TEST.A_STOERUNG_LETZTE'), wp_e(date('d.m.Y H:i', (int) $stand['zeit'])),
+                wp_e(wp_zeitspanne(time() - (int) $stand['zeit'])));
+        }
         $z[] = wp_pruefzeile(0, wp_t('TEST.F_STOERUNG'),
             sprintf(wp_t('TEST.A_STOERUNG'), $folge,
                 wp_e((string) (isset($stand['fehler_letzt']) ? $stand['fehler_letzt'] : '?')),
-                (int) $folge * max(1, (int) $cfg['takt']) / 60));
+                $seit > 0 ? wp_e(date('d.m.Y H:i', $seit)) : wp_e(wp_t('TEST.A_STOERUNG_SEIT_UNBEKANNT')),
+                $wann));
     }
 
     /* ---- Token ---- */

@@ -141,11 +141,21 @@ rm -f "$CFGDIR/.upgrade_pfad" 2>/dev/null
 # nach Deinstallation und frischer Neuinstallation standen Hersteller, Takt UND
 # das alte Aktionstoken wieder da. Eine saubere Neuinstallation war damit keine.
 ZWEITSCHRIFT="$(dirname "$CFGDIR")/$PFOLDER.backup.waermepumpe.json"
-if [ -f "$ZWEITSCHRIFT" ]; then
-    LAENGE=$(stat -c %s "$ZWEITSCHRIFT" 2>/dev/null || echo 0)
-    [ "$LAENGE" -gt 0 ] && dd if=/dev/zero of="$ZWEITSCHRIFT" bs=1 count="$LAENGE" \
-        conv=notrunc >/dev/null 2>&1
-    rm -f "$ZWEITSCHRIFT"
+# NEU 0.9.20: die Zugangsdaten haben ebenfalls eine Zweitschrift neben dem
+# Ordner - und die enthaelt Kennwort und Erneuerungsmerkmal.
+ZWEITSCHRIFT_G="$(dirname "$CFGDIR")/$PFOLDER.backup.geheim.json"
+for ZW in "$ZWEITSCHRIFT" "$ZWEITSCHRIFT_G"; do
+    if [ -f "$ZW" ]; then
+        LAENGE=$(stat -c %s "$ZW" 2>/dev/null || echo 0)
+        [ "$LAENGE" -gt 0 ] && dd if=/dev/zero of="$ZW" bs=1 count="$LAENGE" \
+            conv=notrunc >/dev/null 2>&1
+        rm -f "$ZW"
+    fi
+done
+# Leere Altlast aus Fassungen bis 0.9.10 (flach in config/plugins).
+ALT="$(dirname "$CFGDIR")/waermepumpe.json"
+if [ -f "$ALT" ] && [ "$(tr -d ' \r\n\t' < "$ALT" 2>/dev/null)" = "{}" ]; then
+    rm -f "$ALT"
 fi
 
 # ---------------------------------------------------------------
@@ -181,7 +191,7 @@ rm -rf /run/shm/waermepumpe "${TMPDIR:-/tmp}/waermepumpe" /tmp/waermepumpe 2>/de
 # Datei - der Betreiber hat danach keinen Anlass mehr nachzusehen.
 UEBRIG=""
 for f in "$CFGDIR/geheim.json" "$CFGDIR/geheim.json.vorher" "$ZWEITSCHRIFT" \
-         "$CFGDIR/.upgrade_pfad"; do
+         "$ZWEITSCHRIFT_G" "$CFGDIR/.upgrade_pfad"; do
     [ -e "$f" ] && UEBRIG="$UEBRIG $f"
 done
 for d in "$DATADIR" "$RUECKFALL" "$CFGDIR/.upgrade"; do
@@ -195,5 +205,5 @@ if [ -n "$UEBRIG" ]; then
 fi
 echo "<OK> Zugangsdaten, Anmeldemarken, Zwischenstaende und Arbeitsdateien entfernt."
 echo "<INFO> Nachgezaehlt: unter $CFGDIR und $DATADIR liegt nichts mehr,"
-echo "<INFO> und auch die Zweitschrift daneben ist weg."
+echo "<INFO> und auch die beiden Zweitschriften daneben sind weg."
 exit 0

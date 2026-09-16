@@ -132,9 +132,39 @@ if (!in_array($aktion, $erlaubte_aktionen, true)) {
                  . 'Erlaubt: ' . implode(', ', $erlaubte_aktionen));
 }
 
+/* ---------------- noch nie Daten? ----------------
+ *
+ * Regeln/07: gibt es noch gar keine Daten, antwortet der Endpunkt mit
+ * HTTP 503 und nennt den Grund - nicht mit 200 und OK=0. Loxone schaltet dann
+ * den Onlinestatus des Eingangs ab, und der Zustand ist sichtbar.
+ *
+ * Bis 0.9.19 kam hier 200 mit ALTER=86400. Am Geraet gemessen (17.09.2026,
+ * seit 08.09. kein einziger erfolgreicher Abruf): die Statuszeile sagte
+ * ALTER=86400, dieselbe Anfrage mit aktion=werte sagte "alter":-1 - zwei
+ * Zahlen fuer denselben Sachverhalt, und die erste war erfunden.
+ *
+ * Nach dem ersten Erfolg bleibt es bei 200: dann gibt es einen Stand, OK=0
+ * und ein wachsendes ALTER sind eine Aussage (Schritt 5 im Reiter
+ * "Einbindung in Loxone"). */
+$wp_s = wp_stand();
+if (($aktion === 'status' || $aktion === 'werte') && (int) $wp_s['zeit'] <= 0) {
+    $wp_grund = (string) (isset($wp_s['fehler_letzt']) && $wp_s['fehler_letzt'] !== ''
+        ? $wp_s['fehler_letzt'] : 'NOCH_KEIN_ABRUF');
+    $wp_grund = preg_replace('/[^A-Z0-9_]/', '_', strtoupper($wp_grund));
+    if ($aktion === 'werte') {
+        header('Content-Type: application/json; charset=utf-8');
+        http_response_code(503);
+        echo json_encode(array('ok' => 0, 'grund' => 'NOCH_KEINE_DATEN',
+            'fehler' => $wp_grund, 'stoerung' => (int) $wp_s['fehler_folge'])) . "\n";
+        exit;
+    }
+    wp_ende(503, 'WP;OK=0;GRUND=NOCH_KEINE_DATEN;FEHLER=' . $wp_grund
+                 . ';STOERUNG=' . (int) $wp_s['fehler_folge']);
+}
+
 /* ---------------- status ---------------- */
 if ($aktion === 'status') {
-    echo wp_zeile(wp_stand(), $cfg) . "\n";
+    echo wp_zeile($wp_s, $cfg) . "\n";
     exit;
 }
 

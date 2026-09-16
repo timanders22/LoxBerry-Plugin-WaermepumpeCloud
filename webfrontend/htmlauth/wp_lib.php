@@ -168,6 +168,14 @@ function wp_paths()
     // kopiert der Installer config/ aus dem Archiv darueber.
     $p['sicherung'] = rtrim($home, '/') . '/config/plugins/' . $plugin . '.backup.waermepumpe.json';
     $p['geheim'] = $p['configdir'] . '/geheim.json';
+    // Die Abo-Datei, die das MQTT-Gateway selbst liest (NEU 0.9.20).
+    $p['abo'] = $p['configdir'] . '/mqtt_subscriptions.cfg';
+    /* NEU 0.9.20: auch die Zugangsdaten haben eine Zweitschrift neben dem
+     * Ordner. Hausstandard seit 03.09.2026 (Regeln/05): beide Dateien gehoeren
+     * in die Zweitschrift, mit denselben Rechten. Bis 0.9.19 hatte nur die
+     * Konfiguration eine - am Geraet gemessen 17.09.2026: neben dem Ordner lag
+     * allein waermepumpe.backup.waermepumpe.json. */
+    $p['sicherung_geheim'] = rtrim($home, '/') . '/config/plugins/' . $plugin . '.backup.geheim.json';
     return $p;
 }
 
@@ -495,6 +503,96 @@ function wp_vorgaben()
  *                             ruft mit false - er legt weder ein Token an noch
  *                             heilt er etwas, siehe unten.
  */
+/**
+ * Wie stand es um eine Datei, als dieser Prozess sie ZUERST gelesen hat?
+ *
+ * Regeln/05 (Robonect 1.1.0): eine Pruefzeile, die den Zustand meldet, muss
+ * ihn sich merken, bevor die Selbstheilung ihn beseitigt - der zweite Aufruf
+ * der Lesefunktion sieht sonst eine heile Datei, und niemand erfaehrt, dass
+ * etwas war. Ein spaeteres 'ok' ueberschreibt einen fruehen Befund NICHT.
+ *
+ * Ausgaenge: ok, leer, geheilt, kaputt_geheilt, kaputt_ohne_zweitschrift.
+ */
+function wp_lage($datei, $neu = null)
+{
+    static $lage = array();
+    if ($neu !== null) {
+        if (!isset($lage[$datei]) || $lage[$datei] === 'ok') { $lage[$datei] = $neu; }
+    }
+    return isset($lage[$datei]) ? $lage[$datei] : '';
+}
+
+/**
+ * Rechte einer Zweitschrift auf 0600 bringen, wenn sie weiter offen sind.
+ *
+ * Gemessen am Geraet (17.09.2026): waermepumpe.backup.waermepumpe.json lag
+ * mit -rw-rw-r-- da, Stand 17.08.2026 - mit dem Aktionstoken darin, lesbar
+ * fuer jeden Benutzer des LoxBerry. Die Schreibfunktion setzt seit 0.9.17
+ * 0600, aber eine Zweitschrift, die seither niemand neu geschrieben hat,
+ * behaelt ihre alten Rechte. Deshalb wird hier nachgezogen, einmal gemeldet.
+ */
+function wp_rechte_nachziehen($datei)
+{
+    clearstatcache(true, $datei);
+    if (!is_file($datei)) { return; }
+    $r = @fileperms($datei);
+    if ($r === false || ($r & 0077) === 0) { return; }
+    @chmod($datei, 0600);
+    /* Gemeldet wird, was NACHGELESEN wurde, nicht der Rueckgabewert von
+     * chmod(). Auf einem Dateisystem ohne Unix-Rechte meldet chmod() Erfolg
+     * und aendert nichts - im Pruefstand unter Windows stand deshalb bei
+     * jedem Seitenaufbau "sind jetzt 600" im Protokoll, gemessen 17.09.2026
+     * mit Werkzeuge/reiterlauf.py (100 gleiche Zeilen). */
+    clearstatcache(true, $datei);
+    $n = @fileperms($datei);
+    if ($n !== false && ($n & 0077) === 0) {
+        wp_log(sprintf('Rechte von %s waren %o und sind jetzt %o.', basename($datei),
+                       $r & 0777, $n & 0777), 'rechte_' . basename($datei));
+    } else {
+        wp_log(sprintf('Rechte von %s stehen auf %o und liessen sich nicht auf 600 setzen.',
+                       basename($datei), ($n === false ? $r : $n) & 0777),
+               'rechte_fest_' . basename($datei));
+    }
+}
+
+/* ==================================================================
+ * Einmalmeldung fuer POST -> 303 -> GET (NEU 0.9.20)
+ *
+ * Regeln/04 seit 06.09.2026: jeder POST-Handler endet mit einer Umleitung.
+ * Bis 0.9.19 renderte diese Oberflaeche die Seite unmittelbar nach dem POST.
+ * Neuladen wiederholte die Handlung - bei den orangen Knoepfen im Reiter
+ * Test hiess das: noch ein Schaltbefehl an die Waermepumpe, bei "Token neu
+ * erzeugen" ein weiteres neues Token.
+ *
+ * Das Ergebnis reist in einer Datei im Datenordner (0600: die Rohantwort
+ * einer Cloud kann darin stehen), wird beim folgenden GET gelesen und dabei
+ * geloescht. Aelter als zwei Minuten wird verworfen - sonst erschiene eine
+ * liegengebliebene Meldung als Antwort auf eine Handlung, die niemand
+ * ausgeloest hat. Gelesen wird NUR beim GET: beim POST ist die Fehlerliste
+ * zugleich der Sammler der Handler, und eine alte Meldung darin verhinderte
+ * lautlos das naechste Speichern (Befund Docker NG 1.3.5).
+ * ================================================================== */
+function wp_einmalmeldung_datei()
+{
+    return wp_datadir() . '/einmalmeldung.json';
+}
+
+function wp_einmalmeldung_schreiben($daten)
+{
+    $daten['zeit'] = time();
+    return wp_json_schreiben(wp_einmalmeldung_datei(), $daten);
+}
+
+function wp_einmalmeldung_lesen()
+{
+    $f = wp_einmalmeldung_datei();
+    if (!is_file($f)) { return array(); }
+    $d = json_decode((string) @file_get_contents($f), true);
+    @unlink($f);
+    if (!is_array($d) || !isset($d['zeit']) || (time() - (int) $d['zeit']) > 120) { return array(); }
+    return $d;
+}
+
 function wp_config($token_anlegen = true)
 {
     $p = wp_paths();
@@ -569,9 +667,13 @@ function wp_config($token_anlegen = true)
              * Sicherung, die selbst kein gueltiges JSON traegt, waere keine. */
             $z = json_decode(trim((string) @file_get_contents($p['sicherung'])), true);
             if (is_array($z) && $z) {
-                @mkdir($p['configdir'], 0775, true);
-                if (@copy($p['sicherung'], $p['config'])) {
+                if (!is_dir($p['configdir'])) { @mkdir($p['configdir'], 0775, true); }
+                /* Unteilbar und mit 0600 schreiben, nicht copy(): eine Kopie
+                 * entsteht mit den Rechten der umask (auf dem LoxBerry 0644),
+                 * und die Konfiguration traegt das Aktionstoken. */
+                if (wp_json_schreiben($p['config'], $z)) {
                     $cfg = $z;
+                    wp_lage('config', $kaputt ? 'kaputt_geheilt' : 'geheilt');
                     wp_log('Die Konfiguration wurde aus der Zweitschrift wiederhergestellt.',
                            'cfg_geheilt');
                 }
@@ -579,7 +681,22 @@ function wp_config($token_anlegen = true)
         }
     }
 
-    if (!is_array($cfg)) { $cfg = array(); }
+    if (!is_array($cfg)) {
+        $cfg = array();
+        wp_lage('config', $roh === '' || $roh === '{}' ? 'leer' : 'kaputt_ohne_zweitschrift');
+    } else {
+        wp_lage('config', 'ok');
+    }
+    /* Auch die beiden Originale: am Sandkasten des Geraets gemessen
+     * (17.09.2026, umask 022), dass 0.9.19 eine aus der Zweitschrift geheilte
+     * waermepumpe.json mit 644 anlegte - copy() nimmt die umask. Die Datei
+     * traegt das Aktionstoken (Regeln/05, Ultraschall 1.2.6). */
+    if ($token_anlegen && isset($p['sicherung'])) {
+        wp_rechte_nachziehen($p['config']);
+        wp_rechte_nachziehen($p['geheim']);
+        wp_rechte_nachziehen($p['sicherung']);
+        wp_rechte_nachziehen($p['sicherung_geheim']);
+    }
     $cfg = array_merge(wp_vorgaben(), $cfg);
 
     $h = wp_hersteller();
@@ -736,7 +853,11 @@ function wp_json_schreiben($pfad, $daten)
 function wp_config_write($cfg)
 {
     $p = wp_paths();
-    @mkdir($p['configdir'], 0775, true);
+    /* Erst fragen, dann anlegen. Das @ unterdrueckt nur die Ausgabe, nicht
+     * das Ereignis: unter PHP 7.4 sah jeder eingehaengte Fehleraufnehmer bei
+     * jedem Speichern "mkdir(): File exists" (gemessen 17.09.2026 mit
+     * Werkzeuge/installationslage_rendern.py, wp_lib.php:739). */
+    if (!is_dir($p['configdir'])) { @mkdir($p['configdir'], 0775, true); }
     if (!wp_json_schreiben($p['config'], $cfg)) { return false; }
 
     /* DIE ZWEITSCHRIFT DARF NIE SCHLECHTER WERDEN ALS DAS, WAS SIE SICHERT.
@@ -757,9 +878,11 @@ function wp_config_write($cfg)
      * einem LoxBerry ueblich 0644 -, und sie enthaelt dasselbe Token. */
     $tok = isset($cfg['aktionstoken']) ? (string) $cfg['aktionstoken'] : '';
     if (isset($p['sicherung']) && preg_match('/^[A-Za-z0-9]{24,}$/', $tok)) {
-        if (@copy($p['config'], $p['sicherung'])) {
-            @chmod($p['sicherung'], 0600);
-        }
+        /* Seit 0.9.20 ueber wp_json_schreiben(): Rechte vor dem Inhalt,
+         * dann umbenennen. copy() mit nachgezogenem chmod liess einen
+         * Augenblick offen, und bei einem Abbruch dazwischen blieb die
+         * Zweitschrift mit den Rechten der umask liegen. */
+        wp_json_schreiben($p['sicherung'], $cfg);
     }
     return true;
 }
@@ -775,8 +898,43 @@ function wp_config_write($cfg)
 function wp_geheim()
 {
     $p = wp_paths();
-    $g = is_file($p['geheim']) ? json_decode((string) @file_get_contents($p['geheim']), true) : array();
-    if (!is_array($g)) { $g = array(); }
+    $roh = is_file($p['geheim']) ? trim((string) @file_get_contents($p['geheim'])) : '';
+    /* Dieselben drei Lagen wie bei der Konfiguration (NEU 0.9.20).
+     *
+     * Bis 0.9.19 wurde eine unlesbare geheim.json stumm zu lauter leeren
+     * Feldern. Der naechste Schreibvorgang - eine Token-Erneuerung genuegt -
+     * haette sie dann mit leeren Werten ueberschrieben, und die Zugangsdaten
+     * waeren fort gewesen, ohne Protokollzeile. */
+    $g = null;
+    if ($roh !== '' && $roh !== '{}') {
+        $g = json_decode($roh, true);
+        if (!is_array($g)) {
+            $g = null;
+            if (!is_file($p['geheim'] . '.kaputt')) {
+                @rename($p['geheim'], $p['geheim'] . '.kaputt');
+            }
+            wp_log('geheim.json war unlesbar (kein gueltiges JSON) und liegt jetzt als '
+                 . 'geheim.json.kaputt daneben.', 'geheim_kaputt');
+        } else {
+            wp_lage('geheim', 'ok');
+        }
+    }
+    if ($g === null && is_file($p['sicherung_geheim'])) {
+        $z = json_decode(trim((string) @file_get_contents($p['sicherung_geheim'])), true);
+        if (is_array($z) && $z) {
+            if (!is_dir($p['configdir'])) { @mkdir($p['configdir'], 0775, true); }
+            if (wp_json_schreiben($p['geheim'], $z)) {
+                wp_lage('geheim', $roh !== '' && $roh !== '{}' ? 'kaputt_geheilt' : 'geheilt');
+                wp_log('Die Zugangsdaten wurden aus der Zweitschrift wiederhergestellt.',
+                       'geheim_geheilt');
+            }
+            $g = $z;
+        }
+    }
+    if (!is_array($g)) {
+        $g = array();
+        wp_lage('geheim', $roh === '' || $roh === '{}' ? 'leer' : 'kaputt_ohne_zweitschrift');
+    }
     return array_merge(array(
         'client_id'     => '',
         'client_secret' => '',
@@ -792,8 +950,17 @@ function wp_geheim()
 function wp_geheim_write($g)
 {
     $p = wp_paths();
-    @mkdir($p['configdir'], 0775, true);
-    return wp_json_schreiben($p['geheim'], $g);
+    if (!is_dir($p['configdir'])) { @mkdir($p['configdir'], 0775, true); }
+    if (!wp_json_schreiben($p['geheim'], $g)) { return false; }
+    /* Die Zweitschrift folgt IMMER - auch wenn Zugangsdaten bewusst geloescht
+     * wurden. Sonst laege ein geloeschtes Passwort neben dem Ordner weiter,
+     * und die Selbstheilung brachte es nach dem naechsten Update zurueck.
+     * Geheilt wird aus ihr nur, wenn geheim.json fehlt, leer oder {} ist
+     * (siehe wp_geheim()) - ein bewusst geleertes Feld ist keines davon. */
+    if (wp_lage('geheim') !== 'kaputt_ohne_zweitschrift') {
+        wp_json_schreiben($p['sicherung_geheim'], $g);
+    }
+    return true;
 }
 
 function wp_token($laenge = 32)
@@ -1398,6 +1565,9 @@ function wp_stand()
         'takt_zaehler' => array(),
         // Stoerungen in Folge, letzter Grund und wann
         'fehler_folge' => 0, 'fehler_letzt' => '', 'fehler_zeit' => 0,
+        // Seit wann die Folge laeuft (NEU 0.9.20) - die Pruefzeile rechnete
+        // die Dauer bis 0.9.19 als Folge mal Takt, und das ist keine Messung.
+        'fehler_seit' => 0,
         // Wirksamkeitsnachweis: Ringspeicher der SG-Ready-Wechsel
         'sg_verlauf' => array(),
     ), $d);
@@ -3266,6 +3436,55 @@ function wp_mqtt_zustand()
 }
 
 /**
+ * Die Abo-Datei fuer das MQTT-Gateway (NEU 0.9.20).
+ *
+ * Das Gateway liest `config/plugins/<Ordner>/mqtt_subscriptions.cfg` und
+ * abonniert jede Zeile - belegt im Quelltext des Geraets
+ * (`sbin/mqttgateway.pl`: get_plugins -> watch -> read_file -> subscribe)
+ * und am laufenden Gateway V1 an Midea2Lox (Regeln/07, 13.09.2026). Bis
+ * 0.9.19 musste der Anwender das Abo von Hand eintragen; am Geraet stand es
+ * am 17.09.2026 nicht, es kam also nichts am Miniserver an.
+ *
+ * Das Archiv liefert die Datei mit dem Vorgabepraefix aus. Wer das Praefix
+ * aendert, bekaeme nach jedem Update wieder `waermepumpe/#` - deshalb zieht
+ * der Minutentakt sie nach, und zwar nur, wenn der Inhalt abweicht.
+ *
+ * KEIN Kommentar in die Datei: eine Zeile, die mit '#' beginnt, waere ein
+ * Abonnement auf saemtliche Themen des Brokers. Ist MQTT ausgeschaltet,
+ * bleibt die Datei leer - dann abonniert das Gateway nichts von hier.
+ *
+ * Rueckgabe: array(ok|fehlt|abweichend, Ist, Soll).
+ */
+function wp_abo_datei($cfg = null)
+{
+    if ($cfg === null) { $cfg = wp_config(); }
+    $soll = empty($cfg['mqtt_ein']) ? '' : $cfg['mqtt_topic'] . '/#';
+    $datei = wp_paths()['abo'];
+    if (!is_file($datei)) { return array('fehlt', '', $soll); }
+    $ist = trim((string) @file_get_contents($datei));
+    return array($ist === $soll ? 'ok' : 'abweichend', $ist, $soll);
+}
+
+/** Datei auf den Sollinhalt bringen, wenn sie abweicht. Rueckgabe: ok. */
+function wp_abo_nachziehen($cfg = null)
+{
+    if ($cfg === null) { $cfg = wp_config(); }
+    list($lage, $ist, $soll) = wp_abo_datei($cfg);
+    if ($lage === 'ok') { return true; }
+    $datei = wp_paths()['abo'];
+    if (!is_dir(dirname($datei))) { @mkdir(dirname($datei), 0775, true); }
+    $tmp = $datei . '.' . getmypid() . '.neu';
+    if (@file_put_contents($tmp, $soll) === strlen($soll) && @rename($tmp, $datei)) {
+        @chmod($datei, 0644);
+        wp_log('mqtt_subscriptions.cfg nachgezogen: "' . $ist . '" -> "' . $soll . '"', 'abo_' . md5($soll));
+        return true;
+    }
+    if (is_file($tmp)) { @unlink($tmp); }
+    wp_log('mqtt_subscriptions.cfg liess sich nicht schreiben (' . $datei . ').', 'abo_fehler');
+    return false;
+}
+
+/**
  * Der Hinweis zum MQTT-Abo - in der Fassung, die zum GATEWAY passt.
  *
  * Bis hierher stand an den Ausgabestellen unbedingt "Ohne diesen Eintrag
@@ -3286,6 +3505,12 @@ function wp_abo_text()
     }
     $gemessen = ' <span class="sm-mono">'
               . sprintf(wp_t('MQTT.ABO_GEMESSEN'), $f) . '</span>';
+    if ($f < 2) {
+        /* Gateway V1: die Abo-Datei traegt das Abo. Steht sie richtig, ist
+         * von Hand nichts einzutragen; sonst gilt der alte Hinweis. */
+        list($lage) = wp_abo_datei();
+        if ($lage === 'ok') { return wp_t('MQTT.ABO_V1_DATEI') . $gemessen; }
+    }
     return wp_t($f >= 2 ? 'MQTT.ABO_V2' : 'MQTT.ABO_WARNUNG') . $gemessen;
 }
 
@@ -3305,6 +3530,53 @@ function wp_mqtt_wert_saeubern($v)
     return trim(preg_replace('/ {2,}/', ' ', $wert));
 }
 
+/**
+ * Retain je Thema - Hausstandard seit 03.09.2026 (Regeln/07).
+ *
+ * Zustaende retained, damit Loxone nach einem Neustart des Miniservers oder
+ * des Gateways sofort den Stand hat; Messwerte mit Zeitbezug nicht, damit
+ * nach einem Ausfall kein alter Wert als aktuell erscheint; das Lebenszeichen
+ * nie. Bis 0.9.19 ging alles mit 'publish' hinaus - am Geraet gemessen
+ * 17.09.2026: fuenf Themen je Durchlauf, "--retained-only" auf waermepumpe/#
+ * lieferte null (Kontrollfall beschattung/#: zehn).
+ *
+ * Entschieden wird hier, je Thema, nicht am Aufruf (Regeln/07, ACTiKamera).
+ * Ein Thema ohne Eintrag geht 'publish' hinaus - ein unbekanntes Thema soll
+ * nicht auf Dauer im Broker stehenbleiben. Die Pruefzeile im Reiter Test
+ * haelt diese Tabelle in beide Richtungen gegen wp_statusfelder().
+ *
+ * Die Abwaegungen:
+ *   ALTER               waechst von selbst, ist das Lebenszeichen -> nie
+ *   BUDGET              gilt nur fuer den heutigen Tag            -> nicht
+ *   TAKTE, LAUFZEIT,    zaehlen seit Mitternacht bzw. am
+ *   LAUFANTEIL          bisherigen Tag                            -> nicht
+ *   STOERUNG            Zaehlerstand der Folge, ein Zustand       -> retained
+ *   SOLL, VLSOLL,       zuletzt gueltiger Sollwert bzw. Einstellung
+ *   WWSOLL, HEIZKURVE                                             -> retained
+ *   COP, STROM, WAERME  hoechstens stuendlich ueber Tage gerechnet,
+ *                       ohne Retain fehlten sie bis zu einer Stunde -> retained
+ */
+function wp_retain_tabelle()
+{
+    return array(
+        'OK' => 1, 'STUFE' => 1, 'ALTER' => 0, 'BUDGET' => 0, 'STOERUNG' => 1,
+        'AUSSEN' => 0, 'VORLAUF' => 0, 'VLSOLL' => 1, 'HEIZKURVE' => 1,
+        'RUECKLAUF' => 0, 'RAUM' => 0, 'SOLL' => 1, 'WW' => 0, 'WWSOLL' => 1,
+        'LEISTUNG' => 0, 'KOMPRESSOR' => 1, 'WWZWANG' => 1, 'EIN' => 1,
+        'COP' => 1, 'STROM' => 1, 'WAERME' => 1,
+        'SPREIZUNG' => 0, 'TAKTE' => 0, 'LAUFZEIT' => 0, 'LAUFANTEIL' => 0,
+    );
+}
+
+/** 'retain' oder 'publish' fuer genau diesen Wert. Ein leerer Wert geht nie
+ *  retained hinaus: eine leere Nutzlast LOESCHT ein zurueckbehaltenes Thema. */
+function wp_mqtt_befehl($name, $wert)
+{
+    $t = wp_retain_tabelle();
+    if (!isset($t[$name]) || !$t[$name]) { return 'publish'; }
+    return wp_mqtt_wert_saeubern($wert) === '' ? 'publish' : 'retain';
+}
+
 function wp_mqtt_senden($werte)
 {
     $cfg = wp_config();
@@ -3320,7 +3592,16 @@ function wp_mqtt_senden($werte)
     $raus = 0;
     $alle = 0;
     foreach ($werte as $name => $wert) {
-        $zeile = 'publish ' . $cfg['mqtt_topic'] . '/' . $name . ' '
+        /* Eine Pause von 5 ms zwischen den Datagrammen (NEU 0.9.20).
+         *
+         * Der UDP-Eingang des Gateways verwirft unter Last, und ein Stoss
+         * trifft ihn haerter als ein Strom. Am Geraet gemessen (Regeln/07,
+         * 13.09.2026): 90 Datagramme ohne Pause kamen zu 0, 0 und 6 an, mit
+         * 5 ms Abstand zu 90. Bei hoechstens 25 Themen kostet das 0,12 s je
+         * Durchlauf. Die Ankunft laesst sich von hier aus trotzdem nicht
+         * feststellen - gezaehlt wird, was hinausging, nicht was ankam. */
+        if ($alle > 0) { usleep(5000); }
+        $zeile = wp_mqtt_befehl($name, $wert) . ' ' . $cfg['mqtt_topic'] . '/' . $name . ' '
                . wp_mqtt_wert_saeubern($wert) . "\n";
         $alle++;
         if (@fwrite($sock, $zeile) !== false) { $raus++; }
@@ -3402,7 +3683,11 @@ function wp_xml_virtual_in_http($kopf, $cmds)
         $o .= 'DestValHigh="1" ';
         $o .= 'DefVal="0" ';
         $o .= 'MinVal="' . (int) $c['min'] . '" ';
-        $o .= 'MaxVal="' . (int) $c['max'] . '"';
+        $o .= 'MaxVal="' . (int) $c['max'] . '" ';
+        /* Unit und HintText an dieser Stelle - so fuehrt es die massgebliche
+         * Ausfuhr aus Loxone Config (XML_Vorlagen_0.9.10/VI_weissware_*.xml). */
+        $o .= 'Unit="' . wp_x(isset($c['unit']) ? $c['unit'] : '<v>') . '" ';
+        $o .= 'HintText=""';
         $o .= '/>' . $crlf;
     }
     $o .= '</VirtualInHttp>' . $crlf;
@@ -3443,14 +3728,53 @@ function wp_xml_virtual_out($kopf, $cmds)
     return $o;
 }
 
+/** Einheit je Feld fuer die Anzeige in Loxone (Unit der Vorlage). Die
+ *  Kurzform steht in der Sprachdatei unter VORLAGE_KACHEL - der Comment eines
+ *  Eingangs wird in Loxone Config zum Kachelnamen (Regeln/07) und bekommt
+ *  deshalb nicht den erklaerenden Satz aus FELD, der in der Tabelle der
+ *  Oberflaeche steht. Bis 0.9.19 waren sechs davon ueber 40 Zeichen lang,
+ *  der laengste 69 (gemessen mit Werkzeuge/vorlagen_pruefen.py). */
+function wp_einheiten()
+{
+    return array(
+        'OK'         => '<v>',
+        'STUFE'      => '<v>',
+        'ALTER'      => '<v> s',
+        'BUDGET'     => '<v>',
+        'STOERUNG'   => '<v>',
+        'AUSSEN'     => '<v.1> °C',
+        'VORLAUF'    => '<v.1> °C',
+        'VLSOLL'     => '<v.1> °C',
+        'HEIZKURVE'  => '<v.2>',
+        'RUECKLAUF'  => '<v.1> °C',
+        'RAUM'       => '<v.1> °C',
+        'SOLL'       => '<v.1> °C',
+        'WW'         => '<v.1> °C',
+        'WWSOLL'     => '<v.1> °C',
+        'LEISTUNG'   => '<v> W',
+        'KOMPRESSOR' => '<v>',
+        'WWZWANG'    => '<v>',
+        'EIN'        => '<v>',
+        'COP'        => '<v.2>',
+        'STROM'      => '<v.1> kWh',
+        'WAERME'     => '<v.1> kWh',
+        'SPREIZUNG'  => '<v.1> K',
+        'TAKTE'      => '<v>',
+        'LAUFZEIT'   => '<v.1> min',
+        'LAUFANTEIL' => '<v> %',
+    );
+}
+
 function wp_vorlage_ein()
 {
+    $einheit = wp_einheiten();
     $cmds = array();
     foreach (wp_statusfelder() as $name => $d) {
         list($analog, $min, $max, $schluessel) = $d;
         $cmds[] = array(
             'title'   => 'WP_' . $name,
-            'comment' => trim(strip_tags(html_entity_decode(wp_t($schluessel), ENT_QUOTES, 'UTF-8'))),
+            'comment' => trim(strip_tags(html_entity_decode(wp_t('VORLAGE_KACHEL.' . $name), ENT_QUOTES, 'UTF-8'))),
+            'unit'    => isset($einheit[$name]) ? $einheit[$name] : '<v>',
             // Das Semikolon gehoert ins Muster, und zwar zwingend.
             // Loxone sucht die Zeichenkette woertlich und nimmt den ERSTEN
             // Treffer. Ohne fuehrendes Semikolon findet "SOLL=" auch die
@@ -3469,7 +3793,7 @@ function wp_vorlage_ein()
         'address' => wp_endpunkt('status'),
         'polling' => (string) max(60, (int) $cfg['takt']),
         'comment' => 'Erzeugt vom LoxBerry-Plugin Wärmepumpe Cloud (' . date('d.m.Y') . '). '
-                   . 'Loxone Config legt beim Import neu an und ueberschreibt nichts - '
+                   . 'Loxone Config legt beim Import neu an und überschreibt nichts - '
                    . 'zweimal eingelesen ergibt doppelte Bausteine.',
     ), $cmds));
 }
@@ -3786,10 +4110,17 @@ function wp_abrufen($erzwingen = false)
     if ($erg['ok']) {
         $stand['fehler_folge'] = 0;
         $stand['fehler_letzt'] = '';
+        $stand['fehler_seit']  = 0;
     } else {
         $stand['fehler_folge'] = (int) (isset($stand['fehler_folge']) ? $stand['fehler_folge'] : 0) + 1;
         $stand['fehler_letzt'] = (string) $erg['fehler'];
         $stand['fehler_zeit']  = time();
+        if ((int) $stand['fehler_folge'] === 1 || empty($stand['fehler_seit'])) {
+            // Beginn der Folge. Auf einer Anlage, die von 0.9.19 kommt, fehlt
+            // der Wert mitten in einer laufenden Folge - dann gilt ab jetzt,
+            // und die Pruefzeile sagt "mindestens seit".
+            $stand['fehler_seit'] = time();
+        }
     }
     wp_stand_write($stand);
 
@@ -4072,9 +4403,62 @@ function wp_wert_taugt($w)
     return preg_match('/[\x00-\x08\x0A-\x1F\x7F]/', $s) !== 1;
 }
 
-function wp_sicherung_lesen($roh)
+/** Die Schluessel der Zugangsdaten, wie sie in der Sicherungsdatei stehen:
+ *  mit Vorsilbe, damit sie nie mit einer Einstellung zusammenfallen. */
+function wp_geheim_schluessel()
+{
+    return array('client_id', 'client_secret', 'benutzer', 'passwort',
+                 'refresh_token', 'redirect_uri', 'va_refresh', 'ems_token');
+}
+
+/**
+ * Die Sicherungsdatei - Einstellungen UND Zugangsdaten (NEU 0.9.20).
+ *
+ * Hausstandard seit 03.09.2026 (Regeln/05, Entscheidung des Hausherrn): die
+ * Sicherung ist fuer den Umzug auf einen zweiten LoxBerry da und traegt den
+ * Aktionstoken und alle Zugangsdaten - ohne sie ist sie nach dem
+ * Zurueckspielen wertlos. Bis 0.9.19 liess dieses Plugin die Zugangsdaten
+ * bewusst weg; das war eine Entscheidung vom 02.09.2026, die der Hausstandard
+ * am Tag danach anders getroffen hat. Der Formulartoken gehoert weiterhin
+ * nicht hinein.
+ */
+function wp_sicherung_bauen()
+{
+    $aus = array(
+        '_hinweis' => 'Sicherung des LoxBerry-Plugins Waermepumpe Cloud. Enthaelt das '
+                    . 'Aktionstoken und die Zugangsdaten der Herstellercloud - wie ein Passwort behandeln.',
+        '_stand'   => date('Y-m-d H:i'),
+        '_fassung' => wp_fassung(),
+    );
+    foreach (wp_config() as $k => $w) { $aus[$k] = $w; }
+    $g = wp_geheim();
+    foreach (wp_geheim_schluessel() as $k) {
+        $aus['geheim_' . $k] = isset($g[$k]) ? (string) $g[$k] : '';
+    }
+    return $aus;
+}
+
+/**
+ * Zwischengespeicherte Anmeldungen verwerfen, wenn sich Zugangsdaten aendern.
+ *
+ * Bis 0.9.19 blieb ein Zugriffsmerkmal des ALTEN Kontos im Zwischenspeicher
+ * liegen, bis es ablief: wer Konto oder Kennwort tauschte, bekam bis dahin
+ * weiter die Daten des vorigen Kontos - ohne Meldung.
+ */
+function wp_anmeldungen_verwerfen()
+{
+    foreach (array('token_myuplink.json', 'token_onecta.json', 'token_melcloud.json',
+                   'token_vaillant.json') as $f) {
+        $pfad = wp_tmpdir() . '/' . $f;
+        if (is_file($pfad)) { @unlink($pfad); }
+    }
+    if (function_exists('wp_va_keksglas') && is_file(wp_va_keksglas())) { @unlink(wp_va_keksglas()); }
+}
+
+function wp_sicherung_lesen($roh, &$geheim_neu = null)
 {
     $mangel = array();
+    $geheim_neu = array();
     $daten = json_decode((string) $roh, true);
     if (!is_array($daten)) {
         return array(null, array(wp_t('EINST.SICH_KEIN_JSON')), 0);
@@ -4110,6 +4494,18 @@ function wp_sicherung_lesen($roh)
          * Hausvorgabe; wer ihn ergaenzt, ohne diese Zeile zu haben, baut ein
          * Plugin, das seine eigene Sicherung ablehnt. */
         if ((string) $k !== '' && $k[0] === '_') { continue; }
+        /* Zugangsdaten (NEU 0.9.20): mit Vorsilbe, dieselbe Formpruefung. */
+        if (strpos((string) $k, 'geheim_') === 0
+            && in_array(substr((string) $k, 7), wp_geheim_schluessel(), true)) {
+            if (!wp_wert_taugt($w)) {
+                $mangel[] = sprintf(wp_t('EINST.SICH_WERT'),
+                                     htmlspecialchars((string) $k, ENT_QUOTES, 'UTF-8'));
+                continue;
+            }
+            $geheim_neu[substr((string) $k, 7)] = (string) $w;
+            $anzahl++;
+            continue;
+        }
         if (!in_array($k, $bekannt, true)) {
             $mangel[] = sprintf(wp_t('EINST.SICH_FREMD'),
                                  htmlspecialchars((string) $k, ENT_QUOTES, 'UTF-8'));
@@ -4129,7 +4525,14 @@ function wp_sicherung_lesen($roh)
     if ($anzahl === 0) {
         $mangel[] = wp_t('EINST.SICH_LEER');
     }
-    if ($fehlend && !$mangel) {
+    if (!$geheim_neu && !$mangel) {
+        /* Eine Sicherung aus 0.9.19 oder frueher traegt keine Zugangsdaten.
+         * Sie bleibt zurueckspielbar - die jetzigen Zugangsdaten bleiben dann
+         * stehen, und das wird gesagt. */
+        $mangel[] = wp_t('EINST.SICH_OHNE_ZUGANG');
+    }
+    if ($fehlend && !array_filter($mangel, function ($m) {
+            return $m !== wp_t('EINST.SICH_OHNE_ZUGANG'); })) {
         /* Kein Grund zur Ablehnung - die Datei kann aus einer aelteren
          * Fassung stammen, und der jetzige Wert bleibt ja stehen. Aber gesagt
          * wird es: ein Anwender, der 33 Einstellungen erwartet und 30 bekommt,
@@ -4139,7 +4542,8 @@ function wp_sicherung_lesen($roh)
                             htmlspecialchars(implode(', ', $fehlend), ENT_QUOTES, 'UTF-8'));
         return array($neu, $mangel, $anzahl);
     }
-    return array($mangel ? null : $neu, $mangel, $anzahl);
+    $echt = array_filter($mangel, function ($m) { return $m !== wp_t('EINST.SICH_OHNE_ZUGANG'); });
+    return array($echt ? null : $neu, $mangel, $anzahl);
 }
 
 

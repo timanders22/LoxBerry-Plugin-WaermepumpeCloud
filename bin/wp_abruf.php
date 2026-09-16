@@ -101,6 +101,9 @@ if ($cfg['hersteller'] === '') {
 $ok = false;
 try {
     /* Erst schalten, dann lesen - siehe oben. */
+    // Die Abo-Datei fuer das MQTT-Gateway auf dem eingestellten Praefix
+    // halten (nach einem Update kommt sie mit der Vorgabe aus dem Archiv).
+    wp_abo_nachziehen($cfg);
     wp_sg_durchsetzen($cfg);
     list($ok, $grund) = wp_abrufen($modus === 'jetzt');
 } finally {

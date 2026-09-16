@@ -34,18 +34,68 @@ DATADIR="${LBPDATA:-$BASE/data/plugins}/$PFOLDER"
 mkdir -p "$CFGDIR" "$DATADIR"
 chmod 0755 "$CFGDIR" "$DATADIR"
 
+# Was dieses Skript wirklich getan hat, wird mitgezaehlt - die Schlusszeilen
+# nennen nur das (Regeln/06: ein Hakenskript meldet, was es nachgelesen hat).
+# Bis 0.9.19 stand hier bei JEDEM Upgrade "Konfiguration angelegt" und der
+# Rat, einen Hersteller zu waehlen - gemessen im Installationsprotokoll vom
+# 08.09.2026, auf einer Anlage mit eingetragenem Hersteller.
+ANGELEGT=""
+
 # Konfiguration: sichtbare Einstellungen
 if [ ! -f "$CFGDIR/waermepumpe.json" ]; then
     echo '{}' > "$CFGDIR/waermepumpe.json"
+    ANGELEGT="$ANGELEGT waermepumpe.json"
 fi
 chmod 0600 "$CFGDIR/waermepumpe.json"
 
 # Zugangsdaten: eigene Datei, nur fuer den Eigentuemer lesbar.
 if [ ! -f "$CFGDIR/geheim.json" ]; then
     echo '{}' > "$CFGDIR/geheim.json"
+    ANGELEGT="$ANGELEGT geheim.json"
 fi
 chmod 0600 "$CFGDIR/geheim.json"
 
-echo "<OK> Konfiguration unter $CFGDIR angelegt (0600)."
-echo "<INFO> Weiter in der Oberflaeche: Reiter Einstellungen, Hersteller waehlen."
+# Rechte BEIDER Zweitschriften neben dem Ordner nachziehen (NEU 0.9.20).
+#
+# Am Geraet gemessen (17.09.2026): waermepumpe.backup.waermepumpe.json lag mit
+# -rw-rw-r-- da, Stand 17.08.2026, mit dem Aktionstoken darin. Kein
+# Hakenskript hatte sie je angefasst, und die PHP-Seite setzt 0600 nur, wenn
+# sie die Datei neu schreibt. Gemeldet wird, was nachgelesen wurde, nicht was
+# beabsichtigt war (Regeln/06).
+for ZW in "$(dirname "$CFGDIR")/$PFOLDER.backup.waermepumpe.json" \
+          "$(dirname "$CFGDIR")/$PFOLDER.backup.geheim.json"; do
+    [ -f "$ZW" ] || continue
+    VORHER=$(stat -c %a "$ZW" 2>/dev/null)
+    chmod 0600 "$ZW" 2>/dev/null
+    NACHHER=$(stat -c %a "$ZW" 2>/dev/null)
+    if [ "$VORHER" != "$NACHHER" ]; then
+        echo "<INFO> Rechte von $(basename "$ZW"): $VORHER -> $NACHHER."
+    elif [ "$NACHHER" != "600" ]; then
+        echo "<WARNING> Rechte von $(basename "$ZW") stehen auf $NACHHER und liessen sich nicht aendern."
+    fi
+done
+
+# Altlast aus Fassungen bis 0.9.10: dort legte dieses Skript waermepumpe.json
+# FLACH in config/plugins ab, neben alle Pluginordner (siehe Kopf). Am Geraet
+# gemessen 17.09.2026: <home>/config/plugins/waermepumpe.json, 3 Byte "{}",
+# Stand 16.08.2026. Entfernt wird sie nur, wenn sie genau diesen leeren Inhalt
+# traegt - eine Datei mit Inhalt wird genannt und bleibt liegen.
+ALT="$(dirname "$CFGDIR")/waermepumpe.json"
+if [ -f "$ALT" ]; then
+    if [ "$(tr -d ' \r\n\t' < "$ALT" 2>/dev/null)" = "{}" ]; then
+        rm -f "$ALT" && [ ! -e "$ALT" ] \
+            && echo "<INFO> Leere Altlast $ALT aus einer Fassung bis 0.9.10 entfernt."
+    else
+        echo "<WARNING> $ALT stammt aus einer Fassung bis 0.9.10 und ist nicht leer - bitte von Hand ansehen."
+    fi
+fi
+
+if [ -n "$ANGELEGT" ]; then
+    echo "<OK> Angelegt unter $CFGDIR:$ANGELEGT (0600)."
+else
+    echo "<OK> Konfiguration unter $CFGDIR vorhanden, Rechte 0600 gesetzt."
+fi
+if [ "$(tr -d ' \r\n\t' < "$CFGDIR/waermepumpe.json" 2>/dev/null)" = "{}" ]; then
+    echo "<INFO> Weiter in der Oberflaeche: Reiter Einstellungen, Hersteller waehlen."
+fi
 exit 0

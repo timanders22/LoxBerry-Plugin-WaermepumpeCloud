@@ -72,6 +72,17 @@ if (isset($_GET['form']) && !is_array($_GET['form'])
 $wp_post = (isset($_SERVER['REQUEST_METHOD']) ? $_SERVER['REQUEST_METHOD'] : '') === 'POST';
 $wp_meldungen = array();
 $wp_fehler = array();
+$wp_testausgabe_flash = '';
+if (!$wp_post) {
+    /* Das Ergebnis des vorigen POST (siehe wp_einmalmeldung_lesen). */
+    $wp_flash = wp_einmalmeldung_lesen();
+    foreach (array('meldungen' => 'wp_meldungen', 'fehler' => 'wp_fehler') as $wp_fk => $wp_fv) {
+        if (!empty($wp_flash[$wp_fk]) && is_array($wp_flash[$wp_fk])) {
+            foreach ($wp_flash[$wp_fk] as $wp_fz) { ${$wp_fv}[] = (string) $wp_fz; }
+        }
+    }
+    if (!empty($wp_flash['testausgabe'])) { $wp_testausgabe_flash = (string) $wp_flash['testausgabe']; }
+}
 
 /* ---------------------------------------------------------------- *
  * Der Wachposten - EIN Posten, vor allen Handlern.
@@ -90,7 +101,7 @@ if ($wp_wache !== '') {
     $wp_fehler[] = $wp_wache;
 }
 
-$wp_testausgabe = '';
+$wp_testausgabe = $wp_testausgabe_flash;
 
 /** Ein Formularfeld holen: nur Steuerzeichen entfernen, sonst nichts.
  *  Ein preg_replace auf eine Positivliste zerstoert eingefuegte Adressen -
@@ -263,8 +274,12 @@ if ($wp_post && isset($_POST['speichern_zugang'])) {
      * bisherigen Wert, waehrend die uebrigen Eingaben des Formulars erhalten
      * bleiben. Wer drei Felder ausfuellt und sich in einem vertippt, soll nicht
      * alle drei neu eintippen muessen. */
+    $wp_alt_geh = wp_geheim();
     $okA = wp_geheim_write($neu);
     $okB = wp_config_write($wp_cfg);
+    foreach (array('client_id', 'client_secret', 'benutzer', 'passwort') as $wp_k) {
+        if ((string) $wp_alt_geh[$wp_k] !== (string) $neu[$wp_k]) { wp_anmeldungen_verwerfen(); break; }
+    }
     if ($okA && $okB) {
         $wp_meldungen[] = wp_t('EINST.GESPEICHERT');
         wp_log('Zugangsdaten gespeichert (Hersteller ' . $wp_cfg['hersteller'] . ')');
@@ -480,6 +495,10 @@ if ($wp_post && isset($_POST['save_mqtt'])) {
      * der Haken ist aber schon uebernommen. */
     if (wp_config_write($wp_mcfg)) {
         $wp_meldungen[] = wp_t('EINST.GESPEICHERT');
+        // Das Abo wandert mit dem Praefix; der Rueckgabewert wird angesehen.
+        if (!wp_abo_nachziehen(wp_config())) {
+            $wp_fehler[] = wp_t('MQTT.ABO_SCHREIBFEHLER');
+        }
     } else {
         $wp_fehler[] = sprintf(wp_t('EINST.FEHLER_SPEICHERN'), wp_e(wp_paths()['configdir']));
     }
@@ -584,7 +603,7 @@ $wp_info  = wp_hersteller_info($wp_cfg['hersteller']);
  * kaeme trotzdem nicht an die Anlage; die Datei waere wertlos. Damit
  * traegt sie ein Geheimnis, und der Hinweis am Knopf sagt das. */
 if ($wp_post && isset($_POST['wp_sichern'])) {
-    $wp_js = json_encode(wp_config(),
+    $wp_js = json_encode(wp_sicherung_bauen(),
         JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     if ($wp_js !== false) {
         header('Content-Type: application/json; charset=utf-8');
@@ -609,15 +628,25 @@ if ($wp_post && isset($_POST['wp_zurueck'])) {
     } elseif ((int) $_FILES['wp_sicherung']['size'] > 262144) {
         $wp_fehler[] = wp_t('EINST.SICH_ZU_GROSS');
     } else {
+        $wp_geheim_neu = array();
         list($wp_neu, $wp_mangel, $wp_n) = wp_sicherung_lesen(
-            (string) @file_get_contents($_FILES['wp_sicherung']['tmp_name']));
+            (string) @file_get_contents($_FILES['wp_sicherung']['tmp_name']), $wp_geheim_neu);
         if ($wp_neu === null) {
             /* ALLE Beanstandungen, nicht nur die erste - und geaendert wird
              * nichts. */
             $wp_fehler[] = wp_t('EINST.SICH_ABGELEHNT') . ' '
                             . implode(' ', $wp_mangel);
-        } elseif (wp_config_write($wp_neu)) {
+        } elseif (wp_config_write($wp_neu)
+                  && (!$wp_geheim_neu || wp_geheim_write(array_merge(wp_geheim(), $wp_geheim_neu)))) {
+            if ($wp_geheim_neu) { wp_anmeldungen_verwerfen(); }
             $wp_meldungen[] = sprintf(wp_t('EINST.SICH_UEBERNOMMEN'), $wp_n);
+            /* Regeln/05, Punkt 7: sagen, was mit dem Dienst geschah. Dieses
+             * Plugin hat keinen Dauerlaeufer - der Minutentakt liest beim
+             * naechsten Lauf. */
+            $wp_meldungen[] = wp_t('EINST.SICH_DIENST');
+            $wp_cfg = wp_config();
+            $wp_geh = wp_geheim();
+            wp_abo_nachziehen($wp_cfg);
             /* Angenommen UND trotzdem etwas zu sagen: eine Datei aus einer
              * aelteren Fassung kennt nicht jeden Schluessel. Die fehlenden
              * behalten ihren jetzigen Wert - das ist richtig so, aber es
@@ -629,6 +658,22 @@ if ($wp_post && isset($_POST['wp_zurueck'])) {
     }
 }
 
+/* ---------------- Jeder POST endet hier mit einer Umleitung ----------------
+ *
+ * Die Downloads oben sind schon mit exit hinaus. Alles andere hinterlegt sein
+ * Ergebnis und leitet mit 303 auf den Reiter um, auf dem es entstand. Die
+ * Adresse ist relativ und traegt nur einen Namen aus der Positivliste. */
+if ($wp_post) {
+    $wp_ziel = substr($wp_tab, 4);
+    if (!in_array($wp_ziel, $wp_reiter_ids, true)) { $wp_ziel = 'settings'; }
+    wp_einmalmeldung_schreiben(array(
+        'meldungen'   => array_values($wp_meldungen),
+        'fehler'      => array_values($wp_fehler),
+        'testausgabe' => substr((string) $wp_testausgabe, 0, 262144),
+    ));
+    header('Location: index.php?form=' . $wp_ziel, true, 303);
+    exit;
+}
 
 if (class_exists('LBWeb', false)) {
     LBWeb::lbheader(wp_t('ALLG.TITEL'), 'https://wiki.loxberry.de/', 'help.html');
@@ -745,18 +790,27 @@ if (class_exists('LBWeb', false)) {
 
 <!-- Reiterleiste: echte Links, JavaScript faengt den Klick ab. Der Link
      traegt die Adresse - jeder Reiter ist verlinkbar, die Zurueck-Taste tut
-     das Erwartete, und faellt das Skript aus, bleibt die Seite bedienbar. -->
-<?php
-$wp_beschriftung = array(
-    'settings' => 'REITER.EINSTELLUNGEN', 'sgready' => 'REITER.SGREADY',
-    'mqtt'     => 'REITER.MQTT',          'loxone'  => 'REITER.LOXONE',
-    'test'     => 'REITER.TEST',          'log'     => 'REITER.LOG',
-);
-?>
+     das Erwartete, und faellt das Skript aus, bleibt die Seite bedienbar.
+
+     AUSGESCHRIEBEN, nicht als Schleife (NEU 0.9.20, CLAUDE.md Abschnitt 9).
+     Bis 0.9.19 entstand die Leiste in einer Schleife ueber die Positivliste;
+     Werkzeuge/reiterlauf.py brach daran am 17.09.2026 mit "kein Reiter
+     gefunden - nichts gemessen" ab, jeder Reiter blieb also ungeprueft. Die
+     Uebereinstimmung mit Positivliste und Bereichen haelt die Pruefzeile im
+     Reiter Test weiter nach - jetzt gegen die ausgeschriebene Leiste. -->
 <div class="sm-tabs">
-<?php foreach ($wp_reiter_ids as $wp_r) { ?>
-	<a class="sm-tab<?= $wp_tab === 'tab-' . $wp_r ? ' sm-active' : '' ?>" data-ziel="tab-<?= $wp_r ?>" href="index.php?form=<?= $wp_r ?>"><?= wp_e(wp_t($wp_beschriftung[$wp_r])) ?></a>
-<?php } ?>
+	<a class="sm-tab<?= $wp_tab === 'tab-settings' ? ' sm-active' : '' ?>" data-ziel="tab-settings"
+	   href="index.php?form=settings"><?= wp_e(wp_t('REITER.EINSTELLUNGEN')) ?></a>
+	<a class="sm-tab<?= $wp_tab === 'tab-sgready' ? ' sm-active' : '' ?>" data-ziel="tab-sgready"
+	   href="index.php?form=sgready"><?= wp_e(wp_t('REITER.SGREADY')) ?></a>
+	<a class="sm-tab<?= $wp_tab === 'tab-mqtt' ? ' sm-active' : '' ?>" data-ziel="tab-mqtt"
+	   href="index.php?form=mqtt"><?= wp_e(wp_t('REITER.MQTT')) ?></a>
+	<a class="sm-tab<?= $wp_tab === 'tab-loxone' ? ' sm-active' : '' ?>" data-ziel="tab-loxone"
+	   href="index.php?form=loxone"><?= wp_e(wp_t('REITER.LOXONE')) ?></a>
+	<a class="sm-tab<?= $wp_tab === 'tab-test' ? ' sm-active' : '' ?>" data-ziel="tab-test"
+	   href="index.php?form=test"><?= wp_e(wp_t('REITER.TEST')) ?></a>
+	<a class="sm-tab<?= $wp_tab === 'tab-log' ? ' sm-active' : '' ?>" data-ziel="tab-log"
+	   href="index.php?form=log"><?= wp_e(wp_t('REITER.LOG')) ?></a>
 </div>
 
 <!-- ================= Reiter: Einstellungen ================= -->
@@ -840,13 +894,15 @@ $wp_beschriftung = array(
 
 <?php if ($wp_cfg['hersteller'] === 'melcloud' || $wp_cfg['hersteller'] === 'vaillant') { ?>
 <div class="sm-feld">
-  <label for="wp_benutzer"><?= wp_e(wp_t('EINST.L_BENUTZER')) ?></label>
+  <label for="wp_benutzer"><?= wp_e(wp_t($wp_cfg['hersteller'] === 'vaillant'
+      ? 'EINST.L_BENUTZER_VA' : 'EINST.L_BENUTZER')) ?></label>
   <input data-role="none" type="email" name="benutzer" id="wp_benutzer" value="<?= wp_e($wp_geh['benutzer']) ?>" size="40">
   <div class="sm-hilfe"><?= wp_t($wp_cfg['hersteller'] === 'vaillant'
       ? 'EINST.H_BENUTZER_VA' : 'EINST.H_BENUTZER') ?></div>
 </div>
 <div class="sm-feld">
-  <label for="wp_passwort"><?= wp_e(wp_t('EINST.L_PASSWORT')) ?></label>
+  <label for="wp_passwort"><?= wp_e(wp_t($wp_cfg['hersteller'] === 'vaillant'
+      ? 'EINST.L_PASSWORT_VA' : 'EINST.L_PASSWORT')) ?></label>
   <input data-role="none" type="password" name="passwort" id="wp_passwort" value="" size="40"
          placeholder="<?= wp_e($wp_geh['passwort'] !== '' ? wp_t('EINST.P_GESETZT') : wp_t('EINST.P_LEER')) ?>">
   <div class="sm-hilfe"><?= wp_t('EINST.H_PASSWORT') ?></div>
@@ -1248,11 +1304,18 @@ if (!$wp_verlauf) { ?>
 
 <h3><?= wp_e(wp_t('MQTT.H_THEMEN')) ?></h3>
 <table class="sm-tbl">
-<tr><th><?= wp_e(wp_t('MQTT.T_THEMA')) ?></th><th><?= wp_e(wp_t('MQTT.T_BEDEUTUNG')) ?></th><th><?= wp_e(wp_t('MQTT.T_WERT')) ?></th></tr>
-<?php foreach (wp_statusfelder() as $wp_n => $wp_d) { ?>
+<tr><th><?= wp_e(wp_t('MQTT.T_THEMA')) ?></th><th><?= wp_e(wp_t('MQTT.T_BEDEUTUNG')) ?></th><th><?= wp_e(wp_t('MQTT.T_RETAIN')) ?></th><th><?= wp_e(wp_t('MQTT.T_WERT')) ?></th></tr>
+<?php /* Die Werte aus wp_ausgabewerte(), nicht aus $wp_stand['werte']:
+   OK, STUFE, ALTER, BUDGET und STOERUNG stehen nie dort, gehen aber bei
+   jedem Durchlauf hinaus - bis 0.9.19 zeigte die Spalte fuer sie einen
+   Strich, als sende das Plugin sie nicht. */
+$wp_raus = wp_ausgabewerte($wp_stand, $wp_cfg);
+$wp_ret = wp_retain_tabelle();
+foreach (wp_statusfelder() as $wp_n => $wp_d) { ?>
 <tr><td><span class="sm-mono"><?= wp_e($wp_cfg['mqtt_topic']) ?>/<?= wp_e($wp_n) ?></span></td>
     <td><?= wp_t($wp_d[3]) ?></td>
-    <td><?= isset($wp_stand['werte'][$wp_n]) ? wp_e($wp_stand['werte'][$wp_n]) : '&mdash;' ?></td></tr>
+    <td><?= wp_e(wp_t(!empty($wp_ret[$wp_n]) ? 'MQTT.RETAIN_JA' : 'MQTT.RETAIN_NEIN')) ?></td>
+    <td><?= isset($wp_raus[$wp_n]) ? wp_e($wp_raus[$wp_n]) : '&mdash;' ?></td></tr>
 <?php } ?>
 </table>
 </div>
