@@ -2330,8 +2330,143 @@ function wp_va_merkmale_ablegen($antwort)
         $g = wp_geheim();
         $g['va_refresh'] = (string) $d['refresh_token'];
         wp_geheim_write($g);
+        wp_va_erneuerung_merken((string) $d['refresh_token'], $d);
     }
     return array(1, '');
+}
+
+/**
+ * Wie lange traegt das Erneuerungsmerkmal? (NEU 0.9.22)
+ *
+ * Mit der Browser-Anmeldung haengt alles daran: laeuft es nach Stunden ab,
+ * muesste man sich dauernd neu anmelden. Das Merkmal ist ein JWT; gelesen
+ * werden NUR exp und typ aus dem Mittelteil, dazu refresh_expires_in aus der
+ * Antwort. Das Merkmal selbst steht nicht in dieser Datei.
+ */
+function wp_va_erneuerung_merken($merkmal, $antwort)
+{
+    $teile = explode('.', $merkmal);
+    $inhalt = count($teile) === 3
+        ? json_decode((string) base64_decode(strtr($teile[1], '-_', '+/')), true) : null;
+    $alt = wp_va_erneuerung_lage();
+    wp_json_schreiben(wp_datadir() . '/va_erneuerung.json', array(
+        'typ'        => is_array($inhalt) && isset($inhalt['typ']) ? (string) $inhalt['typ'] : '',
+        'bis'        => is_array($inhalt) && isset($inhalt['exp']) ? (int) $inhalt['exp'] : 0,
+        'sekunden'   => isset($antwort['refresh_expires_in']) ? (int) $antwort['refresh_expires_in'] : -1,
+        'angemeldet' => $alt && !empty($alt['angemeldet']) ? (int) $alt['angemeldet'] : time(),
+        'erneuert'   => time(),
+    ));
+}
+
+/** Gemerkte Laufzeit oder null. */
+function wp_va_erneuerung_lage()
+{
+    $f = wp_datadir() . '/va_erneuerung.json';
+    $l = is_file($f) ? json_decode((string) @file_get_contents($f), true) : null;
+    return is_array($l) ? $l : null;
+}
+
+/* ------------------------------------------------------------------
+ * Browser-Anmeldung (NEU 0.9.22)
+ *
+ * Seit 2026 verlangt die myVAILLANT-Anmeldeseite eine Bot-Pruefung (ALTCHA,
+ * Kontrollkaestchen, auto="off"). Das Plugin loest sie nicht. Stattdessen
+ * meldet sich der Mensch im eigenen Browser an und kreuzt selbst an; das
+ * Plugin tauscht danach nur den Code gegen die Merkmale und erneuert sie von
+ * da an ueber den Token-Endpunkt - der verlangt keine Bot-Pruefung.
+ *
+ * Gemessen am 17.09.2026 (ohne Zugangsdaten): der Client myvaillant nimmt
+ * NUR die App-Adresse enduservaillant.page.link://login als Ziel; http://
+ * localhost, eine https-Adresse und oob lehnt er mit HTTP 400 ab. Der Code
+ * muss deshalb von Hand aus dem Browser geholt werden.
+ * ------------------------------------------------------------------ */
+
+function wp_va_browser_datei()
+{
+    return wp_tmpdir() . '/va_browser.json';
+}
+
+/** Neue Anmeldeadresse mit frischem PKCE-Paar und state. */
+function wp_va_browser_starten()
+{
+    $cfg = wp_config();
+    $info = wp_hersteller_info('vaillant');
+    $realm = wp_va_realm($cfg['marke'], $cfg['land']);
+    list($verifier, $challenge) = wp_va_pkce();
+    $state = bin2hex(function_exists('random_bytes') ? random_bytes(12) : openssl_random_pseudo_bytes(12));
+    $adresse = $info['auth_basis'] . '/' . rawurlencode($realm) . '/protocol/openid-connect/auth?'
+        . http_build_query(array(
+            'response_type'         => 'code',
+            'client_id'             => 'myvaillant',
+            'code'                  => 'code_challenge',
+            'redirect_uri'          => 'enduservaillant.page.link://login',
+            'code_challenge_method' => 'S256',
+            'code_challenge'        => $challenge,
+            'state'                 => $state,
+        ));
+    $f = wp_va_browser_datei();
+    wp_json_schreiben($f, array('verifier' => $verifier, 'state' => $state, 'realm' => $realm,
+                                'adresse' => $adresse, 'seit' => time()));
+    @chmod($f, 0600);
+    return $adresse;
+}
+
+/** Laufende Browser-Anmeldung (hoechstens 30 Minuten alt) oder null. */
+function wp_va_browser_lage()
+{
+    $f = wp_va_browser_datei();
+    $l = is_file($f) ? json_decode((string) @file_get_contents($f), true) : null;
+    if (!is_array($l) || !isset($l['verifier'], $l['state'], $l['adresse'], $l['seit'])) { return null; }
+    if (time() - (int) $l['seit'] > 1800) { return null; }
+    return $l;
+}
+
+/**
+ * Den eingefuegten Text einloesen. Angenommen wird die ganze Umleitungsadresse,
+ * ein Stueck davon mit code=..., oder der nackte Code.
+ * Rueckgabe: array(ok, Grund).
+ */
+function wp_va_browser_einloesen($eingabe)
+{
+    $l = wp_va_browser_lage();
+    if (!$l) { return array(0, 'KEINE_ANMELDEADRESSE_OFFEN'); }
+    $eingabe = trim((string) $eingabe);
+    $code = '';
+    if (preg_match('/[?&#]code=([^&\s"\'<>]+)/', $eingabe, $m)) {
+        $code = urldecode($m[1]);
+    } elseif (preg_match('/^[A-Za-z0-9._\-]{10,}$/', $eingabe)) {
+        $code = $eingabe;
+    }
+    if ($code === '') { return array(0, 'KEIN_CODE_ERKANNT'); }
+    // Ein state aus einer aelteren Adresse gehoert zu einem anderen Pruefwort -
+    // der Tausch scheiterte dann mit einer nichtssagenden Meldung des Dienstes.
+    if (preg_match('/[?&#]state=([^&\s"\'<>]+)/', $eingabe, $m) &&urldecode($m[1]) !== $l['state']) {
+        return array(0, 'ALTE_ANMELDEADRESSE');
+    }
+    $cfg = wp_config();
+    if (wp_va_realm($cfg['marke'], $cfg['land']) !== $l['realm']) {
+        return array(0, 'MARKE_ODER_LAND_GEAENDERT');
+    }
+    $info = wp_hersteller_info('vaillant');
+    $c = wp_va_http('POST', $info['auth_basis'] . '/' . rawurlencode($l['realm']) . '/protocol/openid-connect/token',
+        array('Content-Type: application/x-www-form-urlencoded'),
+        http_build_query(array(
+            'grant_type'    => 'authorization_code',
+            'client_id'     => 'myvaillant',
+            'code'          => $code,
+            'code_verifier' => $l['verifier'],
+            'redirect_uri'  => 'enduservaillant.page.link://login',
+        )));
+    if ($c['fehler'] !== '') { return array(0, 'NETZ: ' . $c['fehler']); }
+    list($ok, $grund) = wp_va_merkmale_ablegen($c);
+    if ($ok) {
+        @unlink(wp_va_browser_datei());
+        // Neue Anmeldung, neue Zaehlung - erst nach Erfolg, sonst ginge die
+        // Angabe zur noch gueltigen alten Anmeldung verloren.
+        $ve = wp_va_erneuerung_lage();
+        if ($ve) { $ve['angemeldet'] = time(); wp_json_schreiben(wp_datadir() . '/va_erneuerung.json', $ve); }
+    }
+    return array($ok, $grund);
 }
 
 /** Nur das Erneuerungsmerkmal einloesen. Rueckgabe: array(ok, Grund). */
@@ -2352,13 +2487,6 @@ function wp_va_erneuern()
     return wp_va_merkmale_ablegen($a);
 }
 
-/**
- * Ein gueltiges Zugriffsmerkmal besorgen.
- *
- * Reihenfolge: gemerktes Merkmal, sonst erneuern, sonst voll anmelden. Die
- * volle Anmeldung ist der teuerste Weg und steht deshalb hinten - sie holt
- * eine HTML-Seite und schickt das Passwort.
- */
 /** Grund der letzten gescheiterten myVAILLANT-Anmeldung in diesem Lauf
  *  ('' = keine gescheitert). Fuer die Selbstpruefung. */
 function wp_va_letzter_grund($neu = null)
@@ -2368,6 +2496,13 @@ function wp_va_letzter_grund($neu = null)
     return $grund;
 }
 
+/**
+ * Ein gueltiges Zugriffsmerkmal besorgen.
+ *
+ * Reihenfolge: gemerktes Merkmal, sonst erneuern, sonst voll anmelden. Die
+ * volle Anmeldung ist der teuerste Weg und steht deshalb hinten - sie holt
+ * eine HTML-Seite und schickt das Passwort.
+ */
 function wp_va_token($erzwingen = false)
 {
     $f = wp_tmpdir() . '/token_vaillant.json';
@@ -2386,7 +2521,8 @@ function wp_va_token($erzwingen = false)
              * 0.9.20 hiess er nur 'va_login', ein neuer Grund blieb eine
              * Stunde lang unsichtbar hinter dem alten. */
             wp_log('myVAILLANT: Anmeldung fehlgeschlagen (' . $grund . ')'
-                . ($grund === 'BOTPRUEFUNG' ? ' - die Anmeldeseite verlangt eine Bot-Pruefung (ALTCHA), die das Plugin nicht loest' : ''),
+                . ($grund === 'BOTPRUEFUNG' ? ' - die Anmeldeseite verlangt eine Bot-Pruefung (ALTCHA), die das Plugin nicht loest; '
+                  . 'im Reiter Einstellungen einmalig im Browser anmelden' : ''),
                 'va_login_' . preg_replace('/[^A-Z0-9_]/', '', strtoupper($grund)));
             return '';
         }
@@ -4480,6 +4616,7 @@ function wp_anmeldungen_verwerfen()
         if (is_file($pfad)) { @unlink($pfad); }
     }
     if (function_exists('wp_va_keksglas') && is_file(wp_va_keksglas())) { @unlink(wp_va_keksglas()); }
+    if (function_exists('wp_va_browser_datei') && is_file(wp_va_browser_datei())) { @unlink(wp_va_browser_datei()); }
 }
 
 function wp_sicherung_lesen($roh, &$geheim_neu = null)

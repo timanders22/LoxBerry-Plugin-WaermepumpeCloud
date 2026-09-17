@@ -72,7 +72,9 @@ function wp_pruefungen()
         }
     } elseif ($cfg['hersteller'] === 'melcloud' || $cfg['hersteller'] === 'vaillant') {
         $da = $g['benutzer'] !== '' && $g['passwort'] !== '';
-        $zugang_da = $da;
+        // Seit 0.9.22 reicht bei myVAILLANT auch eine Anmeldung im Browser:
+        // dann liegt ein Erneuerungsmerkmal vor, ein Passwort braucht es nicht.
+        $zugang_da = $da || ($cfg['hersteller'] === 'vaillant' && $g['va_refresh'] !== '');
         $z[] = wp_pruefzeile($da ? 1 : 0, wp_t('TEST.F_ZUGANG'),
             $da ? sprintf(wp_t('TEST.A_ZUGANG_MELCLOUD'), wp_e($g['benutzer']),
                           wp_e(wp_maske($g['passwort'])))
@@ -91,6 +93,20 @@ function wp_pruefungen()
         $z[] = wp_pruefzeile($g['refresh_token'] !== '' ? 1 : 0, wp_t('TEST.F_ONECTA_ANMELDUNG'),
             $g['refresh_token'] !== '' ? wp_t('TEST.A_ONECTA_ANMELDUNG_OK')
                                        : wp_t('TEST.A_ONECTA_ANMELDUNG_FEHLT'));
+    }
+
+    /* ---- Bei myVAILLANT: Anmeldung im Browser und wie lange sie traegt (NEU 0.9.22) ---- */
+    if ($cfg['hersteller'] === 'vaillant') {
+        $ve = wp_va_erneuerung_lage();
+        if ($g['va_refresh'] === '') {
+            $z[] = wp_pruefzeile(0, wp_t('TEST.F_VA_BROWSER'), wp_t('TEST.A_VA_BROWSER_FEHLT'));
+        } elseif ($ve && !empty($ve['bis'])) {
+            $z[] = wp_pruefzeile((int) $ve['bis'] > time() ? 1 : 0, wp_t('TEST.F_VA_BROWSER'),
+                sprintf(wp_t('TEST.A_VA_BROWSER_BIS'), wp_e(date('d.m.Y H:i', (int) $ve['bis'])),
+                    wp_e(date('d.m.Y H:i', (int) $ve['angemeldet'])), wp_e((string) $ve['typ'])));
+        } else {
+            $z[] = wp_pruefzeile(1, wp_t('TEST.F_VA_BROWSER'), wp_t('TEST.A_VA_BROWSER_OHNE_ABLAUF'));
+        }
     }
 
     /* ---- Antwortet die Cloud? ---- */

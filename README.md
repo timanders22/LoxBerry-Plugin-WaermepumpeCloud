@@ -18,7 +18,7 @@ Wärmepumpe vorbeiregelt.
 | **myUplink** (Nibe) | offiziell, OAuth2 (`client_credentials`) | **echt** | Lesen frei, **Schreiben verlangt ein kostenpflichtiges myUplink-Abo** |
 | **Daikin Onecta** | offiziell, OAuth2 (Autorisierungscode) | nachgebildet | **200 Aufrufe je Tag**, gleitendes Fenster |
 | **MELCloud** (Mitsubishi) | inoffiziell, ContextKey | nachgebildet | **Mindesttakt 180 s** — häufiger sperrt das Konto für Stunden |
-| **myVAILLANT** (Vaillant, Saunier Duval, Bulex, Glow-worm, DemirDöküm) | inoffiziell, OpenID Connect mit PKCE | nachgebildet | **derzeit keine Anmeldung möglich:** die Anmeldeseite verlangt seit 2026 eine Bot-Prüfung (ALTCHA), die das Plugin nicht löst — siehe „Neu in 0.9.21" |
+| **myVAILLANT** (Vaillant, Saunier Duval, Bulex, Glow-worm, DemirDöküm) | inoffiziell, OpenID Connect mit PKCE | nachgebildet | **Anmeldung einmalig im Browser:** die Anmeldeseite verlangt seit 2026 eine Bot-Prüfung (ALTCHA), die der Mensch selbst ankreuzt — siehe „Neu in 0.9.22" |
 | **EMS-ESP** (Bosch, Buderus, Junkers, Nefit, Worcester, Sieger) | **lokal**, HTTP/JSON über ein Gateway am EMS-Bus | nachgebildet, echt mit zwei Relais | **Kein Konto, keine Ratenbegrenzung.** Braucht ein Gateway (z. B. BBQKees); Lesen geht ohne alles, Schreiben mit einem Zugriffsmerkmal |
 
 ### EMS-ESP im Besonderen
@@ -49,6 +49,50 @@ Ein Knopf im Reiter *Test* fragt das Gateway, **was sich schreiben lässt**
 (`/api/<gerät>/commands`). Das ist der Vorteil gegenüber den vier Wolken: die
 Liste kommt vom Gerät und stimmt auch bei einem Modell, das dieses Plugin nie
 gesehen hat.
+
+## Neu in 0.9.22
+
+**myVAILLANT: Anmeldung einmalig im Browser.** Seit 2026 trägt die
+Anmeldeseite von Vaillant eine Bot-Prüfung (ALTCHA) — ein Kontrollkästchen,
+das ausdrücklich angeklickt werden muss (`type="checkbox"`, `auto="off"`).
+Das Plugin kreuzt es nicht an und rechnet die Aufgabe dahinter nicht aus.
+Stattdessen meldet **Sie** sich einmal im eigenen Browser an; das Plugin
+tauscht danach nur den Code gegen die Merkmale und erneuert sie selbst über
+den Token-Endpunkt, der keine Bot-Prüfung verlangt. E-Mail und Passwort
+braucht dieser Weg nicht.
+
+So geht es (Reiter *Einstellungen*, Abschnitt *Anmeldung im Browser*):
+
+1. *Anmeldeadresse erzeugen* — sie gilt 30 Minuten.
+2. **Vor** dem Anmelden im Browser die Entwicklerwerkzeuge öffnen (`F12`),
+   Reiter *Netzwerk*, *Log beibehalten* ankreuzen.
+3. Die Adresse öffnen, anmelden, die Bot-Prüfung ankreuzen. Danach passiert
+   scheinbar nichts.
+4. In der Netzwerkliste die Zeile `authenticate` anklicken und unter
+   *Antwort-Header* den Wert von `location` kopieren (beginnt mit
+   `enduservaillant.page.link://login`).
+5. Einfügen und **sofort** einlösen — der Code gilt nur etwa eine Minute.
+
+**Warum der Umweg über die Entwicklerwerkzeuge.** Gemessen am 17.09.2026
+ohne Zugangsdaten: der Anmeldedienst nimmt für diese App **nur** die
+App-Adresse `enduservaillant.page.link://login` als Ziel; `http://localhost`,
+eine https-Adresse und `oob` lehnt er mit HTTP 400 ab. Ein Browser kann diese
+App-Adresse nicht öffnen. Mit einer Attrappe in Chromium gemessen: nach der
+Umleitung bleiben Adresszeile und Konsole leer — sichtbar ist das Ziel nur in
+der Netzwerkliste.
+
+**Wie lange trägt die Anmeldung?** Das ist gegen ein echtes Konto noch nicht
+gemessen. Der Reiter *Test* zeigt es ab der ersten Anmeldung in einer eigenen
+Zeile („gültig bis …, angemeldet …, Art …"); gelesen werden dafür nur Ablauf
+und Art aus dem Merkmal, nie das Merkmal selbst. Läuft es ab, meldet die
+Selbstprüfung `BOTPRUEFUNG` mit dem Hinweis auf diesen Weg.
+
+Im Prüfstand (Linux, echter Anmeldedienst, keine Zugangsdaten) gemessen: die
+erzeugte Adresse liefert das Anmeldeformular samt Bot-Prüfung, ein Code aus
+einer älteren Adresse wird als `ALTE_ANMELDEADRESSE` erkannt, ein erfundener
+Code kommt als `TOKEN_ABGELEHNT_invalid_grant` zurück, ein Fehlschlag lässt
+eine bestehende Anmeldung unberührt, und ohne Formularmerkmal wird nichts
+erzeugt.
 
 ## Neu in 0.9.21
 

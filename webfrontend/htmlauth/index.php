@@ -312,6 +312,29 @@ if ($wp_post && isset($_POST['onecta_code'])) {
     $wp_tab = 'tab-settings';
 }
 
+/* ================= myVAILLANT: Anmeldung im Browser (NEU 0.9.22) ================= */
+if ($wp_post && isset($_POST['va_browser_start'])) {
+    wp_va_browser_starten();
+    $wp_meldungen[] = wp_t('EINST.VA_BROWSER_ADRESSE_NEU');
+    $wp_tab = 'tab-settings';
+}
+if ($wp_post && isset($_POST['va_browser_code'])) {
+    $wp_vc = wp_g('va_code');
+    if ($wp_vc === '') {
+        $wp_fehler[] = wp_t('EINST.FEHLER_CODE_LEER');
+    } else {
+        list($ok, $grund) = wp_va_browser_einloesen($wp_vc);
+        if ($ok) {
+            wp_log('myVAILLANT: Anmeldung im Browser abgeschlossen');
+            $wp_meldungen[] = wp_t('EINST.VA_BROWSER_OK');
+        } else {
+            wp_log('myVAILLANT: Code aus dem Browser nicht eingeloest (' . $grund . ')');
+            $wp_fehler[] = sprintf(wp_t('EINST.VA_BROWSER_FEHL'), wp_e($grund));
+        }
+    }
+    $wp_tab = 'tab-settings';
+}
+
 /* ================= Geraet und Takt speichern ================= */
 if ($wp_post && isset($_POST['speichern_geraet'])) {
     $wp_stand_vor = wp_stand();
@@ -982,6 +1005,40 @@ if (class_exists('LBWeb', false)) {
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="onecta_code" value="1"><?= wp_e(wp_t('EINST.K_CODE')) ?></button>
 </div>
 </form>
+<?php } ?>
+
+<?php if ($wp_cfg['hersteller'] === 'vaillant') { $wp_vb = wp_va_browser_lage(); $wp_ve = wp_va_erneuerung_lage(); ?>
+<h2><?= wp_e(wp_t('EINST.H_VA_BROWSER')) ?></h2>
+<div class="sm-step"><?= wp_t('EINST.VA_BROWSER_TEXT') ?></div>
+<?php if ($wp_geh['va_refresh'] !== '') { ?>
+<div class="sm-hinweis"><?= $wp_ve && !empty($wp_ve['bis'])
+    ? sprintf(wp_t('EINST.VA_BROWSER_STAND_BIS'), wp_e(date('d.m.Y H:i', (int) $wp_ve['bis'])))
+    : wp_t('EINST.VA_BROWSER_STAND') ?></div>
+<?php } ?>
+<form action="index.php" method="post">
+  <?php echo wp_fmt(); ?>
+<input data-role="none" type="hidden" name="activetab" value="tab-settings">
+<div class="sm-knopfreihe">
+  <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="va_browser_start" value="1"><?= wp_e(wp_t($wp_vb ? 'EINST.K_VA_BROWSER_NEU' : 'EINST.K_VA_BROWSER')) ?></button>
+</div>
+</form>
+<?php if ($wp_vb) { ?>
+<div class="sm-hilfe"><?= wp_e(wp_t('EINST.VA_BROWSER_ADRESSE')) ?></div>
+<div class="sm-pre"><a href="<?= wp_e($wp_vb['adresse']) ?>" target="_blank" rel="noopener noreferrer"><?= wp_e($wp_vb['adresse']) ?></a></div>
+<div class="sm-step"><?= wp_t('EINST.VA_BROWSER_SCHRITTE') ?></div>
+<form action="index.php" method="post">
+  <?php echo wp_fmt(); ?>
+<input data-role="none" type="hidden" name="activetab" value="tab-settings">
+<div class="sm-feld">
+  <label for="wp_va_code"><?= wp_e(wp_t('EINST.L_VA_CODE')) ?></label>
+  <input data-role="none" type="text" name="va_code" id="wp_va_code" size="52" value="" autocomplete="off">
+  <div class="sm-hilfe"><?= wp_t('EINST.H_VA_CODE') ?></div>
+</div>
+<div class="sm-knopfreihe">
+  <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="va_browser_code" value="1"><?= wp_e(wp_t('EINST.K_CODE')) ?></button>
+</div>
+</form>
+<?php } ?>
 <?php } ?>
 
 <?php if ($wp_cfg['hersteller'] !== '') { ?>
