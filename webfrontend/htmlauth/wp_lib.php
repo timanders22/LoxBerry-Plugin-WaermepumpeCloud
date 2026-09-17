@@ -2256,6 +2256,18 @@ function wp_va_anmelden()
         }
         $adresse = html_entity_decode($m[0], ENT_QUOTES, 'UTF-8');
 
+        /* Bot-Pruefung auf der Anmeldeseite.
+         *
+         * Seit 2026 traegt die myVAILLANT-Anmeldeseite ein ALTCHA-Feld
+         * (altcha-widget, /api/altcha/challenge). Ohne dessen Loesung schickt
+         * der Keycloak die Seite nur erneut - bis 0.9.20 meldete das Plugin
+         * das als ZUGANGSDATEN_ABGELEHNT, obwohl die Daten stimmten (am Geraet
+         * gemessen 17.09.2026). Das Plugin loest diese Pruefung nicht; es sagt
+         * es und schickt das Passwort dann gar nicht erst ab. */
+        if (stripos($a['text'], 'altcha') !== false) {
+            return array(0, 'BOTPRUEFUNG');
+        }
+
         $b = wp_va_http('POST', $adresse,
             array('Content-Type: application/x-www-form-urlencoded'),
             http_build_query(array(
@@ -2347,6 +2359,15 @@ function wp_va_erneuern()
  * volle Anmeldung ist der teuerste Weg und steht deshalb hinten - sie holt
  * eine HTML-Seite und schickt das Passwort.
  */
+/** Grund der letzten gescheiterten myVAILLANT-Anmeldung in diesem Lauf
+ *  ('' = keine gescheitert). Fuer die Selbstpruefung. */
+function wp_va_letzter_grund($neu = null)
+{
+    static $grund = '';
+    if ($neu !== null) { $grund = (string) $neu; }
+    return $grund;
+}
+
 function wp_va_token($erzwingen = false)
 {
     $f = wp_tmpdir() . '/token_vaillant.json';
@@ -2359,8 +2380,14 @@ function wp_va_token($erzwingen = false)
     list($ok, $grund) = wp_va_erneuern();
     if (!$ok) {
         list($ok, $grund) = wp_va_anmelden();
+        wp_va_letzter_grund($ok ? '' : $grund);
         if (!$ok) {
-            wp_log('myVAILLANT: Anmeldung fehlgeschlagen (' . $grund . ')', 'va_login');
+            /* Der Schluessel fuer die Einmal-Sperre traegt den Grund: bis
+             * 0.9.20 hiess er nur 'va_login', ein neuer Grund blieb eine
+             * Stunde lang unsichtbar hinter dem alten. */
+            wp_log('myVAILLANT: Anmeldung fehlgeschlagen (' . $grund . ')'
+                . ($grund === 'BOTPRUEFUNG' ? ' - die Anmeldeseite verlangt eine Bot-Pruefung (ALTCHA), die das Plugin nicht loest' : ''),
+                'va_login_' . preg_replace('/[^A-Z0-9_]/', '', strtoupper($grund)));
             return '';
         }
     }

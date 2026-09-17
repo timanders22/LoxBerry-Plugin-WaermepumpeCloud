@@ -131,6 +131,10 @@ function wp_pruefungen()
         // die Anmeldung ist verfallen. Wer jetzt an Client ID und Secret
         // herumbessert, sucht an der falschen Stelle.
         $z[] = wp_pruefzeile(0, wp_t('TEST.F_ANMELDUNG'), wp_t('TEST.A_ANMELDUNG_ABGELAUFEN'));
+    } elseif ($cfg['hersteller'] === 'vaillant' && wp_va_letzter_grund() === 'BOTPRUEFUNG') {
+        // Die Zugangsdaten sind hier nicht der Fehler - wer sie neu eintippt,
+        // sucht an der falschen Stelle.
+        $z[] = wp_pruefzeile(0, wp_t('TEST.F_ANMELDUNG'), wp_t('TEST.A_ANMELDUNG_BOTPRUEFUNG'));
     } else {
         $z[] = wp_pruefzeile(0, wp_t('TEST.F_ANMELDUNG'), wp_t('TEST.A_ANMELDUNG_FEHL'));
     }

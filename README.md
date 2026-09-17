@@ -18,7 +18,7 @@ Wärmepumpe vorbeiregelt.
 | **myUplink** (Nibe) | offiziell, OAuth2 (`client_credentials`) | **echt** | Lesen frei, **Schreiben verlangt ein kostenpflichtiges myUplink-Abo** |
 | **Daikin Onecta** | offiziell, OAuth2 (Autorisierungscode) | nachgebildet | **200 Aufrufe je Tag**, gleitendes Fenster |
 | **MELCloud** (Mitsubishi) | inoffiziell, ContextKey | nachgebildet | **Mindesttakt 180 s** — häufiger sperrt das Konto für Stunden |
-| **myVAILLANT** (Vaillant, Saunier Duval, Bulex, Glow-worm, DemirDöküm) | inoffiziell, OpenID Connect mit PKCE | nachgebildet | **Anmeldung mit den App-Zugangsdaten**, kein API-Schlüssel; der sensoCOMFORT meldet ohnehin nur alle 5 min |
+| **myVAILLANT** (Vaillant, Saunier Duval, Bulex, Glow-worm, DemirDöküm) | inoffiziell, OpenID Connect mit PKCE | nachgebildet | **derzeit keine Anmeldung möglich:** die Anmeldeseite verlangt seit 2026 eine Bot-Prüfung (ALTCHA), die das Plugin nicht löst — siehe „Neu in 0.9.21" |
 | **EMS-ESP** (Bosch, Buderus, Junkers, Nefit, Worcester, Sieger) | **lokal**, HTTP/JSON über ein Gateway am EMS-Bus | nachgebildet, echt mit zwei Relais | **Kein Konto, keine Ratenbegrenzung.** Braucht ein Gateway (z. B. BBQKees); Lesen geht ohne alles, Schreiben mit einem Zugriffsmerkmal |
 
 ### EMS-ESP im Besonderen
@@ -49,6 +49,37 @@ Ein Knopf im Reiter *Test* fragt das Gateway, **was sich schreiben lässt**
 (`/api/<gerät>/commands`). Das ist der Vorteil gegenüber den vier Wolken: die
 Liste kommt vom Gerät und stimmt auch bei einem Modell, das dieses Plugin nie
 gesehen hat.
+
+## Neu in 0.9.21
+
+**myVAILLANT: ehrliche Meldung statt „Zugangsdaten abgelehnt".** Am
+17.09.2026 wurde 0.9.20 am LoxBerry des Hauses mit einem echten
+myVAILLANT-Konto gemessen. Die Anmeldung scheiterte — nicht an den
+Zugangsdaten: Die Anmeldeseite von `identity.vaillant-group.com` trägt
+inzwischen ein ALTCHA-Feld, eine Bot-Prüfung per Rechenaufgabe. Ohne deren
+Lösung schickt der Anmeldedienst die Seite einfach noch einmal, und 0.9.20
+deutete das als falsches Passwort.
+
+Das Plugin löst diese Prüfung nicht und wird es nicht tun: sie ist vom
+Anbieter bewusst gegen maschinelle Anmeldungen gesetzt. 0.9.21 erkennt sie,
+**schickt das Passwort dann gar nicht erst ab** (schont das Konto vor einer
+Sperre) und sagt es:
+
+* Reiter *Test*, Zeile „Antwortet die Cloud?": „Nein. Die
+  myVAILLANT-Anmeldeseite verlangt eine Bot-Prüfung (ALTCHA), die das Plugin
+  nicht löst. An den Zugangsdaten liegt es nicht; das Passwort wurde nicht
+  abgeschickt."
+* Protokoll: `myVAILLANT: Anmeldung fehlgeschlagen (BOTPRUEFUNG) - …`
+
+Gemessen am Gerät: 0.9.20 meldete `ZUGANGSDATEN_ABGELEHNT`, 0.9.21 unter
+derselben Bedingung `BOTPRUEFUNG`. Nimmt Vaillant die Prüfung wieder heraus,
+läuft die Anmeldung wie bisher; dieser Fall ließ sich am 17.09.2026 nicht
+mehr nachstellen.
+
+**Protokoll: ein neuer Grund wird nicht mehr verschluckt.** Fehlgeschlagene
+myVAILLANT-Anmeldungen werden höchstens einmal je Stunde protokolliert. Bis
+0.9.20 galt diese Sperre für alle Gründe gemeinsam — ein geänderter Grund
+blieb bis zu einer Stunde hinter dem alten unsichtbar. Jetzt gilt sie je Grund.
 
 ## Neu in 0.9.20
 
