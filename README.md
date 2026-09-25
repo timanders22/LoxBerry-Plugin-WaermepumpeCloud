@@ -50,6 +50,18 @@ Ein Knopf im Reiter *Test* fragt das Gateway, **was sich schreiben lässt**
 Liste kommt vom Gerät und stimmt auch bei einem Modell, das dieses Plugin nie
 gesehen hat.
 
+## Neu in 0.9.24
+
+Die Rückfrage beim Broker, ob ein früher zurückbehaltener Wert (`OK`, `STOERUNG`,
+`COP`, `STROM`, `WAERME`) noch dasteht, liest jetzt die Antwort auf das Abonnement
+(SUBACK). Lehnt der Broker das Lesen ab (Rückgabe 0x80, etwa durch eine
+Zugriffsregel) oder antwortet er nicht zu jedem Thema, gilt er als „nicht zu
+fragen“: kein Merker „vom Broker bestätigt“, der Altwert wird weiter unmittelbar
+vor dem gültigen Wert gelöscht, das Protokoll sagt es, und die Deinstallation meldet
+nicht mehr „der Broker bestaetigt“, sondern dass sie nicht nachlesen konnte. Bis
+0.9.23 galt eine Ablehnung als „nichts belegt“ (gemessen in WSL,
+`Pruefung-WaermepumpeCloud-0.9.24`, Fälle S3, S4, S7, S9, S11).
+
 ## Neu in 0.9.23
 
 **MQTT: was das Plugin über sich selbst sagt, wird nicht mehr
