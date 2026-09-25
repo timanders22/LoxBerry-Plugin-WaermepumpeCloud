@@ -43,7 +43,47 @@ ARGV5=$5
 ARGV6=$6
 
 PFOLDER="${ARGV3:-waermepumpe}"
-BASE="${ARGV5:-$LBHOMEDIR}"
+# Wurzel, in dieser Reihenfolge (Regeln/06: ohne brauchbare Wurzel warnen
+# statt vollziehen):
+#   1. das fuenfte Argument - der Installer uebergibt dort die LoxBerry-Wurzel,
+#   2. $LBHOMEDIR, wenn darunter config/plugins und data/plugins liegen,
+#   3. vom eigenen Ablageort aufwaerts das erste Verzeichnis mit
+#      config/plugins, data/plugins UND config/system/general.json.
+# Bis 0.9.22 stand hier BASE="${5:-$LBHOMEDIR}" ohne jede Pruefung. Ohne
+# beides legte das Skript den Rueckfallweg config/plugins/<ordner>.upgrade ab
+# der Laufwerkswurzel an (in WSL gemessen, Pruefung-WaermepumpeCloud-0.9.23,
+# Fall K1). Dieselbe Suche steht in postinstall.sh, postupgrade.sh und
+# uninstall. Bauart BatterieBMS 0.9.28.
+wp_wurzel_suchen() {
+    wp_v=$(cd "$(dirname "$(readlink -f "$0")")" 2>/dev/null && pwd -P)
+    wp_i=0
+    while [ -n "$wp_v" ] && [ "$wp_v" != "/" ] && [ "$wp_i" -lt 8 ]; do
+        if [ -d "$wp_v/config/plugins" ] && [ -d "$wp_v/data/plugins" ] \
+           && [ -f "$wp_v/config/system/general.json" ]; then
+            echo "$wp_v"
+            return 0
+        fi
+        wp_v=$(dirname "$wp_v")
+        wp_i=$((wp_i + 1))
+    done
+    return 1
+}
+BASE="${ARGV5:-}"
+if [ -z "$BASE" ] || [ ! -d "$BASE" ]; then
+    if [ -n "${LBHOMEDIR:-}" ] && [ -d "$LBHOMEDIR/config/plugins" ] \
+       && [ -d "$LBHOMEDIR/data/plugins" ]; then
+        BASE="$LBHOMEDIR"
+    else
+        BASE=$(wp_wurzel_suchen) || BASE=""
+    fi
+fi
+if [ -z "$BASE" ]; then
+    echo "<WARNING> Es wurde kein LoxBerry-Wurzelverzeichnis gefunden: weder als fuenftes"
+    echo "<WARNING> Argument noch in \$LBHOMEDIR, und oberhalb dieses Skripts traegt kein"
+    echo "<WARNING> Verzeichnis config/plugins, data/plugins und config/system/general.json."
+    echo "<WARNING> Es wurde nichts gesichert."
+    exit 1
+fi
 # $LBPCONFIG zeigt auf <home>/config/plugins, OHNE Pluginordner - deshalb wird
 # er angehaengt. Bis 0.9.10 stand er nur im Rueckfallzweig; war die Variable
 # gesetzt (der Regelfall), sicherte dieses Skript zwei Streudateien eine Ebene

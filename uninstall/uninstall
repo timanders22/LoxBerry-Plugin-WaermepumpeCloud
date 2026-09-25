@@ -14,30 +14,42 @@
 # Zeitstempel, die Zwischenstaende.
 
 PFOLDER="${3:-waermepumpe}"
-BASE="${5:-$LBHOMEDIR}"
-# Dritter Rueckfall: der eigene Ablageort. Bewusst kein fest verdrahteter
-# Systempfad - LoxBerry laesst sich anderswohin installieren, und der
-# Plugin-Pruefer sucht die Zeichenkette, ohne den Zusammenhang zu sehen.
+# Wurzel, in dieser Reihenfolge (Regeln/06: ohne brauchbare Wurzel warnen
+# statt vollziehen):
+#   1. das fuenfte Argument - der Installer uebergibt dort die LoxBerry-Wurzel,
+#   2. $LBHOMEDIR, wenn darunter config/plugins und data/plugins liegen,
+#   3. vom eigenen Ablageort aufwaerts das erste Verzeichnis mit
+#      config/plugins, data/plugins UND config/system/general.json.
+# Bewusst kein fest verdrahteter Systempfad und keine feste Zahl "..": je
+# nachdem, wohin LoxBerry das Skript legt, sind es drei oder vier Ebenen.
 #
-# Bis 0.9.16 stand hier eine feste Zahl "..": vier Ebenen hoch von
-# <home>/data/plugins/<ordner>/uninstall/. Das stimmt fuer genau diese Lage
-# und ist sonst eine Wette - je nachdem, wohin LoxBerry das Skript legt, sind
-# es drei oder vier. Gesucht wird deshalb aufwaerts, bis ein Verzeichnis
-# gefunden ist, das nachweislich eine LoxBerry-Wurzel IST: es traegt
-# config/plugins UND data/plugins. Mit harter Obergrenze, damit die Schleife
-# nicht bis zum Dateisystemursprung laeuft. Dieselbe Bauart wie
-# lb_wurzel_ermitteln() in wp_lib.php.
-if [ -z "$BASE" ] || [ ! -d "$BASE" ]; then
-    V=$(cd "$(dirname "$(readlink -f "$0")")" 2>/dev/null && pwd)
-    I=0
-    while [ -n "$V" ] && [ "$V" != "/" ] && [ "$I" -lt 8 ]; do
-        if [ -d "$V/config/plugins" ] && [ -d "$V/data/plugins" ]; then
-            BASE="$V"
-            break
+# Bis 0.9.22 genuegten der Suche config/plugins und data/plugins. In WSL
+# gemessen (Pruefung-WaermepumpeCloud-0.9.23, Fall K3): aus einem Archiv in
+# einem fremden Baum mit genau diesen Ordnern, aber ohne general.json, nahm
+# sie diesen Baum als Wurzel und loeschte dort die Zweitschrift. Bauart
+# BatterieBMS 0.9.28; dieselbe Suche steht in den drei Hakenskripten.
+wp_wurzel_suchen() {
+    wp_v=$(cd "$(dirname "$(readlink -f "$0")")" 2>/dev/null && pwd -P)
+    wp_i=0
+    while [ -n "$wp_v" ] && [ "$wp_v" != "/" ] && [ "$wp_i" -lt 8 ]; do
+        if [ -d "$wp_v/config/plugins" ] && [ -d "$wp_v/data/plugins" ] \
+           && [ -f "$wp_v/config/system/general.json" ]; then
+            echo "$wp_v"
+            return 0
         fi
-        V=$(dirname "$V")
-        I=$((I + 1))
+        wp_v=$(dirname "$wp_v")
+        wp_i=$((wp_i + 1))
     done
+    return 1
+}
+BASE="${5:-}"
+if [ -z "$BASE" ] || [ ! -d "$BASE" ]; then
+    if [ -n "${LBHOMEDIR:-}" ] && [ -d "$LBHOMEDIR/config/plugins" ] \
+       && [ -d "$LBHOMEDIR/data/plugins" ]; then
+        BASE="$LBHOMEDIR"
+    else
+        BASE=$(wp_wurzel_suchen) || BASE=""
+    fi
 fi
 # ACHTUNG - hier lag bis 0.9.10 der schwerste Fehler dieses Plugins.
 #
@@ -87,6 +99,31 @@ if [ "$(dirname "$CFGDIR")" != "$BASE/config/plugins" ] \
     echo "<INFO> Erwartet unter $BASE/config/plugins bzw. $BASE/data/plugins."
     echo "<INFO> Es wurde NICHTS geloescht - pruefen Sie \$LBPCONFIG und \$LBPDATA."
     exit 1
+fi
+
+# ---------------------------------------------------------------
+# 0b. Zurueckbehaltene MQTT-Themen der Linie leeren
+# ---------------------------------------------------------------
+# Seit 0.9.20 gehen Zustaende retained hinaus. Bis 0.9.22 blieben sie nach
+# dem Deinstallieren im Broker stehen, und nach jedem Neustart von Broker
+# oder Gateway bekam der Miniserver sie wieder (in WSL gemessen,
+# Pruefung-WaermepumpeCloud-0.9.23, Fall U1: 13 von 13 standen noch). VOR dem
+# Loeschen der Ordner (Praefix und bin/ sind hier noch da). Geleert wird ueber
+# den Weg der Linie, den UDP-Eingang des Gateways, und beim Broker
+# nachgelesen, wo er sich fragen laesst (wp_mqtt_leeren() in wp_lib.php).
+# Als loxberry, nicht als root; stdin geschlossen, damit su nie auf eine
+# Eingabe wartet. Bauart BatterieBMS 0.9.28.
+WP_ABRUF="$BASE/bin/plugins/$PFOLDER/wp_abruf.php"
+if command -v php >/dev/null 2>&1 && [ -f "$WP_ABRUF" ]; then
+    if [ "$(id -u)" = "0" ] && id loxberry >/dev/null 2>&1; then
+        su -s /bin/bash loxberry -c "$(printf '%q ' env "LBHOMEDIR=$BASE" "LBPPLUGINDIR=$PFOLDER" \
+            timeout 60 php "$WP_ABRUF" --mqtt-leeren)" < /dev/null 2>&1 || true
+    else
+        env "LBHOMEDIR=$BASE" "LBPPLUGINDIR=$PFOLDER" timeout 60 php "$WP_ABRUF" --mqtt-leeren \
+            < /dev/null 2>&1 || true
+    fi
+else
+    echo "<INFO> PHP oder wp_abruf.php fehlt - zurueckbehaltene MQTT-Themen wurden nicht geleert."
 fi
 
 # ---------------------------------------------------------------
@@ -171,15 +208,27 @@ fi
 # nicht erst vor diesem einen. Sie prueft die Lage statt des letzten
 # Pfadteils; die alte Fassung an dieser Stelle konnte gar nicht anschlagen.
 rm -rf "$DATADIR" 2>/dev/null
+# Und was NEBEN dem Datenordner liegt, weil es ein Upgrade ueberleben muss
+# (seit 0.9.23 die Tagesbudget-Listen, wp_paths()['bestand']). Der Pfad ist
+# DATADIR mit angehaengtem ".bestand" - Abschnitt 0 hat DATADIR schon auf
+# <wurzel>/data/plugins/<ordner> geprueft.
+BESTAND="$DATADIR.bestand"
+rm -rf "$BESTAND" 2>/dev/null
 
 # ---------------------------------------------------------------
 # 3. Arbeitsdateien auf der Ramdisk
 # ---------------------------------------------------------------
-# wp_tmpdir() zeigt auf /run/shm/waermepumpe, mit Rueckfall auf den
+# wp_tmpdir() zeigt auf /run/shm/<ordner>, mit Rueckfall auf den
 # Systemtempordner. Dort liegen die Sperrdatei des Abrufdienstes, die
-# Zeitstempel der gebremsten Meldungen und der Merker fuer den abgelaufenen
-# Onecta-Zugang.
-rm -rf /run/shm/waermepumpe "${TMPDIR:-/tmp}/waermepumpe" /tmp/waermepumpe 2>/dev/null
+# Zeitstempel der gebremsten Meldungen, die zwischengespeicherten
+# Zugriffsmerkmale und der Merker fuer den abgelaufenen Onecta-Zugang.
+# Bis 0.9.22 hiess der Ordner fest "waermepumpe" - auch fuer eine
+# Zweitinstallation, deren Deinstallation damit die Arbeitsdateien der ersten
+# loeschte (in WSL gemessen, Pruefung-WaermepumpeCloud-0.9.23, Fall U6). Ein
+# $PFOLDER mit "/" weist Abschnitt 0 ab (die Pfade laegen nicht mehr unter
+# config/plugins bzw. data/plugins); ".." allein laesst rm -rf nicht zu
+# (gemessen, Fall U7).
+rm -rf "/run/shm/$PFOLDER" "${TMPDIR:-/tmp}/$PFOLDER" "/tmp/$PFOLDER" 2>/dev/null
 
 # ---------------------------------------------------------------
 # 4. Nachzaehlen - und nur melden, was wirklich weg ist
@@ -194,7 +243,7 @@ for f in "$CFGDIR/geheim.json" "$CFGDIR/geheim.json.vorher" "$ZWEITSCHRIFT" \
          "$ZWEITSCHRIFT_G" "$CFGDIR/.upgrade_pfad"; do
     [ -e "$f" ] && UEBRIG="$UEBRIG $f"
 done
-for d in "$DATADIR" "$RUECKFALL" "$CFGDIR/.upgrade"; do
+for d in "$DATADIR" "$BESTAND" "$RUECKFALL" "$CFGDIR/.upgrade"; do
     [ -e "$d" ] && UEBRIG="$UEBRIG $d"
 done
 

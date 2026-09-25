@@ -26,36 +26,34 @@ ini_set('display_errors', '0');
 header('Cache-Control: no-store');
 header('Content-Type: text/plain; charset=utf-8');
 
-/* Die Bibliothek wird gesucht, nicht geraten - dieselbe Kandidatenliste wie in
+/* Die Bibliothek wird gesucht, nicht geraten - nach derselben Regel wie in
  * bin/wp_abruf.php, und aus demselben Grund.
  *
  * Im entpackten Archiv liegen html/ und htmlauth/ nebeneinander, auf dem
  * INSTALLIERTEN LoxBerry in getrennten Baeumen:
  *
- *     /opt/loxberry/webfrontend/html/plugins/<ordner>/index.php
- *     /opt/loxberry/webfrontend/htmlauth/plugins/<ordner>/wp_lib.php
+ *     <LoxBerry-Wurzel>/webfrontend/html/plugins/<ordner>/index.php
+ *     <LoxBerry-Wurzel>/webfrontend/htmlauth/plugins/<ordner>/wp_lib.php
  *
- * dirname(__DIR__) ergibt dort /opt/loxberry/webfrontend/html/plugins - gesucht
- * wurde also .../html/plugins/htmlauth/wp_lib.php. Die gibt es nicht. Weil
+ * dirname(__DIR__) ergibt dort .../webfrontend/html/plugins - gesucht wurde
+ * bis 0.9.9 also .../html/plugins/htmlauth/wp_lib.php. Die gibt es nicht. Weil
  * display_errors oben schon auf 0 steht, endete der Aufruf mit HTTP 500 und
- * LEEREM Rumpf: der virtuelle Eingang in Loxone behielt seinen letzten Wert,
- * und in der App sah alles normal aus.
+ * LEEREM Rumpf. Fehlerklasse Heimkino/Docker-NG.
  *
- * Dieselbe Zeile hatte bis 0.9.8 den Abrufdienst lahmgelegt; dort wurde sie mit
- * 0.9.9 berichtigt, hier nicht. Fehlerklasse Heimkino/Docker-NG.
+ * Welche Lage gilt, entscheidet seit 0.9.23 der EIGENE Ablageort: liegt diese
+ * Datei unter .../plugins/<ordner>, ist sie installiert, sonst liegt sie in
+ * einem ausgepackten Archiv. Bis 0.9.22 wurden drei Kandidaten der Reihe nach
+ * probiert; aus einem Archiv unter der Laufwerkswurzel war der zweite
+ * /htmlauth/plugins/html/wp_lib.php, und was dort lag, lief als Bibliothek
+ * (in WSL gemessen, Pruefung-WaermepumpeCloud-0.9.23, Fall T5). Bauart
+ * ZendureSolarFlow 0.9.26.
  */
-$wp_lb = getenv('LBHOMEDIR');
-$wp_ordner = getenv('LBPPLUGINDIR') ?: basename(__DIR__);
-$wp_kandidaten = array();
-if ($wp_lb) {
-    $wp_kandidaten[] = $wp_lb . '/webfrontend/htmlauth/plugins/' . $wp_ordner . '/wp_lib.php';
+if (basename(dirname(__DIR__)) === 'plugins') {
+    $wp_kandidaten = array(dirname(dirname(dirname(__DIR__)))
+                     . '/htmlauth/plugins/' . basename(__DIR__) . '/wp_lib.php');
+} else {
+    $wp_kandidaten = array(dirname(__DIR__) . '/htmlauth/wp_lib.php');
 }
-// installiert, ohne dass die Umgebungsvariablen gesetzt waeren:
-// .../webfrontend/html/plugins/<ordner>  ->  .../webfrontend/htmlauth/plugins/<ordner>
-$wp_kandidaten[] = dirname(dirname(dirname(__DIR__)))
-                 . '/htmlauth/plugins/' . basename(__DIR__) . '/wp_lib.php';
-// entpacktes Archiv: html/ und htmlauth/ liegen nebeneinander
-$wp_kandidaten[] = dirname(__DIR__) . '/htmlauth/wp_lib.php';
 
 $wp_lib = '';
 foreach ($wp_kandidaten as $wp_kand) {

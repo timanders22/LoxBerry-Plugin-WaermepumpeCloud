@@ -50,6 +50,88 @@ Ein Knopf im Reiter *Test* fragt das Gateway, **was sich schreiben lässt**
 Liste kommt vom Gerät und stimmt auch bei einem Modell, das dieses Plugin nie
 gesehen hat.
 
+## Neu in 0.9.23
+
+**MQTT: was das Plugin über sich selbst sagt, wird nicht mehr
+zurückbehalten.** `OK` (hat der letzte Abruf Werte gebracht?) und `STOERUNG`
+(fehlgeschlagene Abrufe in Folge) stellt das Plugin aus seinem eigenen Abruf
+fest, nicht die Wärmepumpe. Gingen sie retained hinaus, stand nach einem
+Absturz des Plugins und einem Neustart von Broker oder Gateway für immer
+„OK=1, 0 Störungen" in Loxone. Ebenso gehen `COP`, `STROM` und `WAERME` jetzt
+ohne Retain hinaus: sie gelten für die letzten Tage **bis jetzt**, und ein
+zurückbehaltener Wert beschreibt schon am nächsten Tag einen anderen Zeitraum.
+Zurückbehalten bleiben die Zustände und Sollwerte der Anlage (`STUFE`,
+`SOLL`, `VLSOLL`, `WWSOLL`, `HEIZKURVE`, `KOMPRESSOR`, `WWZWANG`, `EIN`); die
+Spalte im Reiter *MQTT* zeigt es je Thema. Eine Störung, die die Wärmepumpe
+selbst meldet, liest dieses Plugin nicht aus — deshalb gibt es kein
+Gerätethema, das daneben retained stehen müsste.
+
+Die Altwerte aus 0.9.20 bis 0.9.22 räumt das Plugin einmal ab: es fragt den
+Broker der Anlage (Anmeldedaten aus der `general.json`, nur lesend), ob unter
+`<Präfix>/OK` usw. noch ein zurückbehaltener Wert steht, schickt in dem Fall
+eine leere `retain`-Nutzlast unmittelbar vor dem gültigen Wert und merkt sich
+ein Thema erst dann als erledigt, wenn der Broker es bestätigt. **Grenze:**
+gesendet wird weiterhin über den UDP-Eingang des MQTT-Gateways, und der
+verwirft unter Last Datagramme. Ist der Broker nicht zu fragen (andere
+Anmeldung, kein Broker am Ort), wird bei jedem Senden erneut abgeräumt — ein
+Merker entsteht dann nie.
+
+**Bei einem Fehlschlag geht über MQTT nur noch das Signal hinaus** (`OK`,
+`STOERUNG`, `ALTER`, `BUDGET`, `STUFE`). Bis 0.9.22 schickte jeder
+fehlgeschlagene Abruf auch die Messwerte des letzten Erfolgs noch einmal —
+ohne Retain, also als frische Messung. Ein virtueller Eingang in Loxone fiel
+damit nie auf seinen Fehlwert zurück, obwohl seit Stunden nichts gemessen war.
+Die Statuszeile des HTTP-Endpunkts ist unverändert; dort steht `ALTER` in
+derselben Zeile.
+
+**Die Deinstallation räumt den Broker ab.** Alle Themen, die das Plugin je
+retained gesendet hat, bekommen unter dem eingestellten Präfix eine leere
+`retain`-Nutzlast; danach wird beim Broker nachgelesen, höchstens drei
+Runden. Was dann noch steht, nennt das Deinstallationsprotokoll.
+
+**Wurzel und Archiv.** Die LoxBerry-Wurzel ist nur noch ein Verzeichnis mit
+`config/plugins`, `data/plugins` **und** `config/system/general.json` (oder
+ein gesetztes `LBHOMEDIR` mit den beiden Ordnern). Ohne Wurzel bildet das
+Plugin keine Pfade mehr ab der Laufwerkswurzel (`/config/plugins/…`,
+`/templates/…`, `/config/system/general.json`). Ein ausgepacktes Archiv
+arbeitet nur noch im eigenen Ordner, auch wenn es unter einer Anlage liegt
+oder `LBHOMEDIR` gesetzt ist — es sei denn, `LBHOMEDIR` **und** `LBPPLUGINDIR`
+sind ausdrücklich gesetzt. `bin/wp_abruf.php` aus einem Archiv ruft nichts ab,
+schaltet nichts und sendet nichts. Die Bibliothek sucht der Abrufdienst und
+der Endpunkt nach ihrem eigenen Ablageort statt über eine Kandidatenliste. Der
+Zwischenspeicher auf der Ramdisk heißt jetzt wie der Pluginordner — eine
+Zweitinstallation teilt sich die Zugriffsmerkmale der Herstellercloud nicht
+mehr mit der ersten. Die Hakenskripte und `uninstall` suchen die Wurzel nach
+derselben Regel und brechen ohne sie ab, statt zu handeln.
+
+**Update.** `postinstall.sh` zeigt die Erstanleitung nur noch, wenn wirklich
+kein Hersteller eingetragen ist und auch die Update-Sicherung keinen trägt;
+nach einem Upgrade kündigt es die Rückholung an. `postupgrade.sh` spielt nach
+**Inhalt** zurück (lesbare Datei mit Hersteller bzw. mit Zugangsdaten), nicht
+nach Form: eine abgeschnittene `waermepumpe.json` und eine Konfiguration, die
+der Minutentakt in der Lücke des Updates ohne Zweitschrift neu angelegt hat,
+werden jetzt ersetzt (der verdrängte Stand bleibt als
+`<datei>.verdraengt.<zeit>` daneben); ein in der Lücke erneuertes
+Erneuerungsmerkmal in `geheim.json` bleibt. Der Rückfallweg der Sicherung wird
+nur gelöscht, wenn die Rückholung gelang, und die Schlusszeile sagt, was
+nachgelesen wurde.
+
+**Daikin-Tagesbudget übersteht das Update.** Die Liste der verbrauchten
+Aufrufe (`budget_*.json`) lag im Datenordner, den LoxBerry bei jedem Upgrade
+leert — danach zählte das Budget wieder bei null, obwohl die Aufrufe des Tages
+beim Hersteller verbraucht waren. Sie liegt jetzt neben dem Datenordner
+(`data/plugins/<ordner>.bestand/`); eine Liste am alten Ort wird einmal
+hinübergezogen, und die Deinstallation räumt den Ordner mit ab.
+
+**Protokoll.** Sechs gebremste Meldungen trugen einen festen Einmal-Schlüssel
+bei wechselndem Grund (`mu_token`, `oc_token`, `ml_login`, `va_homes`,
+`abo_fehler`, `mqtt_tot`); ein neuer Grund blieb bis zu einer Stunde
+unsichtbar. Der Schlüssel trägt jetzt den Grund.
+
+Gemessen in WSL (`Pruefung-WaermepumpeCloud-0.9.23`, 59 Fälle, an 0.9.22
+gemessen 39 rot, nachher 0 rot; jede Korrektur einzeln zurückgebaut), nicht
+am Gerät.
+
 ## Neu in 0.9.22
 
 **myVAILLANT: Anmeldung einmalig im Browser.** Seit 2026 trägt die
@@ -612,7 +694,7 @@ hat**, und endet mit Rueckgabewert 1 statt stillschweigend.
 Nach dem Update einmal von Hand pruefen:
 
 ```bash
-php /opt/loxberry/bin/plugins/<ordner>/wp_abruf.php; echo "Rueckgabewert: $?"
+php <LoxBerry-Wurzel>/bin/plugins/<ordner>/wp_abruf.php; echo "Rueckgabewert: $?"
 ```
 
 ## Was das Plugin ehrlich nicht kann

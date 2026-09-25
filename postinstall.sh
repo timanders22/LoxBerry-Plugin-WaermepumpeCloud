@@ -22,10 +22,41 @@
 # anhaengen. Genauso machen es LoxoneIcons, Octopus und neun weitere Linien.
 ARGV3=$3
 ARGV5=$5
+ARGV6=$6
 PFOLDER="${ARGV3:-waermepumpe}"
-BASE="${ARGV5:-$LBHOMEDIR}"
+# Wurzel wie in preupgrade.sh (dort die Begruendung): fuenftes Argument,
+# sonst $LBHOMEDIR mit config/plugins und data/plugins darunter, sonst die
+# Suche mit config/system/general.json. Bis 0.9.22 genuegte ein beliebiges
+# vorhandenes Verzeichnis in $LBHOMEDIR - dort wurde config/plugins/<ordner>
+# angelegt (in WSL gemessen, Pruefung-WaermepumpeCloud-0.9.23, Fall K4).
+wp_wurzel_suchen() {
+    wp_v=$(cd "$(dirname "$(readlink -f "$0")")" 2>/dev/null && pwd -P)
+    wp_i=0
+    while [ -n "$wp_v" ] && [ "$wp_v" != "/" ] && [ "$wp_i" -lt 8 ]; do
+        if [ -d "$wp_v/config/plugins" ] && [ -d "$wp_v/data/plugins" ] \
+           && [ -f "$wp_v/config/system/general.json" ]; then
+            echo "$wp_v"
+            return 0
+        fi
+        wp_v=$(dirname "$wp_v")
+        wp_i=$((wp_i + 1))
+    done
+    return 1
+}
+BASE="${ARGV5:-}"
 if [ -z "$BASE" ] || [ ! -d "$BASE" ]; then
-    echo "<FAIL> Das Basisverzeichnis von LoxBerry wurde nicht uebergeben (\$5)."
+    if [ -n "${LBHOMEDIR:-}" ] && [ -d "$LBHOMEDIR/config/plugins" ] \
+       && [ -d "$LBHOMEDIR/data/plugins" ]; then
+        BASE="$LBHOMEDIR"
+    else
+        BASE=$(wp_wurzel_suchen) || BASE=""
+    fi
+fi
+if [ -z "$BASE" ]; then
+    echo "<FAIL> Es wurde kein LoxBerry-Wurzelverzeichnis gefunden: weder als fuenftes"
+    echo "<FAIL> Argument noch in \$LBHOMEDIR, und oberhalb dieses Skripts traegt kein"
+    echo "<FAIL> Verzeichnis config/plugins, data/plugins und config/system/general.json."
+    echo "<FAIL> Es wurde nichts angelegt."
     exit 1
 fi
 CFGDIR="${LBPCONFIG:-$BASE/config/plugins}/$PFOLDER"
@@ -95,7 +126,38 @@ if [ -n "$ANGELEGT" ]; then
 else
     echo "<OK> Konfiguration unter $CFGDIR vorhanden, Rechte 0600 gesetzt."
 fi
-if [ "$(tr -d ' \r\n\t' < "$CFGDIR/waermepumpe.json" 2>/dev/null)" = "{}" ]; then
+
+# Die Erstanleitung nur, wenn wirklich noch nichts eingerichtet ist.
+#
+# BERICHTIGT in 0.9.23. Bis 0.9.22 stand sie hier, sobald waermepumpe.json
+# genau "{}" war - und das ist sie bei JEDEM Upgrade: postinstall.sh laeuft
+# vor postupgrade.sh, purge_installation hat den Konfigordner eben geleert,
+# und die Zeilen weiter oben haben "{}" angelegt. Das Protokoll riet also nach
+# jedem Update, den Hersteller neu zu waehlen, obwohl postupgrade.sh die
+# Einstellungen gleich danach zurueckholte (in WSL gemessen,
+# Pruefung-WaermepumpeCloud-0.9.23, Fall Z2).
+#
+# "Eingerichtet" heisst: ein lesbares JSON-Objekt mit eingetragenem Hersteller
+# - ohne ihn tut der Abrufdienst nichts (bin/wp_abruf.php). Gelesen von PHP,
+# nicht per Muster: eine abgeschnittene Datei enthaelt den Hersteller auch.
+# Die Update-Sicherung liegt dort, wo preupgrade.sh sie abgelegt hat
+# (sechstes Argument, sonst der Rueckfallweg neben dem Konfigordner).
+wp_hersteller_da() {
+    [ -f "$1" ] && [ -s "$1" ] || return 1
+    command -v php >/dev/null 2>&1 || return 1
+    php -r '$d = json_decode((string) @file_get_contents($argv[1]), true);
+        exit(is_array($d) && isset($d["hersteller"]) && is_string($d["hersteller"])
+             && $d["hersteller"] !== "" ? 0 : 1);' "$1" >/dev/null 2>&1
+}
+WP_UPDSICH="${LBPCONFIG:-$BASE/config/plugins}/$PFOLDER.upgrade"
+if [ -n "$ARGV6" ] && [ -d "$ARGV6/waermepumpe_upgrade" ]; then
+    WP_UPDSICH="$ARGV6/waermepumpe_upgrade"
+fi
+if wp_hersteller_da "$CFGDIR/waermepumpe.json"; then
+    echo "<OK> Die Konfiguration ist eingerichtet (Hersteller eingetragen)."
+elif wp_hersteller_da "$WP_UPDSICH/waermepumpe.json"; then
+    echo "<OK> Installation abgeschlossen. Die Einstellungen holt postupgrade.sh gleich aus der Update-Sicherung zurueck."
+else
     echo "<INFO> Weiter in der Oberflaeche: Reiter Einstellungen, Hersteller waehlen."
 fi
 exit 0

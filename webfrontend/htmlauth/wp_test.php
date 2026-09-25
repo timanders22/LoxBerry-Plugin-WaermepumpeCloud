@@ -325,19 +325,26 @@ function wp_pruefungen()
      * Regeln/07: eine Liste, die nur in eine Richtung geprueft wird, ist umso
      * gruener, je kuerzer sie ist. Gezaehlt wird also: gesendet, aber ohne
      * Eintrag (ginge still 'publish' hinaus) UND eingetragen, aber nie
-     * gesendet (eine Zusage ohne Deckung). Dazu die eine Regel, die nie
-     * brechen darf: das Lebenszeichen ALTER ist nicht retained. */
+     * gesendet (eine Zusage ohne Deckung). Dazu die Regel, die nie brechen
+     * darf: das Lebenszeichen, die Aussagen des Dienstes ueber sich selbst
+     * (OK, STOERUNG) und die Werte mit Zeitbezug sind nicht retained
+     * (wp_nie_retained(); bis 0.9.22 pruefte diese Zeile nur ALTER, und OK
+     * wie STOERUNG gingen retained hinaus - Bestandsliste
+     * klasse-E/Dienstzustand-retained_2026-09-19.md). */
     $wp_ret = wp_retain_tabelle();
     $wp_sf  = wp_statusfelder();
     $ohne   = array_diff(array_keys($wp_sf), array_keys($wp_ret));
     $zuviel = array_diff(array_keys($wp_ret), array_keys($wp_sf));
-    $leben  = !empty($wp_ret['ALTER']);
+    $wp_nie = array();
+    foreach (wp_nie_retained() as $wp_n) {
+        if (!empty($wp_ret[$wp_n])) { $wp_nie[] = $wp_n; }
+    }
     if (!$wp_sf) {
         $z[] = wp_pruefzeile(0, wp_t('TEST.F_RETAIN'), wp_t('TEST.A_RETAIN_LEER'));
-    } elseif ($ohne || $zuviel || $leben) {
+    } elseif ($ohne || $zuviel || $wp_nie) {
         $z[] = wp_pruefzeile(0, wp_t('TEST.F_RETAIN'), sprintf(wp_t('TEST.A_RETAIN_LUECKE'),
             wp_e($ohne ? implode(', ', $ohne) : '-'), wp_e($zuviel ? implode(', ', $zuviel) : '-'),
-            $leben ? wp_t('TEST.A_RETAIN_ALTER') : ''));
+            $wp_nie ? sprintf(wp_t('TEST.A_RETAIN_ALTER'), wp_e(implode(', ', $wp_nie))) : ''));
     } else {
         $z[] = wp_pruefzeile(1, wp_t('TEST.F_RETAIN'), sprintf(wp_t('TEST.A_RETAIN_OK'),
             count($wp_sf), count(array_filter($wp_ret))));

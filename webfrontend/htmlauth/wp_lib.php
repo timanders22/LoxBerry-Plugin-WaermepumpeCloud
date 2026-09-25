@@ -108,11 +108,16 @@ define('WP_ZUORDNUNG_MAX', 4000);
 /* Den LoxBerry-Wurzelordner ohne festen Systempfad bestimmen.
  *
  * Vom eigenen Ablageort aufwaerts, bis ein Verzeichnis gefunden ist, das
- * config/plugins UND webfrontend enthaelt. Das trifft die uebliche
- * Installation genauso wie eine an einem anderen Ort - und es trifft auch
- * den Fall, dass das Plugin noch als entpacktes Archiv daliegt (dann findet
- * es nichts und gibt einen Leerstring zurueck, was der Aufrufer ohnehin
- * abfangen muss).
+ * config/plugins, data/plugins UND config/system/general.json traegt. Findet
+ * die Suche nichts, kommt ein Leerstring zurueck, und jeder Aufrufer muss das
+ * abfangen (wp_paths(): Archivmodus).
+ *
+ * general.json ist die entscheidende Bedingung (Regeln/06, Wurzelsuche). Bis
+ * 0.9.22 genuegten config/plugins und webfrontend - genau diese Ordner
+ * hinterlaesst ein Pruefstand auf einem Arbeitsrechner. In WSL gemessen
+ * (Pruefung-WaermepumpeCloud-0.9.23, Faelle A1, K3): ein Archiv unter einer
+ * Anlage nahm deren Wurzel, und die Deinstallation aus einem fremden Baum
+ * ohne general.json loeschte dort eine Zweitschrift.
  *
  * Der Name traegt kein Plugin-Kuerzel und ist deshalb abgesichert: zwei
  * Bibliotheken landen nie im selben Prozess, aber die Pruefung kostet nichts.
@@ -122,7 +127,8 @@ if (!function_exists('lb_wurzel_ermitteln')) {
     {
         $d = __DIR__;
         for ($i = 0; $i < 8; $i++) {
-            if (is_dir($d . '/config/plugins') && is_dir($d . '/webfrontend')) {
+            if (is_dir($d . '/config/plugins') && is_dir($d . '/data/plugins')
+                && is_file($d . '/config/system/general.json')) {
                 return $d;
             }
             $eltern = dirname($d);
@@ -133,13 +139,57 @@ if (!function_exists('lb_wurzel_ermitteln')) {
     }
 }
 
+/* Die Wurzel in der Reihenfolge der Hausregel: erst die Umgebung, dann die
+ * Suche - und danach NICHTS MEHR (kein fester Standardort).
+ *
+ * Ein gesetztes LBHOMEDIR gilt mit config/plugins UND data/plugins darunter;
+ * general.json wird hier nicht verlangt, damit die Attrappen der
+ * Pruefwerkzeuge (Werkzeuge/lb) weiter tragen. Bis 0.9.22 galt jede
+ * Zeichenkette in LBHOMEDIR. Rueckgabe '' heisst "keine Wurzel". Bauart
+ * tb_lbhome() aus Spotpreis-Tibber 0.9.19. */
+function wp_lbhome()
+{
+    $h = rtrim((string) getenv('LBHOMEDIR'), '/');
+    if ($h !== '' && is_dir($h . '/config/plugins') && is_dir($h . '/data/plugins')) {
+        return $h;
+    }
+    return lb_wurzel_ermitteln();
+}
+
+/* Fuer bin/wp_abruf.php: ohne Wurzel nichts tun, eine Meldung auf stderr,
+ * Rueckgabe 1. Steht dort VOR allem, was liest oder schreibt.
+ *
+ * Bis 0.9.22 lief der Abrufdienst auch dann los. In WSL gemessen
+ * (Pruefung-WaermepumpeCloud-0.9.23): ohne Wurzel legte er
+ * /config/plugins/waermepumpe/ ab der Laufwerkswurzel an (Fall T6); aus einem
+ * Archiv mit nur LBHOMEDIR - so steht es am Geraet in /etc/environment -
+ * holte er fuer die Anlage ab und schrieb deren Stand (Fall A5). */
+function wp_keine_wurzel_abbruch($programm)
+{
+    $p = wp_paths();
+    if ($p['home'] !== '') { return; }
+    if ($p['archiv'] !== '') {
+        fwrite(STDERR, $programm . ': Diese Datei liegt nicht in der Installation unter '
+            . $p['archiv'] . "\n"
+            . '(ausgepacktes Archiv oder Pruefordner). Damit nichts in die Anlage kommt,' . "\n"
+            . 'wurde nichts abgerufen, nichts geschaltet, nichts gesendet und nichts geschrieben.' . "\n"
+            . 'Abhilfe: das Programm aus ' . $p['archiv'] . '/bin/plugins/<ordner> aufrufen' . "\n"
+            . 'oder LBHOMEDIR und LBPPLUGINDIR ausdruecklich setzen.' . "\n");
+        exit(1);
+    }
+    fwrite(STDERR, $programm . ': Es wurde kein LoxBerry-Wurzelverzeichnis gefunden.' . "\n"
+        . '$LBHOMEDIR ist nicht gesetzt, und oberhalb von ' . __DIR__ . ' traegt kein' . "\n"
+        . 'Verzeichnis config/plugins, data/plugins und config/system/general.json.' . "\n"
+        . 'Es wurde nichts abgerufen, nichts geschaltet, nichts gesendet und nichts geschrieben.' . "\n");
+    exit(1);
+}
+
 function wp_paths()
 {
     static $p = null;
     if ($p !== null) { return $p; }
 
-    $home = getenv('LBHOMEDIR');
-    if (!$home) { $home = lb_wurzel_ermitteln(); }
+    $home = wp_lbhome();
     /* LBPPLUGINDIR ist die Auskunft von LoxBerry selbst und hat Vorrang.
      * Fehlt sie, wird der Ordner aus dem Ablageort DIESER Datei genommen -
      * installiert liegt sie unter htmlauth/plugins/<ordner>/. Erst wenn auch
@@ -148,25 +198,91 @@ function wp_paths()
      * Der feste Name allein waere zu wenig: Haengt LoxBerry bei einer
      * Zweitinstallation einen Zaehler an (waermepumpe_01), zeigten deren
      * Pfade sonst auf die erste - gemeinsame geheim.json mit den
-     * Erneuerungsmerkmalen dreier Herstellerclouds. */
-    $plugin = getenv('LBPPLUGINDIR');
-    if (!$plugin) { $plugin = basename(dirname(__FILE__)); }
-    if ($plugin === '' || $plugin === '.' || $plugin === '/'
-        || $plugin === 'htmlauth' || $plugin === 'plugins') {
+     * Erneuerungsmerkmalen dreier Herstellerclouds.
+     *
+     * Von LBPPLUGINDIR zaehlt nur der letzte Pfadteil, und die Namen, die
+     * nachweislich kein Pluginordner sind, gelten auch dort nicht (Bauart
+     * VolkswagenID 0.9.24). */
+    $lbp = basename(rtrim((string) getenv('LBPPLUGINDIR'), '/'));
+    $lbp_gilt = ($lbp !== '' && !in_array($lbp, array('.', '/', 'htmlauth', 'html', 'bin', 'plugins'), true));
+    $plugin = basename(dirname(__FILE__));
+    if ($lbp_gilt) {
+        $plugin = $lbp;
+    } elseif ($plugin === '' || $plugin === '.' || $plugin === '/'
+              || $plugin === 'htmlauth' || $plugin === 'plugins') {
         $plugin = 'waermepumpe';
     }
 
+    /* Archivmodus. Die Pfade DER ANLAGE gelten nur, wenn diese Bibliothek
+     * dort installiert liegt (<Wurzel>/webfrontend/htmlauth/plugins/<ordner>,
+     * physisch verglichen) oder der Aufrufer Wurzel UND Ordner ausdruecklich
+     * nennt ($LBHOMEDIR und $LBPPLUGINDIR - so arbeiten die Pruefwerkzeuge mit
+     * ihrer Attrappe und die Deinstallation). Sonst ist das ein ausgepacktes
+     * Archiv oder ein Pruefordner: alles bleibt in dessen eigenem Ordner, und
+     * bin/wp_abruf.php steigt aus (wp_keine_wurzel_abbruch()).
+     *
+     * Bis 0.9.22 nahm ein Archiv unter oder neben einer Anlage deren Wurzel und
+     * den festen Namen 'waermepumpe' - Konfiguration, Zugangsdaten und Stand
+     * der Anlage (in WSL gemessen, Pruefung-WaermepumpeCloud-0.9.23, Faelle A1,
+     * A2, A5); ohne jede Wurzel wurden die Pfade mit leerem home gebildet und
+     * lauteten /config/plugins/..., /data/plugins/... (Faelle T2, T6).
+     * Bauart tb_paths() aus Spotpreis-Tibber 0.9.19. */
+    $gefunden = $home;
+    if ($home !== '') {
+        $soll = @realpath($home . '/webfrontend/htmlauth/plugins/' . basename(__DIR__));
+        $ist = @realpath(__DIR__);
+        $installiert = ($soll !== false && $ist !== false && $soll === $ist);
+        $ausdruecklich = $lbp_gilt && $home === rtrim((string) getenv('LBHOMEDIR'), '/');
+        if (!$installiert && !$ausdruecklich) { $home = ''; }
+    }
+
+    if ($home === '') {
+        $basis = dirname(dirname(__DIR__));
+        $p = array(
+            'home'      => '',
+            'plugin'    => $plugin,
+            'configdir' => $basis . '/config',
+            'datadir'   => $basis . '/data',
+            'bestand'   => $basis . '/data.bestand',
+            'logdir'    => $basis . '/log',
+            'tmpdir'    => $basis . '/tmp',
+            // Die gefundene Wurzel, wenn diese Datei NICHT darin installiert
+            // liegt - fuer die Meldung in wp_keine_wurzel_abbruch().
+            'archiv'    => $gefunden,
+        );
+        $p['config'] = $p['configdir'] . '/waermepumpe.json';
+        $p['sicherung'] = $p['configdir'] . '/waermepumpe.backup.waermepumpe.json';
+        $p['geheim'] = $p['configdir'] . '/geheim.json';
+        $p['abo'] = $p['configdir'] . '/mqtt_subscriptions.cfg';
+        $p['sicherung_geheim'] = $p['configdir'] . '/waermepumpe.backup.geheim.json';
+        return $p;
+    }
+
     $p = array(
-        'home'      => rtrim($home, '/'),
+        'home'      => $home,
         'plugin'    => $plugin,
-        'configdir' => rtrim($home, '/') . '/config/plugins/' . $plugin,
-        'datadir'   => rtrim($home, '/') . '/data/plugins/' . $plugin,
-        'logdir'    => rtrim($home, '/') . '/log/plugins/' . $plugin,
+        'configdir' => $home . '/config/plugins/' . $plugin,
+        'datadir'   => $home . '/data/plugins/' . $plugin,
+        /* Was ein Upgrade ueberleben muss, liegt NEBEN dem Datenordner:
+         * plugininstall.pl ruft purge_installation auch im Upgrade-Zweig, und
+         * das loescht data/plugins/<ordner>/ vollstaendig (Regeln/06). Der
+         * Punkt im Namen haelt "rm -rf <ordner>/" fern. Bauart
+         * ZendureSolarFlow/Govee (<ordner>.bestand). */
+        'bestand'   => $home . '/data/plugins/' . $plugin . '.bestand',
+        'logdir'    => $home . '/log/plugins/' . $plugin,
+        /* Je Installation ein eigener Ordner auf der Ramdisk. Bis 0.9.22 fest
+         * /run/shm/waermepumpe: eine Zweitinstallation (waermepumpe_01) und
+         * jedes Archiv teilten sich damit die zwischengespeicherten
+         * Zugriffsmerkmale der Herstellercloud und die Sperre des Abrufs
+         * (gemessen, Pruefung-WaermepumpeCloud-0.9.23, Faelle A6, A7). Fuer die
+         * Erstinstallation bleibt der Pfad derselbe. */
+        'tmpdir'    => (is_dir('/run/shm') ? '/run/shm' : sys_get_temp_dir()) . '/' . $plugin,
+        'archiv'    => '',
     );
     $p['config'] = $p['configdir'] . '/waermepumpe.json';
     // Zweitschrift NEBEN dem Ordner (Hausmuster Weissware/Kodi): beim Update
     // kopiert der Installer config/ aus dem Archiv darueber.
-    $p['sicherung'] = rtrim($home, '/') . '/config/plugins/' . $plugin . '.backup.waermepumpe.json';
+    $p['sicherung'] = $home . '/config/plugins/' . $plugin . '.backup.waermepumpe.json';
     $p['geheim'] = $p['configdir'] . '/geheim.json';
     // Die Abo-Datei, die das MQTT-Gateway selbst liest (NEU 0.9.20).
     $p['abo'] = $p['configdir'] . '/mqtt_subscriptions.cfg';
@@ -175,14 +291,13 @@ function wp_paths()
      * in die Zweitschrift, mit denselben Rechten. Bis 0.9.19 hatte nur die
      * Konfiguration eine - am Geraet gemessen 17.09.2026: neben dem Ordner lag
      * allein waermepumpe.backup.waermepumpe.json. */
-    $p['sicherung_geheim'] = rtrim($home, '/') . '/config/plugins/' . $plugin . '.backup.geheim.json';
+    $p['sicherung_geheim'] = $home . '/config/plugins/' . $plugin . '.backup.geheim.json';
     return $p;
 }
 
 function wp_tmpdir()
 {
-    $d = '/run/shm/waermepumpe';
-    if (!is_dir('/run/shm')) { $d = sys_get_temp_dir() . '/waermepumpe'; }
+    $d = wp_paths()['tmpdir'];
     if (!is_dir($d)) { @mkdir($d, 0700, true); }
     return $d;
 }
@@ -1052,9 +1167,29 @@ function wp_json($antwort)
  * aelter als 24 Stunden faellt heraus.
  * ================================================================== */
 
+/* Die Liste liegt seit 0.9.23 NEBEN dem Datenordner (wp_paths()['bestand']).
+ *
+ * Bis 0.9.22 lag sie in data/plugins/<ordner>/, und purge_installation
+ * loescht diesen Ordner bei JEDEM Upgrade. Danach zaehlte das Tagesbudget
+ * wieder bei null, obwohl die Aufrufe des Tages beim Hersteller verbraucht
+ * waren - Knopf "Jetzt abrufen" und Schaltbefehle konnten das Kontingent
+ * ueberziehen (in WSL gemessen, Pruefung-WaermepumpeCloud-0.9.23, Fall B1).
+ * Eine Liste am alten Ort wird einmal hinuebergezogen; uninstall raeumt den
+ * Ordner mit ab. */
 function wp_budget_datei($h)
 {
-    return wp_datadir() . '/budget_' . preg_replace('/[^a-z]/', '', $h) . '.json';
+    $p = wp_paths();
+    $name = 'budget_' . preg_replace('/[^a-z]/', '', $h) . '.json';
+    if (!is_dir($p['bestand'])) { @mkdir($p['bestand'], 0755, true); }
+    $neu = $p['bestand'] . '/' . $name;
+    $alt = $p['datadir'] . '/' . $name;
+    if (!is_file($neu) && is_file($alt)) {
+        if (@rename($alt, $neu)) {
+            wp_log('Tagesbudget-Liste ' . $name . ' neben den Datenordner gezogen ('
+                 . $p['bestand'] . ').', 'budget_umzug_' . $name);
+        }
+    }
+    return $neu;
 }
 
 function wp_budget_liste($h)
@@ -1607,7 +1742,11 @@ function wp_mu_token()
         )), 20);
     $d = wp_json($a);
     if ($a['code'] !== 200 || !isset($d['access_token'])) {
-        wp_log('myUplink: Token abgelehnt (HTTP ' . $a['code'] . ')', 'mu_token');
+        /* Der Einmal-Schluessel traegt den Grund (Regeln/05, "Ein
+         * Einmal-Schluessel im Protokoll muss den Grund tragen"): ein neuer
+         * HTTP-Code kommt sofort ins Protokoll, nicht erst nach einer Stunde.
+         * Dasselbe an den fuenf gleichartigen Stellen dieser Datei. */
+        wp_log('myUplink: Token abgelehnt (HTTP ' . $a['code'] . ')', 'mu_token_' . (int) $a['code']);
         return '';
     }
     $gueltig = isset($d['expires_in']) ? (int) $d['expires_in'] : 3600;
@@ -1776,7 +1915,7 @@ function wp_oc_token()
         if ($a['code'] === 400 || $a['code'] === 401) {
             @file_put_contents(wp_tmpdir() . '/onecta_abgelaufen.stamp', (string) time());
         }
-        wp_log('Onecta: Erneuern des Zugangs abgelehnt (HTTP ' . $a['code'] . ')', 'oc_token');
+        wp_log('Onecta: Erneuern des Zugangs abgelehnt (HTTP ' . $a['code'] . ')', 'oc_token_' . (int) $a['code']);
         if ($sp !== false) { flock($sp, LOCK_UN); fclose($sp); }
         return '';
     }
@@ -1962,7 +2101,8 @@ function wp_ml_schluessel($erzwingen = false)
     if (!is_array($d) || !isset($d['LoginData']['ContextKey'])) {
         // ErrorId 1 heisst: Zugangsdaten falsch. Das gehoert eigens gemeldet.
         $grund = (isset($d['ErrorId']) && (int) $d['ErrorId'] === 1) ? 'Zugangsdaten abgelehnt' : 'HTTP ' . $a['code'];
-        wp_log('MELCloud: Anmeldung fehlgeschlagen (' . $grund . ')', 'ml_login');
+        wp_log('MELCloud: Anmeldung fehlgeschlagen (' . $grund . ')',
+               'ml_login_' . preg_replace('/[^A-Z0-9_]/', '', strtoupper($grund)));
         return '';
     }
     $key = (string) $d['LoginData']['ContextKey'];
@@ -2605,8 +2745,9 @@ function wp_va_geraete()
 {
     list($code, $d, $fehler) = wp_va_abfrage('GET', wp_va_api('tli') . '/homes');
     if ($code !== 200 || !is_array($d)) {
-        wp_log('myVAILLANT: Anlagenliste fehlgeschlagen (' . ($fehler !== '' ? $fehler : 'HTTP ' . $code) . ')',
-               'va_homes');
+        $wp_grund = $fehler !== '' ? $fehler : 'HTTP ' . $code;
+        wp_log('myVAILLANT: Anlagenliste fehlgeschlagen (' . $wp_grund . ')',
+               'va_homes_' . preg_replace('/[^A-Z0-9_]/', '', strtoupper($wp_grund)));
         return array();
     }
     $out = array();
@@ -3580,14 +3721,30 @@ function wp_sg_sperre_abgelaufen($cfg, $stand)
 function wp_mqtt_zustand()
 {
     $p = wp_paths();
+    $aus = array('gefunden' => false, 'udpport' => 0, 'autostart' => false, 'fassung' => 0,
+                 'broker' => '', 'brokerport' => 0, 'user' => '', 'pw' => '');
+    /* Ohne Wurzel gibt es keine general.json. Bis 0.9.22 wurde der Pfad mit
+     * leerem home gebildet und lautete /config/system/general.json ab der
+     * Laufwerkswurzel - was dort lag, bestimmte den UDP-Port (in WSL gemessen,
+     * Pruefung-WaermepumpeCloud-0.9.23, Fall T3). */
+    if ($p['home'] === '') { return $aus; }
     $f = $p['home'] . '/config/system/general.json';
-    $aus = array('gefunden' => false, 'udpport' => 0, 'autostart' => false);
     if (!is_file($f)) { return $aus; }
     $d = json_decode((string) @file_get_contents($f), true);
-    if (!isset($d['Mqtt'])) { return $aus; }
+    if (!isset($d['Mqtt']) || !is_array($d['Mqtt'])) { return $aus; }
     $aus['gefunden'] = true;
     $aus['udpport'] = isset($d['Mqtt']['Udpinport']) ? (int) $d['Mqtt']['Udpinport'] : 0;
     $aus['autostart'] = !empty($d['Mqtt']['Gatewayautostart']); // NICHT 'Autostart' - den Schluessel gibt es nicht (Fehlerklasse ACTiKamera 1.9.2)
+    /* Broker und Anmeldung - NUR fuer die Rueckfrage, ob ein Altwert noch
+     * zurueckbehalten steht (wp_mqtt_behalten_fragen()). Gesendet wird
+     * weiterhin ueber den UDP-Eingang des Gateways. Das Kennwort steht nie in
+     * einem Protokoll, einer Ausgabe oder auf einer Kommandozeile - nur im
+     * CONNECT-Paket. Schluessel wie bm_mqtt_zustand() (BatterieBMS 0.9.28). */
+    foreach (array('broker' => 'Brokerhost', 'user' => 'Brokeruser', 'pw' => 'Brokerpass') as $wp_k => $wp_s) {
+        $aus[$wp_k] = isset($d['Mqtt'][$wp_s]) && is_scalar($d['Mqtt'][$wp_s]) ? (string) $d['Mqtt'][$wp_s] : '';
+    }
+    $aus['brokerport'] = isset($d['Mqtt']['Brokerport']) && is_scalar($d['Mqtt']['Brokerport'])
+        ? (int) $d['Mqtt']['Brokerport'] : 0;
     /* Die FASSUNG des MQTT-Gateways, ab Werk 1. Sie entscheidet, was der
      * Anwender eintragen muss: unter V1 jedes Thema von Hand, ab V2
      * erscheint die Themengruppe von selbst in den Subscriptions.
@@ -3643,7 +3800,7 @@ function wp_abo_nachziehen($cfg = null)
         return true;
     }
     if (is_file($tmp)) { @unlink($tmp); }
-    wp_log('mqtt_subscriptions.cfg liess sich nicht schreiben (' . $datei . ').', 'abo_fehler');
+    wp_log('mqtt_subscriptions.cfg liess sich nicht schreiben (' . $datei . ').', 'abo_fehler_' . md5($datei));
     return false;
 }
 
@@ -3708,27 +3865,77 @@ function wp_mqtt_wert_saeubern($v)
  * nicht auf Dauer im Broker stehenbleiben. Die Pruefzeile im Reiter Test
  * haelt diese Tabelle in beide Richtungen gegen wp_statusfelder().
  *
- * Die Abwaegungen:
+ * Die Abwaegungen - Pruefrage je Thema (Regeln/07, Abschnitt 3): WER stellt
+ * das fest, die Waermepumpe oder der Dienst ueber sich selbst?
  *   ALTER               waechst von selbst, ist das Lebenszeichen -> nie
+ *   OK                  Erfolg des EIGENEN Abrufs (wp_abrufen)     -> nie
+ *   STOERUNG            eigene Fehlabrufe in Folge (fehler_folge)  -> nie
  *   BUDGET              gilt nur fuer den heutigen Tag            -> nicht
  *   TAKTE, LAUFZEIT,    zaehlen seit Mitternacht bzw. am
  *   LAUFANTEIL          bisherigen Tag                            -> nicht
- *   STOERUNG            Zaehlerstand der Folge, ein Zustand       -> retained
+ *   COP, STROM, WAERME  Summen ueber die letzten cop_tage Tage bis
+ *                       jetzt - allein durch die Uhr falsch       -> nicht
  *   SOLL, VLSOLL,       zuletzt gueltiger Sollwert bzw. Einstellung
- *   WWSOLL, HEIZKURVE                                             -> retained
- *   COP, STROM, WAERME  hoechstens stuendlich ueber Tage gerechnet,
- *                       ohne Retain fehlten sie bis zu einer Stunde -> retained
+ *   WWSOLL, HEIZKURVE   der Anlage                                -> retained
+ *   KOMPRESSOR, EIN,    Zustaende, die die Anlage meldet          -> retained
+ *   WWZWANG
+ *   STUFE               zuletzt gesetzter SG-Ready-Sollzustand    -> retained
+ *
+ * BERICHTIGT in 0.9.23. Von 0.9.20 bis 0.9.22 gingen OK, STOERUNG, COP, STROM
+ * und WAERME retained hinaus (Bestandsliste
+ * Bestand-2026-09-18/klasse-E/Dienstzustand-retained_2026-09-19.md). OK und
+ * STOERUNG stellt der Dienst aus seinem EIGENEN Fehlschlag fest; stirbt er
+ * nach der Erholung, stuende "0 Fehler, alles in Ordnung" fuer immer im
+ * Broker (Entscheidungen des Hausherrn vom 18./19.09.2026). Eine Stoerung,
+ * die die Waermepumpe SELBST meldet, liest diese Linie nicht (wp_felder()
+ * kennt kein solches Feld) - es gibt also nichts, das als Geraetezustand
+ * retained daneben stehen muesste. Der Zeitraum von COP, STROM und WAERME
+ * wandert mit der Uhr; ein zurueckbehaltener Wert beschreibt nach einem Tag
+ * einen anderen Zeitraum, als er vorgibt (Hausanwendung "Werte, die allein
+ * durch die Uhr falsch werden", Spotpreis-Tibber 0.9.19). Die Altwerte raeumt
+ * wp_mqtt_altlast_pruefen() einmal ab. Gemessen am empfangenen Datagramm,
+ * Pruefung-WaermepumpeCloud-0.9.23, Faelle R1-R5.
  */
 function wp_retain_tabelle()
 {
     return array(
-        'OK' => 1, 'STUFE' => 1, 'ALTER' => 0, 'BUDGET' => 0, 'STOERUNG' => 1,
+        'OK' => 0, 'STUFE' => 1, 'ALTER' => 0, 'BUDGET' => 0, 'STOERUNG' => 0,
         'AUSSEN' => 0, 'VORLAUF' => 0, 'VLSOLL' => 1, 'HEIZKURVE' => 1,
         'RUECKLAUF' => 0, 'RAUM' => 0, 'SOLL' => 1, 'WW' => 0, 'WWSOLL' => 1,
         'LEISTUNG' => 0, 'KOMPRESSOR' => 1, 'WWZWANG' => 1, 'EIN' => 1,
-        'COP' => 1, 'STROM' => 1, 'WAERME' => 1,
+        'COP' => 0, 'STROM' => 0, 'WAERME' => 0,
         'SPREIZUNG' => 0, 'TAKTE' => 0, 'LAUFZEIT' => 0, 'LAUFANTEIL' => 0,
     );
+}
+
+/** Themen, die NIE retained sein duerfen (Lebenszeichen, Aussagen des Dienstes
+ *  ueber sich selbst, Werte mit Zeitbezug). Die Pruefzeile im Reiter Test haelt
+ *  wp_retain_tabelle() dagegen. */
+function wp_nie_retained()
+{
+    return array('OK', 'ALTER', 'STOERUNG', 'BUDGET', 'COP', 'STROM', 'WAERME',
+                 'TAKTE', 'LAUFZEIT', 'LAUFANTEIL');
+}
+
+/** Themen, die eine veroeffentlichte Fassung (0.9.20 bis 0.9.22) retained
+ *  gesendet hat und die heute fluechtig gehen: ihre Altwerte stehen noch im
+ *  Broker und werden abgeraeumt. */
+function wp_mqtt_frueher_retained()
+{
+    return array('OK', 'STOERUNG', 'COP', 'STROM', 'WAERME');
+}
+
+/** Ging dieses Thema in irgendeiner veroeffentlichten Fassung retained hinaus? */
+function wp_mqtt_je_retained($name)
+{
+    $t = wp_retain_tabelle();
+    return !empty($t[$name]) || in_array((string) $name, wp_mqtt_frueher_retained(), true);
+}
+
+/** Was bei einem FEHLGESCHLAGENEN Abruf ueber MQTT hinausgeht: nur das Signal. */
+function wp_mqtt_signalfelder()
+{
+    return array('OK', 'STUFE', 'ALTER', 'BUDGET', 'STOERUNG');
 }
 
 /** 'retain' oder 'publish' fuer genau diesen Wert. Ein leerer Wert geht nie
@@ -3740,6 +3947,204 @@ function wp_mqtt_befehl($name, $wert)
     return wp_mqtt_wert_saeubern($wert) === '' ? 'publish' : 'retain';
 }
 
+/**
+ * Den Broker der Anlage fragen, welche dieser Themen zurueckbehalten stehen.
+ *
+ * Rueckgabe: array('lage' => 'ok'|'unbekannt', 'belegt' => array(thema => wert))
+ *   ok         der Broker hat das Abonnement bestaetigt; was nicht unter
+ *              'belegt' steht, steht nicht zurueckbehalten da
+ *   unbekannt  keine Wurzel, kein Mqtt-Abschnitt, keine Verbindung,
+ *              Anmeldung abgewiesen oder keine Bestaetigung
+ *
+ * Warum fragen: gesendet wird ueber den UDP-Eingang des Gateways, und dort
+ * meldet der Absender auch fuer ein verworfenes Datagramm Erfolg (Regeln/07,
+ * "Ein Absender merkt nichts davon"; am Geraet verwarf der Eingang 7 von 10).
+ * Ein Merker "abgeraeumt" nach einem einzigen Senden luegt dann.
+ *
+ * MQTT 3.1.1 von Hand - CONNECT, SUBSCRIBE (QoS 0), DISCONNECT -, ohne fremde
+ * Bibliothek; uebernommen aus BatterieBMS 0.9.28 (bm_mqtt_behalten_fragen),
+ * dort aus ZendureSolarFlow 0.9.26. Die Anmeldung nimmt Brokeruser/Brokerpass
+ * aus der general.json; das Kennwort steht nur im CONNECT-Paket.
+ */
+function wp_mqtt_behalten_fragen(array $themen)
+{
+    $aus = array('lage' => 'unbekannt', 'belegt' => array());
+    $soll = array();
+    foreach ($themen as $t) {
+        if ((string) $t !== '') { $soll[(string) $t] = true; }
+    }
+    if (!$soll) {
+        $aus['lage'] = 'ok';
+        return $aus;
+    }
+    $m = wp_mqtt_zustand();
+    if (!$m['gefunden']) { return $aus; }
+    $host = trim((string) $m['broker']);
+    if ($host === '' || $host === 'localhost') { $host = '127.0.0.1'; }
+    $port = (int) $m['brokerport'];
+    if ($port <= 0 || $port > 65535) { $port = 1883; }
+    $s = @stream_socket_client('tcp://' . $host . ':' . $port, $errno, $errstr, 2);
+    if (!$s) { return $aus; }
+    stream_set_timeout($s, 1);
+
+    $zk = function ($t) { return pack('n', strlen($t)) . $t; };
+    $laenge = function ($n) {
+        $o = '';
+        do {
+            $b = $n % 128;
+            $n = intdiv($n, 128);
+            if ($n > 0) { $b |= 128; }
+            $o .= chr($b);
+        } while ($n > 0);
+        return $o;
+    };
+    /* Genau $n Bytes lesen oder null - bei Zeitablauf und Verbindungsende. */
+    $lies = function ($n) use ($s) {
+        $d = '';
+        while (strlen($d) < $n) {
+            $t = @fread($s, $n - strlen($d));
+            if ($t === false || $t === '') {
+                $meta = stream_get_meta_data($s);
+                if (!empty($meta['timed_out']) || !empty($meta['eof']) || feof($s)) { return null; }
+                continue;
+            }
+            $d .= $t;
+        }
+        return $d;
+    };
+    $paket = function () use ($lies) {
+        $k = $lies(1);
+        if ($k === null) { return null; }
+        $n = 0; $mult = 1;
+        for ($i = 0; $i < 4; $i++) {
+            $b = $lies(1);
+            if ($b === null) { return null; }
+            $n += (ord($b) & 127) * $mult;
+            $mult *= 128;
+            if (!(ord($b) & 128)) { break; }
+        }
+        $r = ($n > 0) ? $lies($n) : '';
+        return ($r === null) ? null : array(ord($k), $r);
+    };
+
+    $benutzer = (string) $m['user'];
+    $kennwort = (string) $m['pw'];
+    $flags = 0x02;                                  // saubere Sitzung
+    $nutz = $zk('wprueck' . getmypid());
+    if ($benutzer !== '') {
+        $flags |= 0x80;
+        // Ein Kennwort ohne Benutzer laesst MQTT 3.1.1 nicht zu.
+        if ($kennwort !== '') { $flags |= 0x40; }
+        $nutz .= $zk($benutzer);
+        if ($kennwort !== '') { $nutz .= $zk($kennwort); }
+    }
+    $kopf = $zk('MQTT') . chr(4) . chr($flags) . pack('n', 10);
+    if (@fwrite($s, chr(0x10) . $laenge(strlen($kopf . $nutz)) . $kopf . $nutz) !== false) {
+        $ack = $paket();
+        if ($ack !== null && ($ack[0] >> 4) === 2 && strlen($ack[1]) >= 2 && ord($ack[1][1]) === 0) {
+            $sub = pack('n', 1);
+            foreach (array_keys($soll) as $t) {
+                $sub .= $zk($t) . chr(0);
+            }
+            @fwrite($s, chr(0x82) . $laenge(strlen($sub)) . $sub);
+            $bestaetigt = false;
+            $ende = microtime(true) + 3.0;
+            while (microtime(true) < $ende) {
+                $pk = $paket();
+                if ($pk === null) { break; }           // Zeitablauf: nichts mehr gekommen
+                $art = $pk[0] >> 4;
+                if ($art === 9) {
+                    $bestaetigt = true;
+                    // Zurueckbehaltenes kommt unmittelbar nach dem SUBACK.
+                    $ende = min($ende, microtime(true) + 1.0);
+                } elseif ($art === 3 && strlen($pk[1]) >= 2) {
+                    $tl = unpack('n', substr($pk[1], 0, 2));
+                    $t = substr($pk[1], 2, $tl[1]);
+                    $versatz = 2 + $tl[1] + ((($pk[0] >> 1) & 3) > 0 ? 2 : 0);
+                    $wert = (string) substr($pk[1], $versatz);
+                    if (isset($soll[$t]) && ($pk[0] & 1) && $wert !== '') {
+                        $aus['belegt'][$t] = $wert;
+                    }
+                }
+            }
+            if ($bestaetigt) { $aus['lage'] = 'ok'; }
+        }
+        @fwrite($s, chr(0xE0) . chr(0));
+    }
+    fclose($s);
+    return $aus;
+}
+
+/**
+ * Welche Altwerte muessen in DIESEM Senden noch abgeraeumt werden?
+ *
+ * $namen: Themen ohne Praefix, die gleich fluechtig gesendet werden und in
+ * einer Vorfassung retained hinausgingen (wp_mqtt_frueher_retained()).
+ * Rueckgabe: array(name => true) - fuer diese geht unmittelbar vor dem
+ * gueltigen Wert die leere retain-Nutzlast hinaus (wp_mqtt_senden()).
+ *
+ * Je Thema, bis der Merker es fuehrt:
+ *   Broker sagt "steht nicht da"  -> Merker, nichts abraeumen
+ *   Broker sagt "steht da"        -> abraeumen, KEIN Merker - beim naechsten
+ *                                    Senden wird wieder gefragt
+ *   Broker nicht zu fragen        -> abraeumen, kein Merker
+ * Der Merker liegt im Datenordner, eine Zeile "leer-bestaetigt <praefix>/
+ * <name>" je Thema. Ein anderes Praefix traegt andere Zeilen, und keine
+ * Vorfassung dieser Linie hat je einen Merker dieser Form geschrieben - ein
+ * fremder zaehlt also nicht als erledigt (gemessen, Fall R12).
+ * purge_installation raeumt den Merker bei jedem Upgrade mit ab; dann wird
+ * genau einmal nachgefragt. Bauart BatterieBMS 0.9.28.
+ */
+function wp_mqtt_altlast_pruefen($praefix, array $namen)
+{
+    $datei = wp_datadir() . '/.mqtt_altlast_geraeumt';
+    $kennung = 'leer-bestaetigt ';
+    $zeilen = is_file($datei) ? preg_split('/\r?\n/', (string) @file_get_contents($datei)) : array();
+    $bestaetigt = array_flip(array_map('trim', $zeilen));
+    $offen = array();
+    foreach ($namen as $n) {
+        $voll = $praefix . '/' . $n;
+        if (isset($bestaetigt[$kennung . $voll])) { continue; }
+        $offen[(string) $n] = $voll;
+    }
+    if (!$offen) { return array(); }
+    $f = wp_mqtt_behalten_fragen(array_values($offen));
+    if ($f['lage'] !== 'ok') {
+        wp_log('MQTT: der Broker liess sich nicht befragen, ob unter ' . implode(', ', $offen)
+             . ' noch ein zurueckbehaltener Wert einer Vorfassung steht. Er wird deshalb bei '
+             . 'jedem Senden geloescht, bis der Broker antwortet.',
+               'mqtt_rueckfrage_' . md5(implode(',', $offen)));
+        return array_fill_keys(array_keys($offen), true);
+    }
+    $raeumen = array();
+    $neu = array();
+    foreach ($offen as $n => $voll) {
+        if (isset($f['belegt'][$voll])) {
+            $raeumen[$n] = true;
+            continue;
+        }
+        $neu[] = $kennung . $voll;
+    }
+    if ($neu) {
+        $alt = array();
+        foreach ($zeilen as $z) {
+            $z = trim((string) $z);
+            if (strpos($z, $kennung) === 0) { $alt[] = $z; }
+        }
+        $alle = array_values(array_unique(array_merge($alt, $neu)));
+        if (@file_put_contents($datei, implode("\n", $alle) . "\n", LOCK_EX) === false) {
+            wp_log('MQTT: der Merker ' . $datei . ' liess sich nicht schreiben - der Broker wird '
+                 . 'beim naechsten Senden wieder gefragt.', 'mqtt_merker_' . md5($datei));
+        } else {
+            wp_log('MQTT: vom Broker bestaetigt, kein zurueckbehaltener Altwert mehr unter '
+                 . implode(', ', array_map(function ($z) use ($kennung) {
+                     return substr($z, strlen($kennung));
+                 }, $neu)) . '. Diese Themen gehen fluechtig hinaus.');
+        }
+    }
+    return $raeumen;
+}
+
 function wp_mqtt_senden($werte)
 {
     $cfg = wp_config();
@@ -3748,6 +4153,18 @@ function wp_mqtt_senden($werte)
     if (!$m['gefunden'] || !$m['udpport']) { return false; }
     $sock = @fsockopen('udp://127.0.0.1', (int) $m['udpport'], $en, $es, 2);
     if (!$sock) { return false; }
+    /* Altwerte der Vorfassungen: fuer jedes Thema, das heute fluechtig geht
+     * und frueher retained ging, erst den Broker fragen; steht dort noch
+     * etwas, geht die leere retain-Nutzlast unmittelbar vor dem gueltigen
+     * Wert hinaus (Regeln/07, Abschnitt 3; wp_mqtt_altlast_pruefen()). */
+    $alt = array();
+    foreach ($werte as $name => $wert) {
+        if (wp_mqtt_befehl($name, $wert) === 'publish' && wp_mqtt_je_retained($name)
+            && wp_mqtt_wert_saeubern($wert) !== '') {
+            $alt[] = (string) $name;
+        }
+    }
+    $raeumen = $alt ? wp_mqtt_altlast_pruefen($cfg['mqtt_topic'], $alt) : array();
     // UDP ist verbindungslos: dass das Gateway die Zeile bekommt, laesst sich
     // von hier aus nicht feststellen. Was sich feststellen laesst, ist ob sie
     // ueberhaupt den Rechner verlassen hat - und genau das wurde bisher
@@ -3763,6 +4180,15 @@ function wp_mqtt_senden($werte)
          * 5 ms Abstand zu 90. Bei hoechstens 25 Themen kostet das 0,12 s je
          * Durchlauf. Die Ankunft laesst sich von hier aus trotzdem nicht
          * feststellen - gezaehlt wird, was hinausging, nicht was ankam. */
+        if (isset($raeumen[(string) $name])) {
+            // Die eine gewollte leere Nutzlast: sie loescht den Altwert, und
+            // der gueltige Wert folgt unmittelbar. Die Form "retain <thema> "
+            // ohne Zeilenende ist die am Geraet belegte (Regeln/07,
+            // Wechselprobe 19.09.2026).
+            if ($alle > 0) { usleep(5000); }
+            @fwrite($sock, 'retain ' . $cfg['mqtt_topic'] . '/' . $name . ' ');
+            $alle++;
+        }
         if ($alle > 0) { usleep(5000); }
         $zeile = wp_mqtt_befehl($name, $wert) . ' ' . $cfg['mqtt_topic'] . '/' . $name . ' '
                . wp_mqtt_wert_saeubern($wert) . "\n";
@@ -3772,10 +4198,92 @@ function wp_mqtt_senden($werte)
     @fclose($sock);
     if ($alle > 0 && $raus === 0) {
         wp_log('MQTT: keine einzige Zeile liess sich absenden (UDP-Eingang '
-             . (int) $m['udpport'] . '). Laeuft das Gateway?', 'mqtt_tot');
+             . (int) $m['udpport'] . '). Laeuft das Gateway?', 'mqtt_tot_' . (int) $m['udpport']);
         return false;
     }
     return true;
+}
+
+/**
+ * Aus der Deinstallation: alle zurueckbehaltenen Themen der Linie leeren.
+ *
+ * Bis 0.9.22 blieben sie nach dem Entfernen im Broker stehen, und nach jedem
+ * Neustart von Broker oder Gateway bekam der Miniserver sie wieder (in WSL
+ * gemessen, Pruefung-WaermepumpeCloud-0.9.23, Fall U1: 13 von 13 standen
+ * noch). Der Weg ist derselbe wie beim Senden - der UDP-Eingang des Gateways,
+ * "retain <thema> " mit leerer Nutzlast. Nach jeder Runde wird der Broker
+ * gefragt (wp_mqtt_behalten_fragen()); nur was dort noch steht, geht in der
+ * naechsten Runde wieder hinaus. Hoechstens $runden Runden. Ist der Broker
+ * nicht zu fragen, gehen alle Runden hinaus, und die Ausgabe sagt, dass
+ * nicht nachgelesen wurde.
+ *
+ * Geleert wird auch bei ausgeschaltetem MQTT: ein Anwender, der es irgendwann
+ * abgeschaltet hat, hat trotzdem zurueckbehaltene Themen im Broker.
+ * Schreibt kein Protokoll und legt nichts an. Rueckgabe 0 geleert oder nicht
+ * nachpruefbar, 1 es steht noch etwas bzw. Senden gescheitert, 2 nicht
+ * moeglich. Bauart BatterieBMS 0.9.28 (bm_mqtt_leeren()).
+ */
+function wp_mqtt_leeren($runden = 3, $pause = 1.0)
+{
+    if (wp_paths()['home'] === '') {
+        echo "<INFO> MQTT: keine LoxBerry-Wurzel - zurueckbehaltene Themen wurden nicht geleert.\n";
+        return 2;
+    }
+    $cfg = wp_config(false);
+    $praefix = (string) $cfg['mqtt_topic'];
+    $z = wp_mqtt_zustand();
+    if (!$z['udpport']) {
+        echo "<INFO> MQTT: in general.json steht kein UDP-Eingangsport des Gateways - "
+           . "zurueckbehaltene Themen unter " . $praefix . "/ wurden nicht geleert.\n";
+        return 2;
+    }
+    $offen = array();
+    foreach (array_keys(wp_retain_tabelle()) as $n) {
+        if (wp_mqtt_je_retained($n)) { $offen[] = $praefix . '/' . $n; }
+    }
+    $anzahl = count($offen);
+    $strom = @stream_socket_client('udp://127.0.0.1:' . (int) $z['udpport'], $errno, $errstr, 2);
+    if (!$strom) {
+        echo "<WARNING> MQTT: der UDP-Eingang des Gateways war nicht erreichbar - "
+           . "zurueckbehaltene Themen unter " . $praefix . "/ wurden nicht geleert.\n";
+        return 1;
+    }
+    $nachgelesen = false;
+    $datagramme = 0;
+    for ($r = 1; $r <= max(1, (int) $runden) && $offen; $r++) {
+        if ($r > 1) { usleep((int) ($pause * 1000000)); }
+        foreach ($offen as $t) {
+            @fwrite($strom, 'retain ' . $t . ' ');
+            $datagramme++;
+            usleep(5000);
+        }
+        usleep(300000);     // dem Gateway Zeit bis zum Broker lassen
+        $f = wp_mqtt_behalten_fragen($offen);
+        if ($f['lage'] === 'ok') {
+            $nachgelesen = true;
+            $offen = array_keys($f['belegt']);
+        } else {
+            $nachgelesen = false;
+        }
+    }
+    fclose($strom);
+    echo "<INFO> MQTT: " . $anzahl . " zurueckbehaltene Themen unter " . $praefix . "/ mit leerer "
+       . "Nutzlast an den UDP-Eingang " . (int) $z['udpport'] . " des Gateways gesendet ("
+       . $datagramme . " Datagramme).\n";
+    if ($nachgelesen && !$offen) {
+        echo "<OK> MQTT: der Broker bestaetigt: keines der " . $anzahl . " Themen steht mehr zurueckbehalten.\n";
+        return 0;
+    }
+    if ($nachgelesen) {
+        echo "<WARNING> MQTT: " . count($offen) . " Themen stehen noch zurueckbehalten im Broker ("
+           . implode(', ', array_slice($offen, 0, 5)) . (count($offen) > 5 ? ', ...' : '')
+           . "). Von Hand: mosquitto_pub -r -n -t <thema>\n";
+        return 1;
+    }
+    echo "<INFO> MQTT: der Broker liess sich nicht befragen - nicht nachgelesen. Der UDP-Eingang "
+       . "verwirft unter Last Datagramme; was stehen bleibt, laesst sich mit "
+       . "mosquitto_pub -r -n -t <thema> von Hand loeschen.\n";
+    return 0;
 }
 
 /* ==================================================================
@@ -4298,8 +4806,23 @@ function wp_abrufen($erzwingen = false)
      *
      * Jetzt gehen bei jedem Durchlauf OK, ALTER und der Stoerungszaehler
      * hinaus. Bleibt OK auf 0 und waechst ALTER, ist das in Loxone eine
-     * Aussage - vorher war es Schweigen. */
-    wp_mqtt_senden(wp_ausgabewerte($stand, $cfg));
+     * Aussage - vorher war es Schweigen.
+     *
+     * NUR das Signal, nicht die alten Messwerte (BERICHTIGT in 0.9.23).
+     * Bis 0.9.22 gingen nach einem Fehlschlag auch alle Werte des letzten
+     * Erfolgs erneut hinaus - Aussentemperatur, Vorlauf, Leistung ohne
+     * Retain, also als frische Messung. Ein virtueller Eingang in Loxone sah
+     * damit bei jedem Takt einen neuen Wert und fiel nie auf seinen
+     * Fehlwert zurueck, obwohl seit Stunden nichts gemessen war (in WSL
+     * gemessen, Pruefung-WaermepumpeCloud-0.9.23, Fall R13). Regeln/07,
+     * Abschnitt 3: bei einer Stoerung geht ueber MQTT nur das Signal hinaus.
+     * Die Statuszeile des HTTP-Endpunkts traegt weiter alles - dort steht
+     * ALTER in derselben Zeile. */
+    $wp_raus = wp_ausgabewerte($stand, $cfg);
+    if (!$erg['ok']) {
+        $wp_raus = array_intersect_key($wp_raus, array_flip(wp_mqtt_signalfelder()));
+    }
+    wp_mqtt_senden($wp_raus);
     return array((int) $erg['ok'], (string) $erg['fehler']);
 }
 
@@ -4513,9 +5036,14 @@ function wp_t($schluessel)
 {
     static $texte = null;
     if ($texte === null) {
+        /* Ohne Wurzel (Archivmodus) die eigenen Sprachdateien. Bis 0.9.22 wurde
+         * der Pfad mit leerem home gebildet und lautete
+         * /templates/plugins/<ordner>/lang ab der Laufwerkswurzel - was dort
+         * lag, wurde als Sprachdatei geladen (in WSL gemessen,
+         * Pruefung-WaermepumpeCloud-0.9.23, Fall T1). */
         $p = wp_paths();
-        $pfad = $p['home'] . '/templates/plugins/' . $p['plugin'] . '/lang';
-        if (!is_dir($pfad)) { $pfad = dirname(dirname(__DIR__)) . '/templates/lang'; }
+        $pfad = $p['home'] !== '' ? $p['home'] . '/templates/plugins/' . $p['plugin'] . '/lang' : '';
+        if ($pfad === '' || !is_dir($pfad)) { $pfad = dirname(dirname(__DIR__)) . '/templates/lang'; }
         $texte = @parse_ini_file($pfad . '/language_' . wp_sprache() . '.ini', true, INI_SCANNER_RAW);
         if (!is_array($texte)) { $texte = array(); }
         $rueck = @parse_ini_file($pfad . '/language_en.ini', true, INI_SCANNER_RAW);

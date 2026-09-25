@@ -13,55 +13,61 @@
  * Plugin-Update haengen bleiben kann - ohne einen einzigen Vorteil.
  *
  * Aufrufe:
- *   wp_abruf.php            aus dem Cron
- *   wp_abruf.php jetzt      Takt umgehen (nicht das Tagesbudget)
- *   wp_abruf.php zeile      die Statuszeile ausgeben, ohne abzurufen
+ *   wp_abruf.php                aus dem Cron
+ *   wp_abruf.php jetzt          Takt umgehen (nicht das Tagesbudget)
+ *   wp_abruf.php zeile          die Statuszeile ausgeben, ohne abzurufen
+ *   wp_abruf.php --mqtt-leeren  aus der Deinstallation: zurueckbehaltene
+ *                               MQTT-Themen der Linie leeren
  */
 
 error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
-/* Die Bibliothek ueber eine Kandidatenliste finden - NICHT ueber eine feste
- * Zahl von ".." nach oben.
+/* Die Bibliothek finden - NICHT ueber eine feste Zahl von ".." nach oben.
  *
  * Im entpackten Archiv liegen bin/ und webfrontend/ nebeneinander, auf dem
  * installierten LoxBerry in GETRENNTEN Baeumen:
  *
- *     /opt/loxberry/bin/plugins/<ordner>/wp_abruf.php
- *     /opt/loxberry/webfrontend/htmlauth/plugins/<ordner>/wp_lib.php
+ *     <LoxBerry-Wurzel>/bin/plugins/<ordner>/wp_abruf.php
+ *     <LoxBerry-Wurzel>/webfrontend/htmlauth/plugins/<ordner>/wp_lib.php
  *
- * dirname(__DIR__) ergibt dort /opt/loxberry/bin/plugins - gesucht wurde also
- * /opt/loxberry/bin/plugins/webfrontend/htmlauth/wp_lib.php. Die gibt es nicht: der
- * Dienst brach bei JEDEM Cron-Lauf mit einem fatalen Fehler ab, und weil die
- * Cron-Zeile nach /dev/null schreibt, stand das nirgends.
+ * dirname(__DIR__) ergibt dort <LoxBerry-Wurzel>/bin/plugins - gesucht wurde
+ * bis 0.9.8 also .../bin/plugins/webfrontend/htmlauth/wp_lib.php. Die gibt es
+ * nicht: der Dienst brach bei JEDEM Cron-Lauf mit einem fatalen Fehler ab
+ * (gefunden am 16.08.2026 mit Werkzeuge/installationslage_pruefen.py).
  *
- * Gefunden am 16.08.2026 mit Werkzeuge/installationslage_pruefen.py, nachdem
- * dieselbe Zeile den Hintergrunddienst des Abfahrts-Assistenten von 1.5.0 bis
- * 1.5.7 lahmgelegt hatte.
+ * Welche Lage gilt, entscheidet seit 0.9.23 der EIGENE Ablageort, nicht die
+ * Reihenfolge von Versuchen: liegt diese Datei unter .../plugins/<ordner>,
+ * ist sie installiert, sonst liegt sie in einem ausgepackten Archiv. Bis
+ * 0.9.22 wurden drei Kandidaten der Reihe nach probiert. In WSL gemessen
+ * (Pruefung-WaermepumpeCloud-0.9.23): aus einem Archiv unter der
+ * Laufwerkswurzel war der zweite /webfrontend/htmlauth/plugins/bin/wp_lib.php,
+ * und was dort lag, lief als Bibliothek (Fall T4); mit LBHOMEDIR wurde aus
+ * einem Archiv heraus die Bibliothek der Anlage geladen. Bauart
+ * ZendureSolarFlow 0.9.26.
  */
-$wp_lb = getenv('LBHOMEDIR');
-$wp_ordner = getenv('LBPPLUGINDIR') ?: basename(__DIR__);
-$wp_kandidaten = array();
-if ($wp_lb) {
-    $wp_kandidaten[] = $wp_lb . '/webfrontend/htmlauth/plugins/' . $wp_ordner . '/wp_lib.php';
+if (basename(dirname(__DIR__)) === 'plugins') {
+    $wp_lib = dirname(dirname(dirname(__DIR__)))
+            . '/webfrontend/htmlauth/plugins/' . basename(__DIR__) . '/wp_lib.php';
+} else {
+    $wp_lib = dirname(__DIR__) . '/webfrontend/htmlauth/wp_lib.php';
 }
-// installiert, ohne dass die Umgebungsvariablen gesetzt waeren:
-// .../bin/plugins/<ordner>  ->  .../webfrontend/htmlauth/plugins/<ordner>
-$wp_kandidaten[] = dirname(dirname(dirname(__DIR__)))
-                 . '/webfrontend/htmlauth/plugins/' . basename(__DIR__) . '/wp_lib.php';
-// entpacktes Archiv: bin/ und webfrontend/ liegen nebeneinander
-$wp_kandidaten[] = dirname(__DIR__) . '/webfrontend/htmlauth/wp_lib.php';
-
-$wp_lib = '';
-foreach ($wp_kandidaten as $wp_kand) {
-    if (is_file($wp_kand)) { $wp_lib = $wp_kand; break; }
-}
-if ($wp_lib === '') {
-    fwrite(STDERR, "Waermepumpe Cloud: wp_lib.php nicht gefunden. Gesucht wurde in:\n");
-    foreach ($wp_kandidaten as $wp_kand) { fwrite(STDERR, '  ' . $wp_kand . "\n"); }
+if (!is_file($wp_lib)) {
+    fwrite(STDERR, "Waermepumpe Cloud: wp_lib.php nicht gefunden. Gesucht wurde unter:\n  " . $wp_lib . "\n");
     exit(1);
 }
 require_once $wp_lib;
 
 $modus = isset($argv[1]) ? (string) $argv[1] : 'takt';
+
+/* Deinstallation: vor der Wurzelpruefung unten, weil wp_mqtt_leeren() eine
+ * fehlende Wurzel selbst meldet (Rueckgabe 2) - und vor allem, was schreibt:
+ * es wird nichts angelegt und nichts protokolliert. */
+if ($modus === '--mqtt-leeren') {
+    exit(wp_mqtt_leeren());
+}
+
+/* Ohne Wurzel oder aus einem Archiv heraus: nichts tun (wp_keine_wurzel_abbruch()
+ * in wp_lib.php, dort die Messung). */
+wp_keine_wurzel_abbruch('wp_abruf.php');
 
 if ($modus === 'zeile') {
     echo wp_zeile(wp_stand(), wp_config()) . "\n";
