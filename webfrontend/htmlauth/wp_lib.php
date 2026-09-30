@@ -1120,7 +1120,7 @@ function wp_http($methode, $url, $kopf = array(), $koerper = null, $zeit = 20)
         $text = curl_exec($ch);
         $code = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
         $fehler = curl_error($ch);
-        curl_close($ch);
+        if (PHP_VERSION_ID < 80000) { curl_close($ch); }
         return array('code' => $code, 'text' => (string) $text, 'fehler' => $fehler);
     }
 
@@ -2338,7 +2338,7 @@ function wp_va_http($methode, $url, $kopf = array(), $koerper = null, $zeit = 25
     $text = curl_exec($ch);
     $code = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
     $fehler = curl_error($ch);
-    curl_close($ch);
+    if (PHP_VERSION_ID < 80000) { curl_close($ch); }
     @chmod(wp_va_keksglas(), 0600);
     return array('code' => $code, 'text' => (string) $text, 'ort' => $ort, 'fehler' => $fehler);
 }
