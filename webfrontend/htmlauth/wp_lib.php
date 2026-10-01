@@ -373,7 +373,17 @@ function wp_log($text, $einmalig = '')
     }
     $zeile = date('Y-m-d H:i:s') . ' ' . rtrim($text) . "\n";
     if (@file_put_contents($datei, $zeile, FILE_APPEND | LOCK_EX) === false) {
-        fwrite(STDERR, $zeile);
+        /* Rueckfall nach STDERR nur, wo es die Konstante gibt (Kommandozeile).
+         * Unter dem Webserver gibt es sie nicht: bis 0.9.26 schrieb PHP 7.4
+         * dann eine Warnung in die Seite (die Umleitung nach dem Speichern
+         * brach), PHP 8.x brach mit "Undefined constant" ab (gemessen,
+         * Durchgangsbau vb_wp, Nebenbefund N1). Dort geht die Zeile in das
+         * Fehlerprotokoll des Webservers. */
+        if (defined('STDERR')) {
+            fwrite(STDERR, $zeile);
+        } else {
+            @error_log('Waermepumpe: ' . rtrim($zeile));
+        }
     }
 }
 
@@ -423,11 +433,14 @@ function wp_x($s) { return htmlspecialchars((string) $s, ENT_QUOTES | ENT_XML1, 
  */
 function wp_maske($wert)
 {
-    $wert = (string) $wert;
-    $n = strlen($wert);
+    /* BERICHTIGT im Durchgangsbau 02.10.2026 (Bauliste O6). Bis 0.9.26 standen
+     * hier die ersten und die letzten vier Zeichen, und die Sternchen zaehlten
+     * den Rest: von einem Kennwort mit zehn Zeichen blieben acht sichtbar
+     * (gemessen, waermepumpe_agenten/oberflaeche Befund 7). Jetzt steht fuer
+     * jedes Geheimnis dieselbe Sternchenreihe, dahinter nur die Laenge. */
+    $n = strlen((string) $wert);
     if ($n === 0) { return ''; }
-    if ($n <= 8) { return str_repeat('*', $n) . ' (' . $n . ')'; }
-    return substr($wert, 0, 4) . str_repeat('*', min(12, $n - 8)) . substr($wert, -4) . ' (' . $n . ')';
+    return '******** (' . $n . ')';
 }
 
 /* ==================================================================
@@ -598,6 +611,9 @@ function wp_vorgaben()
         // und dann wird auch keiner gesetzt. Siehe wp_sg_durchsetzen().
         'sg_angefordert' => 0,
         'sperre_max'   => WP_SPERRE_MAX,
+        // Hoechstdauer der Anhebung (Stufe 3/4) in Minuten, ab Werk wie die
+        // Sperre (Entscheidung Nr. 31, Bauliste C6). Danach Rueckfall auf 2.
+        'anhebung_max' => WP_SPERRE_MAX,
         'anhebung_3'   => 2,         // Kelvin bei Einschaltempfehlung
         'anhebung_4'   => 5,         // Kelvin bei Anlaufbefehl
         'ww_boost_4'   => 1,         // bei Anlaufbefehl Warmwasser mitziehen
@@ -823,13 +839,17 @@ function wp_config($token_anlegen = true)
     $cfg['sg_stufe']         = max(1, min(WP_STUFEN, (int) $cfg['sg_stufe']));
     $cfg['sg_angefordert']   = empty($cfg['sg_angefordert']) ? 0 : 1;
     $cfg['sperre_max']       = max(5, min(720, (int) $cfg['sperre_max']));
+    $cfg['anhebung_max']     = max(5, min(720, (int) $cfg['anhebung_max']));
     $cfg['anhebung_3']       = max(0, min(15, (int) $cfg['anhebung_3']));
     $cfg['anhebung_4']       = max(0, min(15, (int) $cfg['anhebung_4']));
     $cfg['ww_boost_4']       = empty($cfg['ww_boost_4']) ? 0 : 1;
     $cfg['basis_soll']       = (float) $cfg['basis_soll'];
     $cfg['geraetetyp']       = (int) $cfg['geraetetyp'];
     $cfg['mqtt_ein']         = empty($cfg['mqtt_ein']) ? 0 : 1;
-    $cfg['zuordnung']        = substr((string) $cfg['zuordnung'], 0, WP_ZUORDNUNG_MAX);
+    /* Nicht kuerzen (Nebenbefund N2): substr() zaehlte Bytes und schnitt
+     * mitten in ein UTF-8-Zeichen; die Grenze in Zeichen pruefen Formular und
+     * Zurueckspielen (wp_zuordnung_pruefen()) und beanstanden statt zu kuerzen. */
+    $cfg['zuordnung']        = is_array($cfg['zuordnung']) ? '' : (string) $cfg['zuordnung'];
 
     /* EMS-ESP. Die Adresse wird NICHT durch einen Zeichenfilter gedreht -
      * sie ist eine Adresse und keine Kennung. Geprueft wird stattdessen die
@@ -1141,12 +1161,25 @@ function wp_http($methode, $url, $kopf = array(), $koerper = null, $zeit = 20)
         'content' => $koerper, 'timeout' => $zeit, 'ignore_errors' => true,
         'follow_location' => 0, 'max_redirects' => 1,
     )));
-    $text = @file_get_contents($url, false, $ctx);
-    $code = 0;
-    if (isset($http_response_header)) {
-        foreach ($http_response_header as $z) {
-            if (preg_match('#^HTTP/\S+\s+(\d{3})#', $z, $m)) { $code = (int) $m[1]; }
+    /* Die Kopfzeilen kommen aus den Metadaten des Stroms, nicht aus der
+     * vordefinierten Variable des Datenstroms: PHP 8.5 meldet diese als
+     * ueberholt (gemessen, waermepumpe_agenten/code Befund 11; Bauliste C11).
+     * Bauart tb_http_abruf() aus dem Durchgangsbau Spotpreis Tibber. Gewertet
+     * wird wie bisher die LETZTE Statuszeile. */
+    $text = false;
+    $kopfzeilen = array();
+    $fp = @fopen($url, 'r', false, $ctx);
+    if ($fp !== false) {
+        $meta = @stream_get_meta_data($fp);
+        $text = @stream_get_contents($fp);
+        @fclose($fp);
+        if (is_array($meta) && isset($meta['wrapper_data']) && is_array($meta['wrapper_data'])) {
+            $kopfzeilen = $meta['wrapper_data'];
         }
+    }
+    $code = 0;
+    foreach ($kopfzeilen as $z) {
+        if (is_string($z) && preg_match('#^HTTP/\S+\s+(\d{3})#', $z, $m)) { $code = (int) $m[1]; }
     }
     return array('code' => $code, 'text' => (string) $text,
                  'fehler' => $text === false ? 'Verbindung fehlgeschlagen' : '');
@@ -1354,9 +1387,10 @@ function wp_punkt_suchen($punkte, $pfad)
  * Die Feldtabelle - eine Quelle fuer Statuszeile, MQTT und Vorlage
  *
  * Je Feld mehrere Kandidatenpfade JE HERSTELLER, der erste Treffer gewinnt.
- * Grund: die genaue Gestalt der Antwort haengt am Geraetemodell, und dieses
- * Plugin ist ohne Geraet entstanden. Statt einen Pfad zu raten und still zu
- * scheitern, werden mehrere versucht - und der Reiter Test sagt fuer JEDES
+ * Grund: die genaue Gestalt der Antwort haengt am Geraetemodell. Gemessen ist
+ * bisher die Anmeldung am echten myVAILLANT-Konto einer aroTHERM plus, nicht
+ * die Antwort einer Anlage (Stand 02.10.2026). Statt einen Pfad zu raten und
+ * still zu scheitern, werden mehrere versucht - und der Reiter Test sagt fuer JEDES
  * Feld, welcher Kandidat gegriffen hat oder dass keiner gegriffen hat.
  * ================================================================== */
 
@@ -1661,6 +1695,38 @@ function wp_zuordnung_lesen($text)
 }
 
 /**
+ * Die drei Digitalfelder EIN, KOMPRESSOR und WWZWANG je Hersteller fest auf 1/0
+ * abbilden (Bauliste C13, waermepumpe_agenten/mqtt Befund 7).
+ *
+ * Bis 0.9.26 ging der Rohtext durch: Onecta liefert onOffMode und powerfulMode
+ * als "on"/"off", myVAILLANT die Sonderfunktion als Text (CYLINDER_BOOST). Die
+ * Vorlage legt diese Felder als digitale Eingaenge mit \v an - in "on" findet
+ * \v keine Zahl, "Geraet eingeschaltet" wurde ueber HTTP nie 1.
+ *
+ * Zahlen (auch die Wahrheitswerte, die wp_pfad() zu 1/0 macht) bleiben bei
+ * der bisherigen Lesart: groesser 0 ist 1. Texte nur nach der festen Tabelle;
+ * was dort nicht steht, wird "-" (keine Aussage, Entscheidung Nr. 5) - nie
+ * geraten. Die Tabelle nennt nur Werte, die das Plugin selbst schreibt
+ * (Onecta on/off) oder die die Feldtabelle ausdruecklich nennt (CYLINDER_BOOST).
+ */
+function wp_digital($wert, $hersteller)
+{
+    if (is_int($wert) || is_float($wert)) {
+        return ((float) $wert) > 0 ? 1 : 0;
+    }
+    $t = strtoupper(trim((string) $wert));
+    $tabelle = array(
+        'onecta'   => array('ON' => 1, 'OFF' => 0),
+        'emsesp'   => array('ON' => 1, 'OFF' => 0, 'TRUE' => 1, 'FALSE' => 0),
+        'melcloud' => array('TRUE' => 1, 'FALSE' => 0),
+        'vaillant' => array('CYLINDER_BOOST' => 1, 'NONE' => 0),
+        'myuplink' => array(),
+    );
+    $h = isset($tabelle[$hersteller]) ? $tabelle[$hersteller] : array();
+    return isset($h[$t]) ? $h[$t] : '-';
+}
+
+/**
  * Rohdaten in die Felder uebersetzen.
  * Rueckgabe: array('werte' => array(FELD=>Wert), 'wege' => array(FELD=>Pfad|''))
  */
@@ -1668,6 +1734,7 @@ function wp_umrechnen($roh, $cfg)
 {
     $werte = array();
     $wege = array();
+    $digital = array('EIN' => 1, 'KOMPRESSOR' => 1, 'WWZWANG' => 1);
     foreach (wp_felder() as $name => $d) {
         $treffer = null;
         $weg = '';
@@ -1677,6 +1744,7 @@ function wp_umrechnen($roh, $cfg)
         }
         if ($treffer !== null) {
             $werte[$name] = is_numeric($treffer) ? round((float) $treffer, 2) : $treffer;
+            if (isset($digital[$name])) { $werte[$name] = wp_digital($werte[$name], $cfg['hersteller']); }
         }
         $wege[$name] = $weg;
     }
@@ -1972,7 +2040,17 @@ function wp_oc_code_einloesen($code)
         return array(0, 'HTTP_' . $a['code']);
     }
     $g['refresh_token'] = (string) $d['refresh_token'];
-    wp_geheim_write($g);
+    /* Erfolg nur, wenn das Erneuerungsmerkmal wirklich auf der Karte steht
+     * (Bauliste C8, waermepumpe_agenten/code Befund 7): bis 0.9.26 kam hier
+     * array(1, '') auch bei schreibgeschuetztem Konfigordner, die Oberflaeche
+     * zeigte "Anmeldung abgeschlossen", und der Einmal-Code war verbraucht.
+     * wp_json_schreiben() vergleicht die geschriebene Laenge. */
+    if (!wp_geheim_write($g)) {
+        wp_log('SCHWERWIEGEND - Onecta: das Erneuerungsmerkmal aus der Anmeldung konnte nicht '
+             . 'gespeichert werden. Die Anmeldung ist NICHT abgeschlossen. Schreibrechte auf '
+             . wp_paths()['geheim'] . ' pruefen und die Anmeldung im Browser wiederholen.');
+        return array(0, 'ERNEUERUNG_NICHT_GESPEICHERT');
+    }
     if (isset($d['access_token'])) {
         $gueltig = isset($d['expires_in']) ? (int) $d['expires_in'] : 3600;
         $f = wp_tmpdir() . '/token_onecta.json';
@@ -2458,21 +2536,64 @@ function wp_va_merkmale_ablegen($antwort)
         return array(0, 'TOKEN_ABGELEHNT_' . $grund);
     }
     $gueltig = isset($d['expires_in']) ? (int) $d['expires_in'] : 300;
+    $access = (string) $d['access_token'];
     // Eine Minute Sicherheitsabstand: ein Merkmal, das waehrend des Abrufs
     // ablaeuft, erzeugt einen 401 mitten in der Runde.
-    wp_json_schreiben(wp_tmpdir() . '/token_vaillant.json', array(
-        'access' => (string) $d['access_token'],
+    $ablage = wp_tmpdir() . '/token_vaillant.json';
+    $ablage_ok = wp_json_schreiben($ablage, array(
+        'access' => $access,
         'bis'    => time() + max(60, $gueltig - 60),
     ));
-    @chmod(wp_tmpdir() . '/token_vaillant.json', 0600);
+    @chmod($ablage, 0600);
+    if (!$ablage_ok) {
+        /* Das frische Merkmal gilt trotzdem - es geht als drittes Feld an den
+         * Aufrufer zurueck (Bauliste C9). Gemeldet wird einmal je Stunde. */
+        wp_log('myVAILLANT: das Zugriffsmerkmal liess sich nicht zwischenspeichern ('
+             . dirname($ablage) . '). Es gilt nur fuer diesen Lauf.', 'va_ablage_fehlt');
+    }
 
     if (isset($d['refresh_token'])) {
         $g = wp_geheim();
         $g['va_refresh'] = (string) $d['refresh_token'];
-        wp_geheim_write($g);
+        /* Erfolg nur mit geschriebenem Erneuerungsmerkmal (Bauliste C8,
+         * waermepumpe_agenten/code Befund 7): bis 0.9.26 meldete die
+         * Browser-Anmeldung "abgeschlossen", obwohl geheim.json nicht
+         * geschrieben war - nach fuenf Minuten verlangte das Plugin wieder die
+         * Anmeldung mit Bot-Pruefung. */
+        if (!wp_geheim_write($g)) {
+            wp_log('SCHWERWIEGEND - myVAILLANT: das Erneuerungsmerkmal konnte nicht gespeichert '
+                 . 'werden. Schreibrechte auf ' . wp_paths()['geheim'] . ' pruefen.');
+            return array(0, 'ERNEUERUNG_NICHT_GESPEICHERT', $access);
+        }
         wp_va_erneuerung_merken((string) $d['refresh_token'], $d);
     }
-    return array(1, '');
+    return array(1, '', $access);
+}
+
+/**
+ * Wo die Angaben zur Laufzeit der Anmeldung liegen (Bauliste I3).
+ *
+ * Bis 0.9.26 lag va_erneuerung.json in data/plugins/<ordner>/, und
+ * purge_installation loescht diesen Ordner bei JEDEM Upgrade. Danach zeigte
+ * der Reiter Test "Ein Ablauf ist nicht bekannt", und nach der ersten
+ * Erneuerung stand als Anmeldezeitpunkt das Update (in WSL gemessen,
+ * waermepumpe_agenten/installer Befund 3). Jetzt liegt die Datei neben dem
+ * Datenordner (wp_paths()['bestand']) wie die Tagesbudget-Listen; eine Datei
+ * am alten Ort wird einmal hinuebergezogen. uninstall raeumt .bestand ab.
+ */
+function wp_va_erneuerung_datei()
+{
+    $p = wp_paths();
+    if (!is_dir($p['bestand'])) { @mkdir($p['bestand'], 0755, true); }
+    $neu = $p['bestand'] . '/va_erneuerung.json';
+    $alt = $p['datadir'] . '/va_erneuerung.json';
+    if (!is_file($neu) && is_file($alt)) {
+        if (@rename($alt, $neu)) {
+            wp_log('va_erneuerung.json neben den Datenordner gezogen (' . $p['bestand'] . ').',
+                   'va_erneuerung_umzug');
+        }
+    }
+    return $neu;
 }
 
 /**
@@ -2489,7 +2610,7 @@ function wp_va_erneuerung_merken($merkmal, $antwort)
     $inhalt = count($teile) === 3
         ? json_decode((string) base64_decode(strtr($teile[1], '-_', '+/')), true) : null;
     $alt = wp_va_erneuerung_lage();
-    wp_json_schreiben(wp_datadir() . '/va_erneuerung.json', array(
+    wp_json_schreiben(wp_va_erneuerung_datei(), array(
         'typ'        => is_array($inhalt) && isset($inhalt['typ']) ? (string) $inhalt['typ'] : '',
         'bis'        => is_array($inhalt) && isset($inhalt['exp']) ? (int) $inhalt['exp'] : 0,
         'sekunden'   => isset($antwort['refresh_expires_in']) ? (int) $antwort['refresh_expires_in'] : -1,
@@ -2501,7 +2622,7 @@ function wp_va_erneuerung_merken($merkmal, $antwort)
 /** Gemerkte Laufzeit oder null. */
 function wp_va_erneuerung_lage()
 {
-    $f = wp_datadir() . '/va_erneuerung.json';
+    $f = wp_va_erneuerung_datei();
     $l = is_file($f) ? json_decode((string) @file_get_contents($f), true) : null;
     return is_array($l) ? $l : null;
 }
@@ -2545,9 +2666,13 @@ function wp_va_browser_starten()
             'state'                 => $state,
         ));
     $f = wp_va_browser_datei();
-    wp_json_schreiben($f, array('verifier' => $verifier, 'state' => $state, 'realm' => $realm,
-                                'adresse' => $adresse, 'seit' => time()));
+    $ok = wp_json_schreiben($f, array('verifier' => $verifier, 'state' => $state, 'realm' => $realm,
+                                      'adresse' => $adresse, 'seit' => time()));
     @chmod($f, 0600);
+    /* Ohne abgelegtes Pruefwort laesst sich der Code spaeter nicht einloesen -
+     * dann gibt es keine Adresse, und die Oberflaeche sagt es (Bauliste C8,
+     * waermepumpe_agenten/oberflaeche Befund 15). */
+    if (!$ok) { return ''; }
     return $adresse;
 }
 
@@ -2604,7 +2729,7 @@ function wp_va_browser_einloesen($eingabe)
         // Neue Anmeldung, neue Zaehlung - erst nach Erfolg, sonst ginge die
         // Angabe zur noch gueltigen alten Anmeldung verloren.
         $ve = wp_va_erneuerung_lage();
-        if ($ve) { $ve['angemeldet'] = time(); wp_json_schreiben(wp_datadir() . '/va_erneuerung.json', $ve); }
+        if ($ve) { $ve['angemeldet'] = time(); wp_json_schreiben(wp_va_erneuerung_datei(), $ve); }
     }
     return array($ok, $grund);
 }
@@ -2652,10 +2777,16 @@ function wp_va_token($erzwingen = false)
             return (string) $t['access'];
         }
     }
-    list($ok, $grund) = wp_va_erneuern();
+    /* Das frisch gelieferte Merkmal wird DIREKT benutzt, nicht aus der Datei
+     * gelesen (Bauliste C9, waermepumpe_agenten/code Befund 8): bis 0.9.26 kam
+     * bei nicht beschreibbarer Ramdisk das abgelaufene Merkmal zurueck, und
+     * jeder Anfrage folgte ein 401. */
+    list($ok, $grund, $neu) = array_pad(wp_va_erneuern(), 3, '');
+    if ($neu !== '') { return (string) $neu; }
     if (!$ok) {
-        list($ok, $grund) = wp_va_anmelden();
+        list($ok, $grund, $neu) = array_pad(wp_va_anmelden(), 3, '');
         wp_va_letzter_grund($ok ? '' : $grund);
+        if ($neu !== '') { return (string) $neu; }
         if (!$ok) {
             /* Der Schluessel fuer die Einmal-Sperre traegt den Grund: bis
              * 0.9.20 hiess er nur 'va_login', ein neuer Grund blieb eine
@@ -2667,8 +2798,10 @@ function wp_va_token($erzwingen = false)
             return '';
         }
     }
+    // Ein abgelaufenes Merkmal wird nie benutzt (Bauliste C9).
     $t = json_decode((string) @file_get_contents($f), true);
-    return is_array($t) && isset($t['access']) ? (string) $t['access'] : '';
+    return is_array($t) && isset($t['access'], $t['bis']) && (int) $t['bis'] > time()
+        ? (string) $t['access'] : '';
 }
 
 /**
@@ -3602,14 +3735,24 @@ function wp_sg_anwenden($cfg, $stufe, $stand = null)
              * stufe_gesetzt bereits dem Wunsch entsprach, wurde auch nie
              * wieder geschaltet. In Loxone stand "Stufe 3", angehoben hat nie
              * jemand etwas. */
-            if ($basis <= 0) {
+            /* STUFE 2 BRAUCHT KEINEN GRUNDSOLLWERT (Durchgangsbau 02.10.2026,
+             * Bauliste C1, waermepumpe_agenten/code Befund 1). Normalbetrieb
+             * heisst: einschalten und eine eigene Anhebung zuruecknehmen. Ohne
+             * gemerkten Grundsollwert gibt es keine eigene Anhebung - dann wird
+             * eingeschaltet und KEIN Sollwert geschrieben, wie bei EMS-ESP. Bis
+             * 0.9.26 sagte auch Stufe 2 hier ab: nach dem Rueckfall aus der
+             * Sperre ging jede Minute onOffMode=on hinaus, STUFE blieb 1, und das
+             * Tagesbudget schmolz. Nur Stufe 3 und 4 sagen ab. */
+            if ($basis <= 0 && $stufe !== 2) {
                 return array(0, 'KEIN_GRUNDSOLLWERT', implode(' ', $getan));
             }
-            $soll = $basis + ($stufe === 3 ? $cfg['anhebung_3'] : ($stufe === 4 ? $cfg['anhebung_4'] : 0));
-            list($ok, $grund) = wp_oc_setzen($cfg, 'climateControl', 'temperatureControl', $soll,
-                '/operationModes/heating/setpoints/roomTemperature');
-            $getan[] = 'Sollwert=' . $soll;
-            if (!$ok) { return array(0, $grund, implode(' ', $getan)); }
+            if ($basis > 0) {
+                $soll = $basis + ($stufe === 3 ? $cfg['anhebung_3'] : ($stufe === 4 ? $cfg['anhebung_4'] : 0));
+                list($ok, $grund) = wp_oc_setzen($cfg, 'climateControl', 'temperatureControl', $soll,
+                    '/operationModes/heating/setpoints/roomTemperature');
+                $getan[] = 'Sollwert=' . $soll;
+                if (!$ok) { return array(0, $grund, implode(' ', $getan)); }
+            }
             if ($stufe === 4 && $cfg['ww_boost_4']) {
                 list($ok, $grund) = wp_oc_setzen($cfg, 'domesticHotWaterTank', 'powerfulMode', 'on');
                 $getan[] = 'Warmwasser-Zwang=on';
@@ -3634,11 +3777,17 @@ function wp_sg_anwenden($cfg, $stufe, $stand = null)
              * Grundsollwert gaebe es hier nur Power=true, und das waere die
              * Meldung "Stufe 3 gesetzt" fuer einen Vorgang, bei dem nichts
              * angehoben wurde. */
-            if ($basis <= 0) {
+            /* Stufe 2 ohne Grundsollwert: nur Power=true (Bauliste C1). Bis
+             * 0.9.26 sagte auch Stufe 2 ab - nach dem Rueckfall aus der Sperre
+             * blieb die Heizung bei MELCloud unbegrenzt aus (gemessen,
+             * waermepumpe_agenten/code Befund 1). */
+            if ($basis <= 0 && $stufe !== 2) {
                 return array(0, 'KEIN_GRUNDSOLLWERT', 'Power=true');
             }
-            $felder['SetTemperatureZone1'] = $basis
-                + ($stufe === 3 ? $cfg['anhebung_3'] : ($stufe === 4 ? $cfg['anhebung_4'] : 0));
+            if ($basis > 0) {
+                $felder['SetTemperatureZone1'] = $basis
+                    + ($stufe === 3 ? $cfg['anhebung_3'] : ($stufe === 4 ? $cfg['anhebung_4'] : 0));
+            }
             if ($cfg['ww_boost_4']) {
                 $felder['ForcedHotWaterMode'] = ($stufe === 4);
             }
@@ -3712,6 +3861,109 @@ function wp_sg_sperre_abgelaufen($cfg, $stand)
     if ((int) $stand['stufe_gesetzt'] !== 1) { return false; }
     if ((int) $stand['stufe_zeit'] <= 0) { return false; }
     return (time() - (int) $stand['stufe_zeit']) > ((int) $cfg['sperre_max'] * 60);
+}
+
+/**
+ * Ist die Anhebung (Stufe 3 oder 4) zu lange her? (Entscheidung Nr. 31, Bauliste C6)
+ *
+ * Bis 0.9.26 hatte nur die Sperre eine Hoechstdauer. Fiel Loxone waehrend
+ * Stufe 4 aus, blieben Onecta, MELCloud und EMS-ESP dauerhaft angehoben
+ * (+5 K und Warmwasser-Zwang; gemessen an EMS-ESP, waermepumpe_agenten/code
+ * Befund 10). Die Grenze ist eine eigene Einstellung, ab Werk wie die Sperre.
+ */
+function wp_sg_anhebung_abgelaufen($cfg, $stand)
+{
+    $s = (int) $stand['stufe_gesetzt'];
+    if ($s !== 3 && $s !== 4) { return false; }
+    if ((int) $stand['stufe_zeit'] <= 0) { return false; }
+    return (time() - (int) $stand['stufe_zeit']) > ((int) $cfg['anhebung_max'] * 60);
+}
+
+/** Laufzeit der myVAILLANT-Schnellabweichung in Sekunden - dieselbe Grenze wie
+ *  beim Senden in wp_va_veto(). */
+function wp_va_veto_sekunden($cfg)
+{
+    return (int) round(max(0.5, min(24, (float) $cfg['veto_stunden'])) * 3600);
+}
+
+/**
+ * Hat die Cloud die Schnellabweichung schon selbst beendet? (Nr. 31, Bauliste C6)
+ *
+ * myVAILLANT stellt die Anhebung nach veto_stunden von allein zurueck. Bis
+ * 0.9.26 meldete das Plugin danach weiter STUFE=4 (retained), obwohl nichts
+ * mehr angehoben war.
+ */
+function wp_va_veto_abgelaufen($cfg, $stand)
+{
+    $s = (int) $stand['stufe_gesetzt'];
+    if ($s !== 3 && $s !== 4) { return false; }
+    if ((int) $stand['stufe_zeit'] <= 0) { return false; }
+    return (time() - (int) $stand['stufe_zeit']) >= wp_va_veto_sekunden($cfg);
+}
+
+/**
+ * Die Stufe, die WIRKLICH gilt (Entscheidung Nr. 5 und 31, Bauliste C5).
+ *
+ * Bis 0.9.26 stand hier stufe_gesetzt ?: sg_stufe - vor dem ersten Schalten
+ * also die gewuenschte Stufe, und nach einem gescheiterten Schalten die
+ * angeforderte: "STUFE=4" retained, obwohl die Waermepumpe nie geschaltet
+ * wurde (gemessen, waermepumpe_agenten/mqtt Befund 1, code Befund 5). Jetzt:
+ * "-", solange nichts gesetzt ist; bei myVAILLANT nach Ablauf der
+ * Schnellabweichung 2.
+ */
+function wp_stufe_gilt($stand, $cfg)
+{
+    $s = (int) $stand['stufe_gesetzt'];
+    if ($s <= 0) { return '-'; }
+    if ($cfg['hersteller'] === 'vaillant' && wp_va_veto_abgelaufen($cfg, $stand)) { return 2; }
+    return $s;
+}
+
+/* Gleichwert-Fenster der Befehlsbremse in Sekunden (X-7, Entscheidung Nr. 19). */
+define('WP_GLEICHWERT_SEKUNDEN', 60);
+
+/** Kleinster Abstand zwischen zwei Versuchen desselben gescheiterten
+ *  Schreibbefehls: max(takt, mindesttakt) (Bauliste C2). */
+function wp_wiederholabstand($cfg)
+{
+    $info = wp_hersteller_info($cfg['hersteller']);
+    return max((int) $cfg['takt'], $info ? (int) $info['mindesttakt'] : 60);
+}
+
+/**
+ * Darf ein gescheiterter Schreibbefehl jetzt wiederholt werden? (Bauliste C2)
+ *
+ * Bis 0.9.26 ging derselbe gescheiterte SG-Befehl in JEDEM Cron-Lauf erneut
+ * hinaus - bei Onecta war das Tagesbudget nach rund drei Stunden leer, danach
+ * wurde 24 h lang auch nicht mehr gelesen (gemessen, waermepumpe_agenten/code
+ * Befund 2).
+ *
+ * Zwei Grenzen: der Abstand max(takt, mindesttakt) seit dem letzten
+ * Fehlschlag, und bei einem Hersteller mit Tagesbudget hoechstens
+ * budget_schreiben Wiederholungen in 24 h (gleitend) - die Wiederholungen
+ * leben von der Reserve fuers Schalten, nie vom Lesen.
+ *
+ * Rueckgabe '' = darf, sonst der Grund. Eine erlaubte Wiederholung wird in
+ * $stand['wdh_liste'] vermerkt; der Aufrufer schreibt den Stand VOR dem
+ * Senden.
+ */
+function wp_wiederholung_pruefen($cfg, $fehl_zeit, &$stand)
+{
+    if ((int) $fehl_zeit > 0 && (time() - (int) $fehl_zeit) < wp_wiederholabstand($cfg)) {
+        return 'WIEDERHOLUNG_GEBREMST';
+    }
+    $info = wp_hersteller_info($cfg['hersteller']);
+    if ($info && !empty($info['budget'])) {
+        $grenze = time() - 86400;
+        $l = isset($stand['wdh_liste']) && is_array($stand['wdh_liste']) ? $stand['wdh_liste'] : array();
+        $l = array_values(array_filter($l, function ($t) use ($grenze) { return (int) $t > $grenze; }));
+        $stand['wdh_liste'] = $l;
+        if (count($l) >= (int) $cfg['budget_schreiben']) {
+            return 'WIEDERHOLUNG_RESERVE_AUFGEBRAUCHT';
+        }
+        $stand['wdh_liste'][] = time();
+    }
+    return '';
 }
 
 /* ==================================================================
@@ -3913,8 +4165,23 @@ function wp_retain_tabelle()
  *  wp_retain_tabelle() dagegen. */
 function wp_nie_retained()
 {
-    return array('OK', 'ALTER', 'STOERUNG', 'BUDGET', 'COP', 'STROM', 'WAERME',
-                 'TAKTE', 'LAUFZEIT', 'LAUFANTEIL');
+    return array_merge(array('OK', 'ALTER', 'STOERUNG', 'BUDGET', 'COP', 'STROM', 'WAERME',
+                 'TAKTE', 'LAUFZEIT', 'LAUFANTEIL'), array_keys(wp_lebenszeichen_themen()));
+}
+
+/**
+ * Das Lebenszeichen ueber MQTT (Regeln/07, Abschnitt 3; Bauliste M2,
+ * waermepumpe_agenten/mqtt Befund 6). Fluechtig, nie retained, bei JEDEM
+ * Cron-Lauf - auch wenn kein Abruf faellig ist.
+ *   status/ts       Unix-Sekunden des letzten erfolgreichen Abrufs, 0 = noch nie
+ *   status/zaehler  zaehlt je Cron-Lauf 0 bis 999 und beginnt dann von vorn
+ * Bis 0.9.26 gab es keines: ALTER ist im Gesundbetrieb ueber MQTT immer 0, und
+ * ein toter Dienst war von einem gesunden nicht zu unterscheiden. ALTER behaelt
+ * seine Bedeutung. Eine Quelle fuer Sendecode und Themenliste der Oberflaeche.
+ */
+function wp_lebenszeichen_themen()
+{
+    return array('status/ts' => 'MQTT.LZ_TS', 'status/zaehler' => 'MQTT.LZ_ZAEHLER');
 }
 
 /** Themen, die eine veroeffentlichte Fassung (0.9.20 bis 0.9.22) retained
@@ -4039,7 +4306,9 @@ function wp_mqtt_behalten_fragen(array $themen)
         if ($kennwort !== '') { $nutz .= $zk($kennwort); }
     }
     $kopf = $zk('MQTT') . chr(4) . chr($flags) . pack('n', 10);
-    if (@fwrite($s, chr(0x10) . $laenge(strlen($kopf . $nutz)) . $kopf . $nutz) !== false) {
+    // Erfolg heisst: das ganze Paket ging hinaus (Bauart B, Regeln/03).
+    $verbinden = chr(0x10) . $laenge(strlen($kopf . $nutz)) . $kopf . $nutz;
+    if (@fwrite($s, $verbinden) === strlen($verbinden)) {
         $ack = $paket();
         if ($ack !== null && ($ack[0] >> 4) === 2 && strlen($ack[1]) >= 2 && ord($ack[1][1]) === 0) {
             $sub = pack('n', 1);
@@ -4207,7 +4476,7 @@ function wp_mqtt_senden($werte)
         $zeile = wp_mqtt_befehl($name, $wert) . ' ' . $cfg['mqtt_topic'] . '/' . $name . ' '
                . wp_mqtt_wert_saeubern($wert) . "\n";
         $alle++;
-        if (@fwrite($sock, $zeile) !== false) { $raus++; }
+        if (@fwrite($sock, $zeile) === strlen($zeile)) { $raus++; }
     }
     @fclose($sock);
     if ($alle > 0 && $raus === 0) {
@@ -4216,6 +4485,20 @@ function wp_mqtt_senden($werte)
         return false;
     }
     return true;
+}
+
+/** Das Lebenszeichen eines Cron-Laufs senden (Bauliste M2, siehe
+ *  wp_lebenszeichen_themen()). Der Zaehler liegt auf der Ramdisk. */
+function wp_mqtt_lebenszeichen()
+{
+    $cfg = wp_config();
+    if (empty($cfg['mqtt_ein'])) { return false; }
+    $f = wp_tmpdir() . '/mqtt_zaehler';
+    $n = is_file($f) ? (int) trim((string) @file_get_contents($f)) : -1;
+    $n = ($n + 1) % 1000;
+    @file_put_contents($f, (string) $n, LOCK_EX);
+    $s = wp_stand();
+    return wp_mqtt_senden(array('status/ts' => (int) $s['zeit'], 'status/zaehler' => $n));
 }
 
 /**
@@ -4244,31 +4527,115 @@ function wp_mqtt_leeren($runden = 3, $pause = 1.0)
         return 2;
     }
     $cfg = wp_config(false);
-    $praefix = (string) $cfg['mqtt_topic'];
-    $z = wp_mqtt_zustand();
-    if (!$z['udpport']) {
-        echo "<INFO> MQTT: in general.json steht kein UDP-Eingangsport des Gateways - "
-           . "zurueckbehaltene Themen unter " . $praefix . "/ wurden nicht geleert.\n";
-        return 2;
+    /* Das eingestellte Praefix UND die vorgemerkten frueheren (Bauliste M1,
+     * Entscheidung Nr. 26). Bis 0.9.26 nannte das <OK> der Deinstallation nur
+     * das aktuelle Praefix; nach einem Praefixwechsel standen 7 Themen des
+     * alten weiter im Broker (gemessen, waermepumpe_agenten/mqtt Befund 5). */
+    $praefixe = array_values(array_unique(array_merge(array((string) $cfg['mqtt_topic']),
+                                                      wp_mqtt_alte_praefixe())));
+    $rc = 0;
+    foreach ($praefixe as $i => $praefix) {
+        $e = wp_mqtt_praefix_raeumen($praefix, $runden, $pause);
+        $art = $i > 0 ? ' (frueheres Praefix)' : '';
+        if ($e['lage'] === 'kein_port') {
+            echo "<INFO> MQTT: in general.json steht kein UDP-Eingangsport des Gateways - "
+               . "zurueckbehaltene Themen unter " . $praefix . "/" . $art . " wurden nicht geleert.\n";
+            $rc = max($rc, 2);
+            continue;
+        }
+        if ($e['lage'] === 'nicht_erreichbar') {
+            echo "<WARNING> MQTT: der UDP-Eingang des Gateways war nicht erreichbar - "
+               . "zurueckbehaltene Themen unter " . $praefix . "/" . $art . " wurden nicht geleert.\n";
+            $rc = max($rc, 1);
+            continue;
+        }
+        echo "<INFO> MQTT: " . $e['anzahl'] . " zurueckbehaltene Themen unter " . $praefix . "/" . $art
+           . " mit leerer Nutzlast an den UDP-Eingang " . $e['port'] . " des Gateways gesendet ("
+           . $e['datagramme'] . " Datagramme).\n";
+        if ($e['lage'] === 'ok') {
+            echo "<OK> MQTT: der Broker bestaetigt: keines der " . $e['anzahl'] . " Themen unter "
+               . $praefix . "/ steht mehr zurueckbehalten.\n";
+        } elseif ($e['lage'] === 'offen') {
+            echo "<WARNING> MQTT: " . count($e['offen']) . " Themen stehen noch zurueckbehalten im Broker ("
+               . implode(', ', array_slice($e['offen'], 0, 5)) . (count($e['offen']) > 5 ? ', ...' : '')
+               . "). Von Hand: mosquitto_pub -r -n -t <thema>\n";
+            $rc = max($rc, 1);
+        } else {
+            echo "<INFO> MQTT: der Broker liess sich nicht befragen - unter " . $praefix . "/ nicht "
+               . "nachgelesen. Der UDP-Eingang verwirft unter Last Datagramme; was stehen bleibt, laesst "
+               . "sich mit mosquitto_pub -r -n -t <thema> von Hand loeschen.\n";
+        }
     }
+    return $rc;
+}
+
+/**
+ * Vorgemerkte fruehere Praefixe (Bauliste M1, Entscheidung Nr. 26).
+ *
+ * Die Liste liegt neben dem Datenordner (wp_paths()['bestand']) und uebersteht
+ * damit ein Upgrade; die Deinstallation leert erst alle Praefixe darin und
+ * raeumt dann .bestand ab. Ein Praefix wird vorgemerkt, BEVOR abgeraeumt wird,
+ * und erst gestrichen, wenn der Broker bestaetigt, dass nichts mehr steht.
+ */
+function wp_mqtt_alt_datei()
+{
+    return wp_paths()['bestand'] . '/mqtt_praefixe_alt.json';
+}
+
+function wp_mqtt_alte_praefixe()
+{
+    $f = wp_mqtt_alt_datei();
+    $l = is_file($f) ? json_decode((string) @file_get_contents($f), true) : array();
+    if (!is_array($l)) { return array(); }
+    $aus = array();
+    foreach ($l as $x) {
+        if (is_string($x) && preg_match('#^[A-Za-z0-9_\-]+(/[A-Za-z0-9_\-]+)*\z#', $x)) { $aus[] = $x; }
+    }
+    return array_values(array_unique($aus));
+}
+
+function wp_mqtt_alte_praefixe_setzen($liste)
+{
+    $p = wp_paths();
+    if (!is_dir($p['bestand'])) { @mkdir($p['bestand'], 0755, true); }
+    return wp_json_schreiben(wp_mqtt_alt_datei(), array_values(array_unique(array_map('strval', $liste))));
+}
+
+/**
+ * Die zurueckbehaltenen Themen EINES Praefixes leeren, mit Nachlesen beim
+ * Broker (Weg wie bis 0.9.26 in wp_mqtt_leeren(): UDP-Eingang des Gateways,
+ * "retain <thema> " mit leerer Nutzlast, hoechstens $runden Runden).
+ * Rueckgabe: array(lage, anzahl, offen, datagramme, port); lage ist
+ *   ok                der Broker bestaetigt: nichts steht mehr
+ *   offen             der Broker meldet noch Themen (in 'offen')
+ *   unbekannt         gesendet, aber der Broker liess sich nicht befragen
+ *   kein_port         kein UDP-Eingangsport in general.json
+ *   nicht_erreichbar  der UDP-Eingang liess sich nicht oeffnen
+ *   keine_wurzel      keine LoxBerry-Wurzel
+ */
+function wp_mqtt_praefix_raeumen($praefix, $runden = 3, $pause = 1.0)
+{
+    $aus = array('lage' => 'keine_wurzel', 'anzahl' => 0, 'offen' => array(), 'datagramme' => 0, 'port' => 0);
+    if (wp_paths()['home'] === '') { return $aus; }
+    $z = wp_mqtt_zustand();
+    $aus['port'] = (int) $z['udpport'];
+    if (!$z['udpport']) { $aus['lage'] = 'kein_port'; return $aus; }
     $offen = array();
     foreach (array_keys(wp_retain_tabelle()) as $n) {
         if (wp_mqtt_je_retained($n)) { $offen[] = $praefix . '/' . $n; }
     }
-    $anzahl = count($offen);
+    $aus['anzahl'] = count($offen);
+    // Eine gesperrte Funktion gibt es ab PHP 8 nicht - dann ist der Eingang
+    // nicht erreichbar, statt dass die Oberflaeche mit einem Fehler stehenbleibt.
+    if (!function_exists('stream_socket_client')) { $aus['lage'] = 'nicht_erreichbar'; return $aus; }
     $strom = @stream_socket_client('udp://127.0.0.1:' . (int) $z['udpport'], $errno, $errstr, 2);
-    if (!$strom) {
-        echo "<WARNING> MQTT: der UDP-Eingang des Gateways war nicht erreichbar - "
-           . "zurueckbehaltene Themen unter " . $praefix . "/ wurden nicht geleert.\n";
-        return 1;
-    }
+    if (!$strom) { $aus['lage'] = 'nicht_erreichbar'; return $aus; }
     $nachgelesen = false;
-    $datagramme = 0;
     for ($r = 1; $r <= max(1, (int) $runden) && $offen; $r++) {
         if ($r > 1) { usleep((int) ($pause * 1000000)); }
         foreach ($offen as $t) {
             @fwrite($strom, 'retain ' . $t . ' ');
-            $datagramme++;
+            $aus['datagramme']++;
             usleep(5000);
         }
         usleep(300000);     // dem Gateway Zeit bis zum Broker lassen
@@ -4281,23 +4648,24 @@ function wp_mqtt_leeren($runden = 3, $pause = 1.0)
         }
     }
     fclose($strom);
-    echo "<INFO> MQTT: " . $anzahl . " zurueckbehaltene Themen unter " . $praefix . "/ mit leerer "
-       . "Nutzlast an den UDP-Eingang " . (int) $z['udpport'] . " des Gateways gesendet ("
-       . $datagramme . " Datagramme).\n";
-    if ($nachgelesen && !$offen) {
-        echo "<OK> MQTT: der Broker bestaetigt: keines der " . $anzahl . " Themen steht mehr zurueckbehalten.\n";
-        return 0;
+    $aus['offen'] = $offen;
+    $aus['lage'] = $nachgelesen ? ($offen ? 'offen' : 'ok') : 'unbekannt';
+    return $aus;
+}
+
+/** Die Meldung der Oberflaeche zu wp_mqtt_praefix_raeumen() (HTML). */
+function wp_mqtt_raeum_meldung($e, $praefix)
+{
+    $p = '<span class="sm-mono">' . wp_e($praefix) . '/</span>';
+    switch ($e['lage']) {
+        case 'ok':               return sprintf(wp_t('MQTT.RAEUMEN_OK'), $p, (int) $e['anzahl']);
+        case 'offen':            return sprintf(wp_t('MQTT.RAEUMEN_OFFEN'), $p, count($e['offen']),
+                                                wp_e(implode(', ', array_slice($e['offen'], 0, 5))));
+        case 'unbekannt':        return sprintf(wp_t('MQTT.RAEUMEN_UNBEKANNT'), $p, (int) $e['anzahl']);
+        case 'kein_port':        return sprintf(wp_t('MQTT.RAEUMEN_KEIN_PORT'), $p);
+        case 'nicht_erreichbar': return sprintf(wp_t('MQTT.RAEUMEN_NICHT_ERREICHBAR'), $p);
     }
-    if ($nachgelesen) {
-        echo "<WARNING> MQTT: " . count($offen) . " Themen stehen noch zurueckbehalten im Broker ("
-           . implode(', ', array_slice($offen, 0, 5)) . (count($offen) > 5 ? ', ...' : '')
-           . "). Von Hand: mosquitto_pub -r -n -t <thema>\n";
-        return 1;
-    }
-    echo "<INFO> MQTT: der Broker liess sich nicht befragen - nicht nachgelesen. Der UDP-Eingang "
-       . "verwirft unter Last Datagramme; was stehen bleibt, laesst sich mit "
-       . "mosquitto_pub -r -n -t <thema> von Hand loeschen.\n";
-    return 0;
+    return sprintf(wp_t('MQTT.RAEUMEN_KEIN_PORT'), $p);
 }
 
 /* ==================================================================
@@ -4565,11 +4933,20 @@ function wp_vorlage_aus()
  */
 function wp_ausgabewerte($stand, $cfg)
 {
-    $alter = $stand['zeit'] > 0 ? time() - (int) $stand['zeit'] : 86400;
+    /* ALTER: vor dem ersten Erfolg -1 statt einer erfundenen 86400 (Regeln/03
+     * "Zeitstempel 0 heisst noch nie", Bauliste C5; ueber MQTT ging bis 0.9.26
+     * ALTER 86400 hinaus, gemessen waermepumpe_agenten/code Befund 5).
+     * OK: 0, sobald der letzte Erfolg aelter als das Dreifache des wirksamen
+     * Takts ist (Entscheidung Nr. 4, Bauliste C4; bis 0.9.26 blieb OK=1 bei
+     * totem Abrufdienst unbegrenzt stehen). ALTER bleibt daneben unveraendert. */
+    $zeit = (int) $stand['zeit'];
+    $alter = $zeit > 0 ? min(86400, max(0, time() - $zeit)) : -1;
+    $ok = (int) $stand['ok'] ? 1 : 0;
+    if ($ok && $zeit > 0 && (time() - $zeit) > 3 * max(1, (int) $cfg['takt'])) { $ok = 0; }
     $aus = array(
-        'OK'     => (int) $stand['ok'] ? 1 : 0,
-        'STUFE'  => (int) ($stand['stufe_gesetzt'] ?: $cfg['sg_stufe']),
-        'ALTER'  => min(86400, max(0, $alter)),
+        'OK'     => $ok,
+        'STUFE'  => wp_stufe_gilt($stand, $cfg),
+        'ALTER'  => $alter,
         'BUDGET' => wp_budget_rest($cfg['hersteller']),
         /* Fehlgeschlagene Abrufe IN FOLGE.
          *
@@ -4689,8 +5066,21 @@ function wp_abrufen($erzwingen = false)
         $stand['wege'] = $u['wege'];
 
         if ($u['werte']) {
+            $wp_vorher = isset($stand['werte']) && is_array($stand['werte']) ? $stand['werte'] : array();
             $stand['werte'] = $u['werte'];
             $stand['zeit'] = time();
+
+            /* Ein retained Zustand, den ein ERFOLGREICHER Abruf nicht mehr
+             * liefert, wird "-" (Entscheidung Nr. 5 und 8, Bauliste C7). Bis
+             * 0.9.26 blieb der Altwert im Broker stehen, zusammen mit OK=1
+             * (gemessen, waermepumpe_agenten/code Befund 6, mqtt Befund 4). Der
+             * Strich bleibt im Stand, bis das Feld wiederkommt - die Statuszeile
+             * zeigt dann FELD=-. Nur Felder, die vorher geliefert wurden. */
+            $wp_ret = wp_retain_tabelle();
+            foreach (wp_felder() as $wp_fn => $wp_unused) {
+                if (empty($wp_ret[$wp_fn]) || isset($stand['werte'][$wp_fn])) { continue; }
+                if (isset($wp_vorher[$wp_fn])) { $stand['werte'][$wp_fn] = '-'; }
+            }
 
             /* Spreizung und Verdichtertakt fortschreiben. Steht bewusst HIER
              * und nicht weiter unten: der Takt lebt von den Flanken, und die
@@ -4895,6 +5285,44 @@ function wp_ww_moeglich($hersteller)
     return in_array($hersteller, array('vaillant', 'onecta', 'melcloud', 'emsesp'), true);
 }
 
+/**
+ * Warmwasser-Zwangsladung als Befehl aus Loxone (Bauliste C3, X-7,
+ * Entscheidungen Nr. 19 und 28).
+ *
+ * Derselbe Wert wie der zuletzt GESENDETE innerhalb von 60 s: nichts senden,
+ * nichts schreiben, UNVERAENDERT. Bis 0.9.26 gingen drei gleiche Aufrufe in
+ * einer Sekunde als drei Befehle hinaus - bei EMS-ESP startete jeder eine
+ * Einmalladung neu (gemessen, waermepumpe_agenten/code Befund 3). Nach einem
+ * Fehlschlag gilt die Wiederholregel aus wp_wiederholung_pruefen().
+ * Rueckgabe: array(ok, grund, beschreibung, unveraendert).
+ */
+function wp_ww_befehl($cfg, $ein)
+{
+    $ein = $ein ? 1 : 0;
+    $stand = wp_stand();
+    if (isset($stand['ww_wert'], $stand['ww_zeit']) && (int) $stand['ww_wert'] === $ein
+        && (int) $stand['ww_zeit'] > 0 && (time() - (int) $stand['ww_zeit']) < WP_GLEICHWERT_SEKUNDEN) {
+        return array(1, 'UNVERAENDERT', '', true);
+    }
+    if (isset($stand['ww_fehl_wert'], $stand['ww_fehl_zeit']) && (int) $stand['ww_fehl_wert'] === $ein) {
+        $sperre = wp_wiederholung_pruefen($cfg, (int) $stand['ww_fehl_zeit'], $stand);
+        if ($sperre !== '') { return array(0, $sperre, '', false); }
+        wp_stand_write($stand);
+    }
+    list($ok, $grund, $was) = wp_ww_boost($cfg, $ein === 1);
+    if ($ok) {
+        $stand['ww_wert'] = $ein;
+        $stand['ww_zeit'] = time();
+        unset($stand['ww_fehl_wert'], $stand['ww_fehl_zeit']);
+    } else {
+        $stand['ww_fehl_wert'] = $ein;
+        $stand['ww_fehl_zeit'] = time();
+        unset($stand['ww_wert'], $stand['ww_zeit']);
+    }
+    wp_stand_write($stand);
+    return array($ok, $grund, $was, false);
+}
+
 /* ==================================================================
  * Wirksamkeitsnachweis
  *
@@ -4981,8 +5409,12 @@ function wp_sg_verlauf_nachmessen($stand)
  * waere bei Daikin nach drei Stunden das Tagesbudget und bei MELCloud ein
  * Grund, ausgesperrt zu werden.
  */
-function wp_sg_durchsetzen($cfg = null)
+function wp_sg_durchsetzen($cfg = null, $anforderung = false)
 {
+    /* $anforderung: true, wenn Loxone (Endpunkt) oder ein Knopf im Reiter Test
+     * gerade eben diesen Zustand angefordert hat. Dann gilt die Anforderung -
+     * die Rueckfaelle (Sperre, Anhebung, abgelaufene Schnellabweichung) prueft
+     * der naechste Cron-Lauf. Aus dem Cron kommt false. */
     if ($cfg === null) { $cfg = wp_config(); }
     if (empty($cfg['sg_ein'])) { return array(1, 'SG_AUS', ''); }
 
@@ -5003,26 +5435,82 @@ function wp_sg_durchsetzen($cfg = null)
 
     $stand = wp_stand();
 
+    /* myVAILLANT stellt die Schnellabweichung nach veto_stunden selbst zurueck
+     * (Entscheidung Nr. 31, Bauliste C6). Dann gilt Stufe 2 - gesendet wird
+     * nichts, die Cloud hat es schon getan. Aus dem Cron faellt auch der Wunsch
+     * auf 2: die Anhebung wird nicht von selbst erneuert, Loxone fordert sie
+     * bei Bedarf neu an. */
+    if ($cfg['hersteller'] === 'vaillant' && wp_va_veto_abgelaufen($cfg, $stand)) {
+        $war = (int) $stand['stufe_gesetzt'];
+        $stand['stufe_gesetzt'] = 2;
+        $stand['stufe_zeit'] = time();
+        $stand['stufe_quittiert'] = 'Schnellabweichung abgelaufen';
+        wp_stand_write($stand);
+        wp_log('myVAILLANT: die Schnellabweichung fuer Stufe ' . $war . ' ist nach '
+             . (float) $cfg['veto_stunden'] . ' h in der Cloud abgelaufen - es gilt wieder Stufe 2 (Normalbetrieb).');
+        if (!$anforderung) {
+            $cfg['sg_stufe'] = 2;
+            wp_config_write($cfg);
+        }
+        wp_mqtt_senden(array('STUFE' => 2));
+    }
+
     $wunsch = (int) $cfg['sg_stufe'];
-    if (wp_sg_sperre_abgelaufen($cfg, $stand)) {
+    if (!$anforderung && wp_sg_sperre_abgelaufen($cfg, $stand)) {
+        // Einmal-Schluessel: gelingt der Rueckfall nicht, steht die Zeile
+        // hoechstens einmal je Stunde im Protokoll (waermepumpe_agenten/code Befund 1).
         wp_log('Sperre laeuft seit mehr als ' . (int) $cfg['sperre_max']
-             . ' Minuten - Rueckfall auf Normalbetrieb.');
+             . ' Minuten - Rueckfall auf Normalbetrieb.', 'sg_rueckfall_sperre');
         $wunsch = 2;
         $cfg['sg_stufe'] = 2;
         wp_config_write($cfg);
     }
-    if ((int) $stand['stufe_gesetzt'] === $wunsch) { return array(1, 'UNVERAENDERT', ''); }
+    if (!$anforderung && wp_sg_anhebung_abgelaufen($cfg, $stand)) {
+        wp_log('Anhebung (Stufe ' . (int) $stand['stufe_gesetzt'] . ') laeuft seit mehr als '
+             . (int) $cfg['anhebung_max'] . ' Minuten - Rueckfall auf Normalbetrieb.', 'sg_rueckfall_anhebung');
+        $wunsch = 2;
+        $cfg['sg_stufe'] = 2;
+        wp_config_write($cfg);
+    }
+    if ((int) $stand['stufe_gesetzt'] === $wunsch) {
+        if (isset($stand['sg_fehl_stufe']) || isset($stand['sg_fehl_zeit'])) {
+            unset($stand['sg_fehl_stufe'], $stand['sg_fehl_zeit']);
+            wp_stand_write($stand);
+        }
+        return array(1, 'UNVERAENDERT', '');
+    }
+
+    /* Derselbe Zustand ist eben gescheitert: Wiederholung nur nach der Regel
+     * aus wp_wiederholung_pruefen() (Bauliste C2). Ein ANDERER Zustand geht
+     * sofort hinaus. */
+    if (isset($stand['sg_fehl_stufe']) && (int) $stand['sg_fehl_stufe'] === $wunsch) {
+        $sperre = wp_wiederholung_pruefen($cfg,
+            (int) (isset($stand['sg_fehl_zeit']) ? $stand['sg_fehl_zeit'] : 0), $stand);
+        if ($sperre !== '') {
+            if ($sperre !== 'WIEDERHOLUNG_GEBREMST') {
+                wp_log('SG Ready ' . $wunsch . ': die Reserve fuer Wiederholungen ('
+                     . (int) $cfg['budget_schreiben'] . ' in 24 h) ist aufgebraucht - es wird nicht '
+                     . 'weiter wiederholt, bis Loxone einen anderen Zustand anfordert.', 'sg_' . $sperre);
+            }
+            return array(0, $sperre, '');
+        }
+        wp_stand_write($stand);
+    }
 
     list($ok, $grund, $was) = wp_sg_anwenden($cfg, $wunsch, $stand);
     if ($ok) {
         $stand['stufe_gesetzt'] = $wunsch;
         $stand['stufe_zeit'] = time();
         $stand['stufe_quittiert'] = $was;
+        unset($stand['sg_fehl_stufe'], $stand['sg_fehl_zeit']);
         $stand = wp_sg_verlauf_eintragen($stand, $wunsch, $was);
         wp_stand_write($stand);
         wp_log('SG Ready ' . $wunsch . ' gesetzt (' . $was . ')');
         wp_mqtt_senden(array('STUFE' => $wunsch));
     } else {
+        $stand['sg_fehl_stufe'] = $wunsch;
+        $stand['sg_fehl_zeit'] = time();
+        wp_stand_write($stand);
         wp_log('SG Ready ' . $wunsch . ' fehlgeschlagen: ' . $grund, 'sg_' . $grund);
     }
     return array($ok, $grund, $was);
@@ -5100,12 +5588,168 @@ function wp_t($schluessel)
  * Geprueft wird die FORM, nicht der Inhalt: was inhaltlich zulaessig ist,
  * entscheidet weiterhin wp_config() an einer Stelle fuer alle Wege.
  */
-function wp_wert_taugt($w)
+function wp_wert_taugt($w, $zeilen = false)
 {
     if (is_array($w) || is_object($w) || is_bool($w) || is_null($w)) { return false; }
     $s = (string) $w;
-    if (strlen($s) > WP_ZUORDNUNG_MAX) { return false; }
-    return preg_match('/[\x00-\x08\x0A-\x1F\x7F]/', $s) !== 1;
+    if (strlen($s) > WP_ZUORDNUNG_MAX * 4) { return false; }
+    /* Die Feldzuordnung traegt "eine Zeile je Feld" (TEST.ZUORDNUNG_TEXT) -
+     * dort sind Zeilenumbrueche erlaubt (Bauliste O5, X-3; bis 0.9.26 wurde
+     * die EIGENE Sicherung mit mehrzeiliger Zuordnung abgewiesen, gemessen
+     * waermepumpe_agenten/oberflaeche Befund 6). Die Laenge in Zeichen prueft
+     * wp_zuordnung_pruefen(). */
+    $muster = $zeilen ? '/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/' : '/[\x00-\x08\x0A-\x1F\x7F]/';
+    if (!$zeilen && strlen($s) > WP_ZUORDNUNG_MAX) { return false; }
+    return preg_match($muster, $s) !== 1;
+}
+
+/**
+ * Die Feldzuordnung pruefen - dieselbe Pruefung fuer Formular und
+ * Zurueckspielen (Bauliste O5). Rueckgabe: Liste der Beanstandungen (HTML).
+ */
+function wp_zuordnung_pruefen($text)
+{
+    $f = array();
+    $text = (string) $text;
+    if (preg_match('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/', $text)) {
+        $f[] = wp_t('TEST.FEHLER_ZUORDNUNG_ZEICHEN');
+        return $f;
+    }
+    $zeichen = preg_match_all('/./us', $text);
+    if ($zeichen === false) { $zeichen = strlen($text); }
+    if ($zeichen > WP_ZUORDNUNG_MAX) {
+        $f[] = sprintf(wp_t('TEST.FEHLER_ZUORDNUNG_LANG'), WP_ZUORDNUNG_MAX);
+        return $f;
+    }
+    $bekannt = array_keys(wp_felder());
+    foreach (wp_zuordnung_lesen($text) as $n => $v) {
+        if (!in_array($n, $bekannt, true)) {
+            $f[] = sprintf(wp_t('TEST.FEHLER_ZUORDNUNG_FELD'), wp_e($n), wp_e(implode(', ', $bekannt)));
+        }
+    }
+    return $f;
+}
+
+/** Ganzzahl in Grenzen, als Zahl oder Ziffernfolge (keine Nachkommastelle,
+ *  kein Rest - Entscheidung Nr. 19: nichts still runden). */
+function wp_ganzzahl_in($w, $min, $max)
+{
+    if (is_float($w) && floor($w) == $w) { $w = (int) $w; }
+    $s = trim((string) $w);
+    return preg_match('/^-?[0-9]+\z/', $s) === 1 && (int) $s >= $min && (int) $s <= $max;
+}
+
+/** Dezimalzahl in Grenzen, Komma oder Punkt. */
+function wp_zahl_in($w, $min, $max)
+{
+    $s = str_replace(',', '.', trim((string) $w));
+    return preg_match('/^-?[0-9]+(\.[0-9]+)?\z/', $s) === 1 && (float) $s >= $min && (float) $s <= $max;
+}
+
+/** Kleinster zulaessiger Takt fuer Hersteller und Schreibreserve - dieselbe
+ *  Rechnung wie in wp_config(), nur beanstandet statt angehoben. */
+function wp_takt_untergrenze($hersteller, $reserve)
+{
+    $info = wp_hersteller_info($hersteller);
+    if (!$info) { return 60; }
+    $u = max(60, (int) $info['mindesttakt']);
+    if (!empty($info['budget'])) { $u = max($u, wp_takt_aus_budget($info['budget'], (int) $reserve)); }
+    return $u;
+}
+
+/**
+ * Einen Wert aus einer Sicherung pruefen wie das Formular (Bauliste C10,
+ * Fehlerklasse 10/12, waermepumpe_agenten/code Befund 9, oberflaeche Befund 5).
+ *
+ * Bis 0.9.26 wurde nur die Form geprueft: hersteller "xyz" hob die
+ * Einrichtung auf, sg_stufe "9" wurde zum Anlaufbefehl, takt "abc" zu 60,
+ * ein Umlaut im Thema verschwand - jedes Mal mit "angenommen".
+ * $alle = die ganze Datei (fuer Abhaengigkeiten wie Takt/Hersteller),
+ * $jetzt = die geltende Konfiguration. Rueckgabe '' = gut, sonst der Grund.
+ */
+function wp_einstellung_pruefen($k, $w, $alle, $jetzt)
+{
+    $wert = function ($n) use ($alle, $jetzt) {
+        return array_key_exists($n, $alle) && !is_array($alle[$n]) ? $alle[$n] : $jetzt[$n];
+    };
+    $s = trim((string) $w);
+    switch ($k) {
+        case 'hersteller':
+            return ($s === '' || wp_hersteller_info($s)) ? '' : wp_t('EINST.SICH_G_HERSTELLER');
+        case 'geraet': case 'gebaeude': case 'system':
+            return ($s === '' || preg_match('/^[A-Za-z0-9_\-]{1,128}\z/', $s)) ? '' : wp_t('EINST.SICH_G_KENNUNG');
+        case 'geraetetyp':
+            return wp_ganzzahl_in($w, -1, 20) ? '' : wp_t('EINST.SICH_G_ZAHL');
+        case 'marke':
+            $m = wp_va_marken();
+            return isset($m[$s]) ? '' : wp_t('EINST.SICH_G_AUSWAHL');
+        case 'land':
+            $l = wp_va_laender((string) $wert('marke'));
+            return ($s === '' && !$l) || isset($l[$s]) ? '' : wp_t('EINST.SICH_G_AUSWAHL');
+        case 'regler':
+            return in_array($s, array('', 'tli', 'vrc700'), true) ? '' : wp_t('EINST.SICH_G_AUSWAHL');
+        case 'zone':          return wp_ganzzahl_in($w, 0, 10) ? '' : sprintf(wp_t('EINST.SICH_G_BEREICH'), 0, 10);
+        case 'dhw':           return wp_ganzzahl_in($w, 0, 255) ? '' : sprintf(wp_t('EINST.SICH_G_BEREICH'), 0, 255);
+        case 'veto_stunden':  return wp_ganzzahl_in($w, 1, 24) ? '' : sprintf(wp_t('EINST.SICH_G_BEREICH'), 1, 24);
+        case 'cop_tage':      return wp_ganzzahl_in($w, 1, 365) ? '' : sprintf(wp_t('EINST.SICH_G_BEREICH'), 1, 365);
+        case 'ems_hc':        return wp_ganzzahl_in($w, 1, 8) ? '' : sprintf(wp_t('EINST.SICH_G_BEREICH'), 1, 8);
+        case 'ems_gpio1': case 'ems_gpio4':
+            return wp_ganzzahl_in($w, 0, 48) ? '' : sprintf(wp_t('EINST.SICH_G_BEREICH'), 0, 48);
+        case 'ems_url':
+            return ($s === '' || preg_match('#^https?://#i', $s)) ? '' : wp_t('EINST.SICH_G_ADRESSE');
+        case 'ems_sg_art':
+            return in_array($s, array('nachbildung', 'klemmen'), true) ? '' : wp_t('EINST.SICH_G_AUSWAHL');
+        case 'ems_thermostat': case 'cop_ein': case 'sg_ein': case 'sg_angefordert':
+        case 'ww_boost_4': case 'mqtt_ein':
+            return wp_ganzzahl_in($w, 0, 1) ? '' : wp_t('EINST.SICH_G_HAKEN');
+        case 'takt':
+            $u = wp_takt_untergrenze((string) $wert('hersteller'), (int) $wert('budget_schreiben'));
+            return wp_ganzzahl_in($w, $u, 3600) ? '' : sprintf(wp_t('EINST.SICH_G_BEREICH'), $u, 3600);
+        case 'budget_schreiben':
+            return wp_ganzzahl_in($w, 0, 150) ? '' : sprintf(wp_t('EINST.SICH_G_BEREICH'), 0, 150);
+        case 'sg_stufe':      return wp_ganzzahl_in($w, 1, WP_STUFEN) ? '' : sprintf(wp_t('EINST.SICH_G_BEREICH'), 1, WP_STUFEN);
+        case 'sperre_max': case 'anhebung_max':
+            return wp_ganzzahl_in($w, 5, 720) ? '' : sprintf(wp_t('EINST.SICH_G_BEREICH'), 5, 720);
+        case 'anhebung_3': case 'anhebung_4':
+            return wp_ganzzahl_in($w, 0, 15) ? '' : sprintf(wp_t('EINST.SICH_G_BEREICH'), 0, 15);
+        case 'basis_soll':
+            return wp_zahl_in($w, 0, 90) ? '' : sprintf(wp_t('EINST.SICH_G_BEREICH'), 0, 90);
+        case 'zuordnung':
+            return wp_zuordnung_pruefen((string) $w) ? wp_t('EINST.SICH_G_ZUORDNUNG') : '';
+        case 'mqtt_topic':
+            return preg_match('#^[A-Za-z0-9_\-]+(/[A-Za-z0-9_\-]+)*\z#', $s) ? '' : wp_t('EINST.SICH_G_THEMA');
+    }
+    return '';
+}
+
+/** Den geprueften Wert in der Form ablegen, die das Formular speichert. */
+function wp_einstellung_wert($k, $w)
+{
+    $ganz = array('geraetetyp', 'zone', 'dhw', 'veto_stunden', 'cop_tage', 'ems_hc', 'ems_gpio1',
+                  'ems_gpio4', 'ems_thermostat', 'cop_ein', 'sg_ein', 'sg_angefordert', 'ww_boost_4',
+                  'mqtt_ein', 'takt', 'budget_schreiben', 'sg_stufe', 'sperre_max', 'anhebung_max',
+                  'anhebung_3', 'anhebung_4');
+    if (in_array($k, $ganz, true)) { return (int) trim((string) $w); }
+    if ($k === 'basis_soll') { return (float) str_replace(',', '.', trim((string) $w)); }
+    if ($k === 'zuordnung') { return (string) $w; }
+    return trim((string) $w);
+}
+
+/** Zugangsdaten aus einer Sicherung pruefen wie das Formular (Bauliste C10). */
+function wp_geheim_pruefen($k, $w)
+{
+    $s = trim((string) $w);
+    if ($s === '') { return ''; }
+    switch ($k) {
+        case 'benutzer':      return filter_var($s, FILTER_VALIDATE_EMAIL) ? '' : wp_t('EINST.SICH_G_EMAIL');
+        case 'client_id':
+            return preg_match('/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\z/', $s)
+                ? '' : wp_t('EINST.SICH_G_KENNUNG');
+        case 'client_secret': return strlen($s) >= 16 ? '' : wp_t('EINST.SICH_G_KURZ');
+        case 'redirect_uri':  return preg_match('#^https?://#i', $s) ? '' : wp_t('EINST.SICH_G_ADRESSE');
+        case 'ems_token':     return (substr_count($s, '.') === 2 && strlen($s) >= 40) ? '' : wp_t('EINST.SICH_G_JWT');
+    }
+    return '';
 }
 
 /** Die Schluessel der Zugangsdaten, wie sie in der Sicherungsdatei stehen:
@@ -5161,10 +5805,12 @@ function wp_anmeldungen_verwerfen()
     if (function_exists('wp_va_browser_datei') && is_file(wp_va_browser_datei())) { @unlink(wp_va_browser_datei()); }
 }
 
-function wp_sicherung_lesen($roh, &$geheim_neu = null)
+function wp_sicherung_lesen($roh, &$geheim_neu = null, &$schluessel_fehl = null)
 {
     $mangel = array();
+    $hinweise = array();
     $geheim_neu = array();
+    $schluessel_fehl = array();
     $daten = json_decode((string) $roh, true);
     if (!is_array($daten)) {
         return array(null, array(wp_t('EINST.SICH_KEIN_JSON')), 0);
@@ -5174,55 +5820,69 @@ function wp_sicherung_lesen($roh, &$geheim_neu = null)
      *
      * Bis 0.9.16 stand hier $neu = wp_vorgaben(). Damit setzte eine Datei,
      * die nur zwei Schluessel trug, die uebrigen 31 stillschweigend auf Werk
-     * zurueck - einschliesslich des AKTIONSTOKENS. Gemessen an 0.9.16 mit
-     * {"takt":600,"mqtt_topic":"nurzwei"}:
+     * zurueck - einschliesslich des AKTIONSTOKENS. Der jetzige Stand als
+     * Grundlage loest das: ein Schluessel, den die Datei nicht nennt, behaelt
+     * seinen Wert, und nichts faellt still auf Werk zurueck. Was gefehlt hat,
+     * wird trotzdem GENANNT.
      *
-     *     vorher   hersteller=melcloud geraet=MEINGERAET basis_soll=38
-     *              aktionstoken=cMpvmRvC...
-     *     Meldung  "2 Werte uebernommen", keine Beanstandung
-     *     nachher  hersteller='' geraet='' basis_soll=0 aktionstoken=''
-     *
-     * Das leere Token wurde beim naechsten Seitenaufbau neu gewuerfelt, und
-     * danach holte kein virtueller Eingang im Miniserver mehr einen Wert -
-     * ohne Meldung. Der Kommentar ueber dieser Funktion sicherte dabei seit
-     * jeher zu, eine halb gueltige Datei ueberschreibe GAR NICHTS. Sie tat es.
-     *
-     * Der jetzige Stand als Grundlage loest beides: ein Schluessel, den die
-     * Datei nicht nennt, behaelt seinen Wert, und nichts faellt still auf
-     * Werk zurueck. So haelt es auch Intercom. Was gefehlt hat, wird
-     * trotzdem GENANNT - sonst waere die Uebernahme wieder stumm. */
+     * SEIT DEM DURCHGANGSBAU 02.10.2026 (Bauliste C10) wird jeder Wert geprueft
+     * wie im Formular (wp_einstellung_pruefen(), wp_geheim_pruefen()). Eine
+     * einzige Beanstandung, und es wird NICHTS geaendert. Ein leeres oder zu
+     * kurzes Aktionstoken ist keine Beanstandung: das geltende bleibt, und das
+     * wird gesagt - bis 0.9.26 wurde es still neu gewuerfelt und jede Adresse
+     * im Miniserver stand auf 403 (gemessen, waermepumpe_agenten/code Befund 9). */
     $neu = wp_config();
+    $jetzt = $neu;
     $bekannt = array_keys(wp_vorgaben());
     $anzahl = 0;
     $fehlend = array();
     foreach ($daten as $k => $w) {
-        /* Der lesbare Kopf wird UEBERGANGEN, nicht beanstandet. Er ist
-         * Hausvorgabe; wer ihn ergaenzt, ohne diese Zeile zu haben, baut ein
-         * Plugin, das seine eigene Sicherung ablehnt. */
+        /* Der lesbare Kopf wird UEBERGANGEN, nicht beanstandet. */
         if ((string) $k !== '' && $k[0] === '_') { continue; }
-        /* Zugangsdaten (NEU 0.9.20): mit Vorsilbe, dieselbe Formpruefung. */
+        /* Zugangsdaten: mit Vorsilbe, dieselbe Form- und Wertpruefung. */
         if (strpos((string) $k, 'geheim_') === 0
             && in_array(substr((string) $k, 7), wp_geheim_schluessel(), true)) {
-            if (!wp_wert_taugt($w)) {
-                $mangel[] = sprintf(wp_t('EINST.SICH_WERT'),
-                                     htmlspecialchars((string) $k, ENT_QUOTES, 'UTF-8'));
+            $gk = substr((string) $k, 7);
+            $grund = wp_wert_taugt($w) ? wp_geheim_pruefen($gk, $w) : wp_t('EINST.SICH_G_FORM');
+            if ($grund !== '') {
+                $mangel[] = sprintf(wp_t('EINST.SICH_WERT_GRUND'),
+                                    htmlspecialchars((string) $k, ENT_QUOTES, 'UTF-8'), $grund);
+                $schluessel_fehl[] = (string) $k;
                 continue;
             }
-            $geheim_neu[substr((string) $k, 7)] = (string) $w;
+            $geheim_neu[$gk] = trim((string) $w) === '' ? '' : (string) $w;
             $anzahl++;
             continue;
         }
         if (!in_array($k, $bekannt, true)) {
             $mangel[] = sprintf(wp_t('EINST.SICH_FREMD'),
                                  htmlspecialchars((string) $k, ENT_QUOTES, 'UTF-8'));
+            $schluessel_fehl[] = (string) $k;
             continue;
         }
-        if (!wp_wert_taugt($w)) {
+        if (!wp_wert_taugt($w, $k === 'zuordnung')) {
             $mangel[] = sprintf(wp_t('EINST.SICH_WERT'),
                                  htmlspecialchars((string) $k, ENT_QUOTES, 'UTF-8'));
+            $schluessel_fehl[] = (string) $k;
             continue;
         }
-        $neu[$k] = $w;
+        if ($k === 'aktionstoken') {
+            if (!preg_match('/^[A-Za-z0-9]{24,}\z/', (string) $w)) {
+                $hinweise[] = wp_t('EINST.SICH_TOKEN_BLEIBT');
+                continue;
+            }
+            $neu[$k] = (string) $w;
+            $anzahl++;
+            continue;
+        }
+        $grund = wp_einstellung_pruefen($k, $w, $daten, $jetzt);
+        if ($grund !== '') {
+            $mangel[] = sprintf(wp_t('EINST.SICH_WERT_GRUND'),
+                                htmlspecialchars((string) $k, ENT_QUOTES, 'UTF-8'), $grund);
+            $schluessel_fehl[] = (string) $k;
+            continue;
+        }
+        $neu[$k] = wp_einstellung_wert($k, $w);
         $anzahl++;
     }
     foreach ($bekannt as $k) {
@@ -5231,25 +5891,37 @@ function wp_sicherung_lesen($roh, &$geheim_neu = null)
     if ($anzahl === 0) {
         $mangel[] = wp_t('EINST.SICH_LEER');
     }
-    if (!$geheim_neu && !$mangel) {
+    if ($mangel) {
+        return array(null, array_merge($mangel, $hinweise), $anzahl);
+    }
+    if (!$geheim_neu) {
         /* Eine Sicherung aus 0.9.19 oder frueher traegt keine Zugangsdaten.
          * Sie bleibt zurueckspielbar - die jetzigen Zugangsdaten bleiben dann
          * stehen, und das wird gesagt. */
-        $mangel[] = wp_t('EINST.SICH_OHNE_ZUGANG');
+        $hinweise[] = wp_t('EINST.SICH_OHNE_ZUGANG');
     }
-    if ($fehlend && !array_filter($mangel, function ($m) {
-            return $m !== wp_t('EINST.SICH_OHNE_ZUGANG'); })) {
+    if ($fehlend) {
         /* Kein Grund zur Ablehnung - die Datei kann aus einer aelteren
          * Fassung stammen, und der jetzige Wert bleibt ja stehen. Aber gesagt
-         * wird es: ein Anwender, der 33 Einstellungen erwartet und 30 bekommt,
-         * soll das lesen und nicht suchen. */
-        $mangel[] = sprintf(wp_t('EINST.SICH_UNVOLLSTAENDIG'),
-                            count($fehlend),
-                            htmlspecialchars(implode(', ', $fehlend), ENT_QUOTES, 'UTF-8'));
-        return array($neu, $mangel, $anzahl);
+         * wird es. */
+        $hinweise[] = sprintf(wp_t('EINST.SICH_UNVOLLSTAENDIG'),
+                              count($fehlend),
+                              htmlspecialchars(implode(', ', $fehlend), ENT_QUOTES, 'UTF-8'));
     }
-    $echt = array_filter($mangel, function ($m) { return $m !== wp_t('EINST.SICH_OHNE_ZUGANG'); });
-    return array($echt ? null : $neu, $mangel, $anzahl);
+    return array($neu, $hinweise, $anzahl);
+}
+
+/**
+ * Welche Werte der EIGENEN Sicherung liessen sich nicht zurueckspielen?
+ * (X-3, Bauliste O5) Rueckgabe: Liste der Schluesselnamen - nie Werte.
+ */
+function wp_nicht_zurueckspielbar()
+{
+    $g = array();
+    $fehl = array();
+    wp_sicherung_lesen(json_encode(wp_sicherung_bauen(),
+        JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES), $g, $fehl);
+    return array_values(array_unique($fehl));
 }
 
 
@@ -5314,7 +5986,8 @@ function wp_merkwort()
     if (is_file($tmp)) { @unlink($tmp); }
     @touch($tmp);
     @chmod($tmp, 0600);
-    if (@file_put_contents($tmp, $neu) !== false) {
+    // Erfolg heisst: alle Zeichen stehen in der Datei (Bauliste C12).
+    if (@file_put_contents($tmp, $neu) === strlen($neu)) {
         if (@rename($tmp, $datei)) {
             @chmod($datei, 0600);
         } else {

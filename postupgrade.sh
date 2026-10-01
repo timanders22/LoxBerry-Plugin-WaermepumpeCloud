@@ -50,6 +50,14 @@ if [ -z "$BASE" ]; then
     echo "<WARNING> Es wurde nichts zurueckgespielt und nichts entfernt."
     exit 1
 fi
+
+# ---------- Die Upgrade-Marke faellt hier (Bauliste I1) ----------
+# preupgrade.sh hat sie angelegt, preinstall.sh hat daran die Aktualisierung
+# erkannt. Entfernt ueber trap auf EXIT - dann faellt sie auch, wenn dieses
+# Skript vorzeitig aussteigt (Bauform Govee 0.9.24).
+WP_MARKE="$BASE/data/plugins/$PFOLDER.upgrade_laeuft"
+wp_marke_weg() { rm -f "$WP_MARKE"; }
+trap wp_marke_weg EXIT
 # Pluginordner anhaengen - siehe preupgrade.sh.
 CFGDIR="${LBPCONFIG:-$BASE/config/plugins}/$PFOLDER"
 # Der Sicherungsort wird aus DEMSELBEN Argument gerechnet wie in
@@ -148,6 +156,50 @@ done
 # zuruecksetzt, faellt sonst niemandem auf.
 chmod 0600 "$CFGDIR/waermepumpe.json" 2>/dev/null
 chmod 0600 "$CFGDIR/geheim.json" 2>/dev/null
+
+# ---------- Zweitschriften neu schreiben (Bauliste I4) ----------
+# Gemessen bis 0.9.26 (waermepumpe_agenten/installer Befund 4, Fall U6): fehlten
+# vor dem Update die Zweitschriften und lief ein Takt in der Luecke, trug die
+# Zweitschrift danach ein FREMDES Aktionstoken ohne Hersteller, waehrend
+# waermepumpe.json richtig zurueckkam. Wurde die Konfiguration spaeter
+# unlesbar, heilte die Bibliothek daraus - jede Adresse in Loxone auf 403.
+# Jetzt folgt jede Zweitschrift ihrer Datei, sobald diese ein lesbares
+# JSON-Objekt ist (die Konfiguration zusaetzlich mit gueltigem Aktionstoken -
+# dieselbe Bedingung wie in wp_config_write()). Ueber eine Nebendatei mit
+# umask 077, dann umbenannt und mit cmp nachgelesen.
+wp_zweitschrift_neu() {   # $1 Datei, $2 Zweitschrift, $3 config|geheim -> 0 neu, 1 nichts zu tun, 2 Fehler
+    [ -f "$1" ] && [ -s "$1" ] || return 1
+    php -r '$d = json_decode((string) @file_get_contents($argv[1]), true);
+        if (!is_array($d)) { exit(1); }
+        if ($argv[2] === "config") {
+            exit(isset($d["aktionstoken"]) && is_string($d["aktionstoken"])
+                 && preg_match("/^[A-Za-z0-9]{24,}$/", $d["aktionstoken"]) ? 0 : 1);
+        }
+        exit(0);' "$1" "$3" >/dev/null 2>&1 || return 1
+    wp_neben="$2.neu.$$"
+    if ! ( umask 077 && cp "$1" "$wp_neben" ) 2>/dev/null; then rm -f "$wp_neben"; return 2; fi
+    chmod 0600 "$wp_neben" 2>/dev/null
+    if ! mv -f "$wp_neben" "$2" 2>/dev/null; then rm -f "$wp_neben"; return 2; fi
+    cmp -s "$1" "$2" || return 2
+    return 0
+}
+if command -v php >/dev/null 2>&1; then
+    WP_ZN=0
+    for WP_PAAR in "waermepumpe.json:$PFOLDER.backup.waermepumpe.json:config" \
+                   "geheim.json:$PFOLDER.backup.geheim.json:geheim"; do
+        WP_Q="$CFGDIR/${WP_PAAR%%:*}"
+        WP_R="${WP_PAAR#*:}"
+        WP_Z="$(dirname "$CFGDIR")/${WP_R%%:*}"
+        wp_zweitschrift_neu "$WP_Q" "$WP_Z" "${WP_R#*:}"
+        case $? in
+            0) WP_ZN=$((WP_ZN + 1)) ;;
+            2) echo "<WARNING> Die Zweitschrift $(basename "$WP_Z") liess sich nicht neu schreiben." ;;
+        esac
+    done
+    if [ "$WP_ZN" -gt 0 ]; then
+        echo "<OK> $WP_ZN Zweitschrift(en) aus den Dateien des Konfigordners neu geschrieben und nachgelesen."
+    fi
+fi
 
 # Rechte BEIDER Zweitschriften neben dem Ordner nachziehen (NEU 0.9.20).
 #

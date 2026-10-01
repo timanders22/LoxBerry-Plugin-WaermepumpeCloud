@@ -102,6 +102,33 @@ if [ "$(dirname "$CFGDIR")" != "$BASE/config/plugins" ] \
 fi
 
 # ---------------------------------------------------------------
+# 0a. Auf einen laufenden Abruf warten (Bauliste I2)
+# ---------------------------------------------------------------
+# Gemessen bis 0.9.26 (waermepumpe_agenten/installer Befund 2, Fall D2):
+# beendete ein Abruf, der schon vor der Deinstallation lief, seine Erneuerung
+# erst nach diesem Skript, blieb <ordner>.backup.geheim.json mit dem NEUEN
+# Erneuerungsmerkmal neben dem Ordner liegen, und die naechste
+# Neuinstallation heilte es zurueck. Den Cron hat der Installer zu diesem
+# Zeitpunkt schon entfernt - es kann nur noch der eine laufende Abruf sein.
+# Seine Sperre wird genommen (hoechstens 60 s gewartet) und bis zum Ende
+# dieses Skripts gehalten; Kindprozesse bekommen sie nicht (9>&-).
+WP_LOCK=""
+for WP_D in "/run/shm/$PFOLDER" "${TMPDIR:-/tmp}/$PFOLDER"; do
+    if [ -d "$WP_D" ]; then WP_LOCK="$WP_D/abruf.lock"; break; fi
+done
+if [ -n "$WP_LOCK" ] && command -v flock >/dev/null 2>&1 \
+   && { [ -w "$WP_LOCK" ] || [ -w "$(dirname "$WP_LOCK")" ]; }; then
+    if exec 9>>"$WP_LOCK"; then
+        if flock -w 60 9; then
+            echo "<INFO> Kein Abruf laeuft mehr (Sperre $WP_LOCK gehalten)."
+        else
+            echo "<WARNING> Ein Abruf hielt die Sperre laenger als 60 s. Es wird trotzdem entfernt;"
+            echo "<WARNING> bitte danach nachsehen, ob neben $CFGDIR noch eine Zweitschrift liegt."
+        fi
+    fi
+fi
+
+# ---------------------------------------------------------------
 # 0b. Zurueckbehaltene MQTT-Themen der Linie leeren
 # ---------------------------------------------------------------
 # Seit 0.9.20 gehen Zustaende retained hinaus. Bis 0.9.22 blieben sie nach
@@ -117,10 +144,10 @@ WP_ABRUF="$BASE/bin/plugins/$PFOLDER/wp_abruf.php"
 if command -v php >/dev/null 2>&1 && [ -f "$WP_ABRUF" ]; then
     if [ "$(id -u)" = "0" ] && id loxberry >/dev/null 2>&1; then
         su -s /bin/bash loxberry -c "$(printf '%q ' env "LBHOMEDIR=$BASE" "LBPPLUGINDIR=$PFOLDER" \
-            timeout 60 php "$WP_ABRUF" --mqtt-leeren)" < /dev/null 2>&1 || true
+            timeout 60 php "$WP_ABRUF" --mqtt-leeren)" < /dev/null 9>&- 2>&1 || true
     else
         env "LBHOMEDIR=$BASE" "LBPPLUGINDIR=$PFOLDER" timeout 60 php "$WP_ABRUF" --mqtt-leeren \
-            < /dev/null 2>&1 || true
+            < /dev/null 9>&- 2>&1 || true
     fi
 else
     echo "<INFO> PHP oder wp_abruf.php fehlt - zurueckbehaltene MQTT-Themen wurden nicht geleert."
@@ -181,7 +208,10 @@ ZWEITSCHRIFT="$(dirname "$CFGDIR")/$PFOLDER.backup.waermepumpe.json"
 # NEU 0.9.20: die Zugangsdaten haben ebenfalls eine Zweitschrift neben dem
 # Ordner - und die enthaelt Kennwort und Erneuerungsmerkmal.
 ZWEITSCHRIFT_G="$(dirname "$CFGDIR")/$PFOLDER.backup.geheim.json"
-for ZW in "$ZWEITSCHRIFT" "$ZWEITSCHRIFT_G"; do
+# Dazu die .alt, die preinstall.sh bei einer Neuinstallation beiseitelegt
+# (Bauliste I1, Entscheidung 1) - sie tragen dieselben Zugangsdaten.
+for ZW in "$ZWEITSCHRIFT" "$ZWEITSCHRIFT_G" "$ZWEITSCHRIFT.alt" "$ZWEITSCHRIFT_G.alt" \
+          "$RUECKFALL.alt/geheim.json" "$RUECKFALL.alt/waermepumpe.json"; do
     if [ -f "$ZW" ]; then
         LAENGE=$(stat -c %s "$ZW" 2>/dev/null || echo 0)
         [ "$LAENGE" -gt 0 ] && dd if=/dev/zero of="$ZW" bs=1 count="$LAENGE" \
@@ -214,6 +244,11 @@ rm -rf "$DATADIR" 2>/dev/null
 # <wurzel>/data/plugins/<ordner> geprueft.
 BESTAND="$DATADIR.bestand"
 rm -rf "$BESTAND" 2>/dev/null
+# Die .alt aus einer Neuinstallation (Bauliste I1) und die Upgrade-Marke eines
+# abgebrochenen Updates - bliebe sie liegen, hielte preinstall.sh die naechste
+# Neuinstallation fuer eine Aktualisierung (Entscheidung 8: vergessene Marke).
+rm -rf "${BESTAND:?}.alt" "${RUECKFALL:?}.alt" 2>/dev/null
+rm -f "$DATADIR.upgrade_laeuft" 2>/dev/null
 
 # ---------------------------------------------------------------
 # 3. Arbeitsdateien auf der Ramdisk
@@ -240,10 +275,11 @@ rm -rf "/run/shm/$PFOLDER" "${TMPDIR:-/tmp}/$PFOLDER" "/tmp/$PFOLDER" 2>/dev/nul
 # Datei - der Betreiber hat danach keinen Anlass mehr nachzusehen.
 UEBRIG=""
 for f in "$CFGDIR/geheim.json" "$CFGDIR/geheim.json.vorher" "$ZWEITSCHRIFT" \
-         "$ZWEITSCHRIFT_G" "$CFGDIR/.upgrade_pfad"; do
+         "$ZWEITSCHRIFT_G" "$CFGDIR/.upgrade_pfad" "$ZWEITSCHRIFT.alt" "$ZWEITSCHRIFT_G.alt" \
+         "$DATADIR.upgrade_laeuft"; do
     [ -e "$f" ] && UEBRIG="$UEBRIG $f"
 done
-for d in "$DATADIR" "$BESTAND" "$RUECKFALL" "$CFGDIR/.upgrade"; do
+for d in "$DATADIR" "$BESTAND" "$RUECKFALL" "$CFGDIR/.upgrade" "$BESTAND.alt" "$RUECKFALL.alt"; do
     [ -e "$d" ] && UEBRIG="$UEBRIG $d"
 done
 
@@ -254,5 +290,5 @@ if [ -n "$UEBRIG" ]; then
 fi
 echo "<OK> Zugangsdaten, Anmeldemarken, Zwischenstaende und Arbeitsdateien entfernt."
 echo "<INFO> Nachgezaehlt: unter $CFGDIR und $DATADIR liegt nichts mehr,"
-echo "<INFO> und auch die beiden Zweitschriften daneben sind weg."
+echo "<INFO> und auch die beiden Zweitschriften daneben, ihre .alt und die Upgrade-Marke sind weg."
 exit 0

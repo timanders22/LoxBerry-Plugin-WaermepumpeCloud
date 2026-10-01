@@ -112,6 +112,9 @@ try {
     wp_abo_nachziehen($cfg);
     wp_sg_durchsetzen($cfg);
     list($ok, $grund) = wp_abrufen($modus === 'jetzt');
+    /* Das Lebenszeichen geht bei JEDEM Cron-Lauf hinaus, auch wenn kein Abruf
+     * faellig war (Regeln/07, Abschnitt 3; Bauliste M2). Fluechtig. */
+    wp_mqtt_lebenszeichen();
 } finally {
     flock($fh, LOCK_UN);
     fclose($fh);

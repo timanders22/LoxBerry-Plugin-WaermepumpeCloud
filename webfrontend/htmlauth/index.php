@@ -73,6 +73,13 @@ $wp_post = (isset($_SERVER['REQUEST_METHOD']) ? $_SERVER['REQUEST_METHOD'] : '')
 $wp_meldungen = array();
 $wp_fehler = array();
 $wp_testausgabe_flash = '';
+/* X-2 (Regeln/04, Bauliste O2): nach einer Beanstandung reisen die Eingaben des
+ * einen Formulars in der Einmalmeldung mit und stehen wieder im Formular, die
+ * beanstandeten Felder markiert. Geheimnisse (Passwort, Client Secret,
+ * EMS-Token, Codes) reisen nie mit. Ueber $GLOBALS, weil die Helfer unten sie
+ * auch lesen, wenn diese Datei in einer Funktion eingebunden wird. */
+$GLOBALS['wp_eingaben'] = array();
+$GLOBALS['wp_falsch'] = array();
 if (!$wp_post) {
     /* Das Ergebnis des vorigen POST (siehe wp_einmalmeldung_lesen). */
     $wp_flash = wp_einmalmeldung_lesen();
@@ -82,6 +89,16 @@ if (!$wp_post) {
         }
     }
     if (!empty($wp_flash['testausgabe'])) { $wp_testausgabe_flash = (string) $wp_flash['testausgabe']; }
+    if (!empty($wp_flash['eingaben']) && is_array($wp_flash['eingaben'])) {
+        foreach ($wp_flash['eingaben'] as $wp_fk => $wp_fz) {
+            if (is_string($wp_fk) && is_string($wp_fz)) { $GLOBALS['wp_eingaben'][$wp_fk] = $wp_fz; }
+        }
+    }
+    if (!empty($wp_flash['falsch']) && is_array($wp_flash['falsch'])) {
+        foreach ($wp_flash['falsch'] as $wp_fz) {
+            if (is_string($wp_fz)) { $GLOBALS['wp_falsch'][] = $wp_fz; }
+        }
+    }
 }
 
 /* ---------------------------------------------------------------- *
@@ -110,6 +127,47 @@ function wp_g($feld, $vorgabe = '')
 {
     if (!isset($_POST[$feld])) { return $vorgabe; }
     return trim(preg_replace('/[\x00-\x1F\x7F]/', '', (string) $_POST[$feld]));
+}
+
+/** Der Wert eines Feldes: nach einer Beanstandung die Eingabe, sonst $wert. */
+function wp_ein($feld, $wert)
+{
+    return array_key_exists($feld, $GLOBALS['wp_eingaben']) ? (string) $GLOBALS['wp_eingaben'][$feld] : $wert;
+}
+
+/** Ein Haken: nach einer Beanstandung wie eingegeben, sonst $an. */
+function wp_an($feld, $an)
+{
+    return array_key_exists($feld, $GLOBALS['wp_eingaben']) ? $GLOBALS['wp_eingaben'][$feld] === '1' : (bool) $an;
+}
+
+/** Markierung eines beanstandeten Feldes (Attribut, oder ''). */
+function wp_mark($feld)
+{
+    return in_array($feld, $GLOBALS['wp_falsch'], true)
+        ? ' style="outline:2px solid #b00000;background:#fdecec;" aria-invalid="true"' : '';
+}
+
+/**
+ * Bei einer Beanstandung: nichts speichern, ehrliche Ueberschrift, Eingaben
+ * merken (Bauliste O1/O2). $felder sind Textfelder, $haken Ankreuzfelder,
+ * $falsch die beanstandeten. Geheimnisse stehen in keiner der Listen.
+ * Ein Wert, der kein gueltiges UTF-8 ist, reist nicht mit - er wuerde die
+ * Einmalmeldung samt Beanstandung unschreibbar machen.
+ */
+function wp_nichts_gespeichert(&$fehler, $ab, $felder, $haken, $falsch)
+{
+    array_splice($fehler, $ab, 0, array(wp_t('EINST.NICHTS_GESPEICHERT')));
+    $e = array();
+    foreach ($felder as $f) {
+        if (!isset($_POST[$f]) || is_array($_POST[$f])) { continue; }
+        $v = (string) $_POST[$f];
+        if (preg_match('//u', $v) !== 1 || strlen($v) > WP_ZUORDNUNG_MAX * 4) { continue; }
+        $e[$f] = $v;
+    }
+    foreach ($haken as $f) { $e[$f] = !empty($_POST[$f]) ? '1' : '0'; }
+    $GLOBALS['wp_eingaben'] = $e;
+    $GLOBALS['wp_falsch'] = array_values(array_unique($falsch));
 }
 
 $wp_cfg = wp_config();
@@ -145,32 +203,40 @@ if ($wp_post && isset($_POST['download'])) {
 }
 
 /* ================= Zugangsdaten speichern ================= */
+/* NICHTS SPEICHERN BEI EINER BEANSTANDUNG - in allen vier Formularen dieses
+ * Reiters und im Reiter SG Ready (Entscheidung Nr. 16, Bauliste O1).
+ *
+ * Bis 0.9.26 stand hier "Melden, nicht blockieren": jede Pruefung uebernahm ihr
+ * Feld nur im gueltigen Fall, gespeichert wurde der Rest. Gemessen
+ * (waermepumpe_agenten/oberflaeche Befund 1): zone=99 plus drei gueltige
+ * Aenderungen - die drei landeten in der Datei, darueber stand "Einstellungen
+ * gespeichert." UND die Beanstandung; MQTT-Haken aus mit falschem Thema - der
+ * Haken war aus; E-Mail ohne @ mit neuem Passwort - das Passwort war
+ * gespeichert. Jetzt bleibt bei JEDER Beanstandung alles, wie es war; die
+ * Ueberschrift sagt "Es wurde nichts gespeichert", die Eingaben kommen
+ * markiert zurueck (X-2), Geheimnisse nie (wp_nichts_gespeichert()). */
 if ($wp_post && isset($_POST['speichern_zugang'])) {
+    $wp_f0 = count($wp_fehler);
+    $wp_ff = array();
     $neu = $wp_geh;
     $h = wp_g('hersteller');
     if (!wp_hersteller_info($h)) {
         $wp_fehler[] = wp_t('EINST.FEHLER_HERSTELLER');
+        $wp_ff[] = 'hersteller';
     } else {
         $wp_cfg['hersteller'] = $h;
     }
 
     if ($h === 'vaillant') {
-        // Marke und Land bestimmen den Anmeldebereich. Ein falsches Land
-        // liefert keine verstaendliche Meldung, sondern eine Anmeldeseite, auf
-        // der das Konto nicht existiert - deshalb wird gegen die Liste
-        // geprueft und nicht gegen ein Muster.
-        /* NUR auswerten, wenn das Feld auch abgeschickt wurde. Marke und
-         * Land stehen im Formular ausschliesslich dann, wenn Vaillant BEREITS
-         * gespeichert ist. Wer von einem anderen Hersteller herueberwechselt,
-         * schickt sie deshalb nicht mit - und bekam bis 0.9.16 die Meldung
-         * "Diese Marke gibt es bei myVAILLANT nicht", ohne je nach der Marke
-         * gefragt worden zu sein. Fehlt das Feld, bleibt der bisherige Wert. */
+        // Marke und Land bestimmen den Anmeldebereich - geprueft gegen die
+        // Liste, nicht gegen ein Muster. Ausgewertet nur, wenn das Feld auch
+        // abgeschickt wurde (es steht nur bei gespeichertem Vaillant im
+        // Formular); fehlt es, bleibt der bisherige Wert.
         $mk = isset($_POST['marke']) ? wp_g('marke') : (string) $wp_cfg['marke'];
-        // isset() nimmt nur Variablen, nicht das Ergebnis eines Aufrufs -
-        // isset(wp_va_marken()[$mk]) waere ein Fehler beim Uebersetzen.
         $wp_marken = wp_va_marken();
         if (!isset($wp_marken[$mk])) {
             $wp_fehler[] = wp_t('EINST.FEHLER_MARKE');
+            $wp_ff[] = 'marke';
         } else {
             $wp_cfg['marke'] = $mk;
             $ld = isset($_POST['land']) ? wp_g('land') : (string) $wp_cfg['land'];
@@ -179,6 +245,7 @@ if ($wp_post && isset($_POST['speichern_zugang'])) {
                 $wp_cfg['land'] = '';     // diese Marke kennt kein Land
             } elseif (!isset($erlaubt[$ld])) {
                 $wp_fehler[] = wp_t('EINST.FEHLER_LAND');
+                $wp_ff[] = 'land';
             } else {
                 $wp_cfg['land'] = $ld;
             }
@@ -186,30 +253,23 @@ if ($wp_post && isset($_POST['speichern_zugang'])) {
     }
 
     if ($h === 'emsesp') {
-        /* Die Adresse des Gateways. Geprueft wird die Form, nicht der Inhalt -
-         * ob dort wirklich ein Gateway steht, sagt der Reiter Test. Wer
-         * "ems-esp.local" ohne http:// eintraegt, bekommt es gesagt: sonst
-         * schlaegt jeder Abruf fehl und niemand sieht, warum. */
-        /* Auch hier: das Feld gibt es im Formular nur, wenn EMS-ESP schon
-         * gespeichert ist. Bis 0.9.16 wurde es beim Wechsel von einem anderen
-         * Hersteller trotzdem gelesen - kam als '' an und loeschte die
-         * Gatewayadresse stumm. Gemessen: emsesp -> onecta -> emsesp, danach
-         * war ems_url leer, ohne eine einzige Meldung. */
+        // Die Adresse des Gateways: Form pruefen, nicht den Inhalt. Das Feld
+        // gibt es nur bei gespeichertem EMS-ESP - sonst bleibt der Wert.
         if (isset($_POST['ems_url'])) {
             $u = trim(wp_g('ems_url'));
             if ($u !== '' && !preg_match('#^https?://#i', $u)) {
                 $wp_fehler[] = sprintf(wp_t('EINST.FEHLER_EMS_URL'), wp_e($u));
+                $wp_ff[] = 'ems_url';
             } else {
                 $wp_cfg['ems_url'] = rtrim($u, '/');
             }
         }
         $tk = wp_g('ems_token');
         if ($tk !== '') {
-            /* Ein JWT hat drei durch Punkte getrennte Teile. Wer aus der
-             * Weboberflaeche des Gateways versehentlich den Benutzernamen
-             * kopiert, merkt es sonst erst beim ersten Schaltversuch. */
+            // Ein JWT hat drei durch Punkte getrennte Teile.
             if (substr_count($tk, '.') !== 2 || strlen($tk) < 40) {
                 $wp_fehler[] = wp_t('EINST.FEHLER_EMS_TOKEN');
+                $wp_ff[] = 'ems_token';
             } else {
                 $neu['ems_token'] = $tk;
             }
@@ -221,28 +281,27 @@ if ($wp_post && isset($_POST['speichern_zugang'])) {
         if ($b !== '') {
             if (!filter_var($b, FILTER_VALIDATE_EMAIL)) {
                 $wp_fehler[] = wp_t('EINST.FEHLER_EMAIL');
+                $wp_ff[] = 'benutzer';
             } else {
                 $neu['benutzer'] = $b;
             }
         }
         // Leere Felder loeschen nichts: kommt das Passwortfeld leer zurueck,
-        // bleibt das gespeicherte stehen. Sonst stuende irgendwann ein leeres
-        // Passwort in der Anmeldung, und die Ursache waere von aussen nicht
-        // zu sehen.
+        // bleibt das gespeicherte stehen. Geloescht wird ueber den Haken.
         $pw = wp_g('passwort');
         if ($pw !== '') { $neu['passwort'] = $pw; }
         if (!empty($_POST['passwort_loeschen'])) { $neu['passwort'] = ''; }
         if ($neu['passwort'] !== '' && $neu['benutzer'] === '') {
             $wp_fehler[] = wp_t('EINST.FEHLER_PW_OHNE_BENUTZER');
+            $wp_ff[] = 'benutzer';
         }
     } elseif ($h !== 'emsesp') {
         $ci = wp_g('client_id');
         if ($ci !== '') {
-            // Beide Anbieter geben eine GUID aus. Ist die Form erkennbar
-            // falsch, wird hier abgewiesen - statt den Nutzer in eine
-            // Fehlermeldung des Anbieters laufen zu lassen.
+            // Beide Anbieter geben eine GUID aus.
             if (!preg_match('/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/', $ci)) {
                 $wp_fehler[] = wp_t('EINST.FEHLER_CLIENTID');
+                $wp_ff[] = 'client_id';
             } else {
                 $neu['client_id'] = $ci;
             }
@@ -251,6 +310,7 @@ if ($wp_post && isset($_POST['speichern_zugang'])) {
         if ($cs !== '') {
             if (strlen($cs) < 16) {
                 $wp_fehler[] = wp_t('EINST.FEHLER_SECRET');
+                $wp_ff[] = 'client_secret';
             } else {
                 $neu['client_secret'] = $cs;
             }
@@ -262,6 +322,7 @@ if ($wp_post && isset($_POST['speichern_zugang'])) {
             if ($ru !== '') {
                 if (!preg_match('#^https?://#i', $ru)) {
                     $wp_fehler[] = wp_t('EINST.FEHLER_REDIRECT');
+                    $wp_ff[] = 'redirect_uri';
                 } else {
                     $neu['redirect_uri'] = $ru;
                 }
@@ -269,22 +330,23 @@ if ($wp_post && isset($_POST['speichern_zugang'])) {
         }
     }
 
-    /* Melden, nicht blockieren. Jede Pruefung oben uebernimmt ihr Feld nur im
-     * gueltigen Fall - ein beanstandetes Geheimnis bleibt also auf dem
-     * bisherigen Wert, waehrend die uebrigen Eingaben des Formulars erhalten
-     * bleiben. Wer drei Felder ausfuellt und sich in einem vertippt, soll nicht
-     * alle drei neu eintippen muessen. */
-    $wp_alt_geh = wp_geheim();
-    $okA = wp_geheim_write($neu);
-    $okB = wp_config_write($wp_cfg);
-    foreach (array('client_id', 'client_secret', 'benutzer', 'passwort') as $wp_k) {
-        if ((string) $wp_alt_geh[$wp_k] !== (string) $neu[$wp_k]) { wp_anmeldungen_verwerfen(); break; }
-    }
-    if ($okA && $okB) {
-        $wp_meldungen[] = wp_t('EINST.GESPEICHERT');
-        wp_log('Zugangsdaten gespeichert (Hersteller ' . $wp_cfg['hersteller'] . ')');
+    if (count($wp_fehler) > $wp_f0) {
+        wp_nichts_gespeichert($wp_fehler, $wp_f0,
+            array('hersteller', 'marke', 'land', 'benutzer', 'ems_url', 'client_id', 'redirect_uri'),
+            array(), $wp_ff);
     } else {
-        $wp_fehler[] = sprintf(wp_t('EINST.FEHLER_SPEICHERN'), wp_e($wp_p['configdir']));
+        $wp_alt_geh = wp_geheim();
+        $okA = wp_geheim_write($neu);
+        $okB = wp_config_write($wp_cfg);
+        foreach (array('client_id', 'client_secret', 'benutzer', 'passwort') as $wp_k) {
+            if ((string) $wp_alt_geh[$wp_k] !== (string) $neu[$wp_k]) { wp_anmeldungen_verwerfen(); break; }
+        }
+        if ($okA && $okB) {
+            $wp_meldungen[] = wp_t('EINST.GESPEICHERT');
+            wp_log('Zugangsdaten gespeichert (Hersteller ' . $wp_cfg['hersteller'] . ')');
+        } else {
+            $wp_fehler[] = sprintf(wp_t('EINST.FEHLER_SPEICHERN'), wp_e($wp_p['configdir']));
+        }
     }
     $wp_cfg = wp_config();
     $wp_geh = wp_geheim();
@@ -304,6 +366,10 @@ if ($wp_post && isset($_POST['onecta_code'])) {
         if ($ok) {
             $wp_meldungen[] = wp_t('EINST.CODE_OK');
             wp_log('Onecta: Anmeldung abgeschlossen');
+        } elseif ($grund === 'ERNEUERUNG_NICHT_GESPEICHERT') {
+            // Bauliste C8: eingeloest, aber nicht gespeichert - das ist KEIN
+            // Erfolg, und der Grund ist nicht "Code abgelaufen".
+            $wp_fehler[] = sprintf(wp_t('EINST.ERNEUERUNG_NICHT_GESPEICHERT'), wp_e($wp_p['configdir']));
         } else {
             $wp_fehler[] = sprintf(wp_t('EINST.CODE_FEHL'), wp_e($grund));
         }
@@ -314,8 +380,12 @@ if ($wp_post && isset($_POST['onecta_code'])) {
 
 /* ================= myVAILLANT: Anmeldung im Browser (NEU 0.9.22) ================= */
 if ($wp_post && isset($_POST['va_browser_start'])) {
-    wp_va_browser_starten();
-    $wp_meldungen[] = wp_t('EINST.VA_BROWSER_ADRESSE_NEU');
+    // Bauliste C8: "Adresse neu" nur, wenn das Pruefwort abgelegt ist.
+    if (wp_va_browser_starten() === '') {
+        $wp_fehler[] = sprintf(wp_t('EINST.VA_BROWSER_START_FEHL'), wp_e(wp_paths()['tmpdir']));
+    } else {
+        $wp_meldungen[] = wp_t('EINST.VA_BROWSER_ADRESSE_NEU');
+    }
     $wp_tab = 'tab-settings';
 }
 if ($wp_post && isset($_POST['va_browser_code'])) {
@@ -327,6 +397,9 @@ if ($wp_post && isset($_POST['va_browser_code'])) {
         if ($ok) {
             wp_log('myVAILLANT: Anmeldung im Browser abgeschlossen');
             $wp_meldungen[] = wp_t('EINST.VA_BROWSER_OK');
+        } elseif ($grund === 'ERNEUERUNG_NICHT_GESPEICHERT') {
+            wp_log('myVAILLANT: Code eingeloest, Erneuerungsmerkmal NICHT gespeichert');
+            $wp_fehler[] = sprintf(wp_t('EINST.ERNEUERUNG_NICHT_GESPEICHERT'), wp_e($wp_p['configdir']));
         } else {
             wp_log('myVAILLANT: Code aus dem Browser nicht eingeloest (' . $grund . ')');
             $wp_fehler[] = sprintf(wp_t('EINST.VA_BROWSER_FEHL'), wp_e($grund));
@@ -337,28 +410,23 @@ if ($wp_post && isset($_POST['va_browser_code'])) {
 
 /* ================= Geraet und Takt speichern ================= */
 if ($wp_post && isset($_POST['speichern_geraet'])) {
+    $wp_f0 = count($wp_fehler);
+    $wp_ff = array();
     $wp_stand_vor = wp_stand();
-    /* Kennungen werden GEPRUEFT, nicht gefiltert.
-     *
-     * Bis 0.9.10 lief ueber diese drei ein preg_replace, das alles Unerlaubte
-     * still entfernte. Bei einer undurchsichtigen Geraetekennung weiss niemand,
-     * welche Zeichen bedeutungstragend sind: aus "{7a3f-11ee}" wurde
-     * "7a3f-11ee", die Cloud antwortete mit 404, und die Ursache stand
-     * nirgends. Das ist die stille Falschaussage aus der Heimkino-Sitzung. */
+    /* Kennungen werden GEPRUEFT, nicht gefiltert (seit 0.9.10). */
     foreach (array('geraet', 'gebaeude', 'system') as $wp_kf) {
         $wp_kw = trim(wp_g($wp_kf, (string) $wp_cfg[$wp_kf]));
         if ($wp_kw !== '' && !preg_match('/^[A-Za-z0-9_\-]{1,128}$/', $wp_kw)) {
             $wp_fehler[] = sprintf(wp_t('EINST.FEHLER_KENNUNG'),
                 wp_e(wp_t('EINST.L_' . strtoupper($wp_kf))), wp_e($wp_kw));
+            $wp_ff[] = $wp_kf;
             continue;
         }
         $wp_cfg[$wp_kf] = $wp_kw;
     }
 
     // Den MELCloud-Geraetetyp aus der Suche uebernehmen, statt ihn erfragen
-    // zu lassen. Er entscheidet, ob ueberhaupt geschrieben werden darf -
-    // aber niemand kann wissen, ob seine Anlage in der Zaehlweise von
-    // Mitsubishi eine 0 oder eine 1 ist.
+    // zu lassen.
     if ($wp_cfg['hersteller'] === 'melcloud' && $wp_cfg['geraet'] !== '') {
         $wp_gefunden = false;
         foreach ($wp_stand_vor['geraete'] as $wp_d) {
@@ -376,8 +444,7 @@ if ($wp_post && isset($_POST['speichern_geraet'])) {
 
     if ($wp_cfg['hersteller'] === 'vaillant') {
         /* Zone, Warmwasserkreis, Laufzeit der Schnellabweichung und das
-         * Fenster der Arbeitszahl. Was ausserhalb liegt, wird abgewiesen -
-         * eine still gekappte Zahl waere spaeter nicht wiederzufinden. */
+         * Fenster der Arbeitszahl. Was ausserhalb liegt, wird abgewiesen. */
         foreach (array(
             'zone'         => array(0, 10),
             'dhw'          => array(0, 255),
@@ -387,104 +454,120 @@ if ($wp_post && isset($_POST['speichern_geraet'])) {
             $wp_w = trim(wp_g($wp_f, (string) $wp_cfg[$wp_f]));
             if (!preg_match('/^[0-9]+$/', $wp_w)) {
                 $wp_fehler[] = sprintf(wp_t('EINST.FEHLER_ZAHL'), wp_t('EINST.L_' . strtoupper($wp_f)));
+                $wp_ff[] = $wp_f;
                 continue;
             }
             if ((int) $wp_w < $wp_gr[0] || (int) $wp_w > $wp_gr[1]) {
                 $wp_fehler[] = sprintf(wp_t('EINST.FEHLER_BEREICH'),
                     wp_t('EINST.L_' . strtoupper($wp_f)), $wp_gr[0], $wp_gr[1]);
+                $wp_ff[] = $wp_f;
                 continue;
             }
             $wp_cfg[$wp_f] = (int) $wp_w;
         }
         $wp_cfg['cop_ein'] = isset($_POST['cop_ein']) ? 1 : 0;
 
-        /* Wechselt das System, ist die gemerkte Reglerart nicht mehr
-         * zwingend die richtige - sie wird beim naechsten Abruf neu
-         * ermittelt, statt weiter auf das alte System zu zeigen.
-         * Die gespeicherte Fassung liegt noch auf der Platte; geschrieben
-         * wird erst am Ende dieses Zweiges. */
+        /* Wechselt das System, wird die Reglerart beim naechsten Abruf neu
+         * ermittelt. */
         $wp_alt = wp_config();
         if ((string) $wp_alt['system'] !== (string) $wp_cfg['system']) {
             $wp_cfg['regler'] = '';
         }
     }
 
-    $takt = (int) wp_g('takt', '300');
+    /* Takt und Schreibreserve: GEPRUEFT, nicht gekappt und nicht angehoben
+     * (Entscheidung Nr. 19, Bauliste O3). Bis 0.9.26 wurde der Takt mit (int)
+     * gelesen - "1200.7" wurde 1200, "600abc" 600, 99999 stand so in der Datei,
+     * und bei Onecta hob wp_config() einen zu kleinen Takt still auf den
+     * Budgettakt an (gemessen, waermepumpe_agenten/oberflaeche Befund 3). Die
+     * Untergrenze ist dieselbe Rechnung wie in wp_config(), jetzt beanstandet. */
     $info = wp_hersteller_info($wp_cfg['hersteller']);
-    if ($info && $takt < (int) $info['mindesttakt']) {
-        $wp_fehler[] = sprintf(wp_t('EINST.FEHLER_TAKT'), $takt, (int) $info['mindesttakt'],
-                               wp_e($info['name']));
-    } else {
-        $wp_cfg['takt'] = $takt;
-    }
-
-    $res = (int) wp_g('budget_schreiben', '40');
     if ($info && !empty($info['budget'])) {
-        if ($res < 0 || $res > (int) $info['budget'] - 10) {
-            $wp_fehler[] = sprintf(wp_t('EINST.FEHLER_RESERVE'), (int) $info['budget'] - 10);
+        $wp_res = trim(wp_g('budget_schreiben', (string) $wp_cfg['budget_schreiben']));
+        // Hoechstens 150: mehr kappt wp_config() ohnehin.
+        $wp_res_max = min(150, (int) $info['budget'] - 10);
+        if (!preg_match('/^[0-9]+$/', $wp_res) || (int) $wp_res > $wp_res_max) {
+            $wp_fehler[] = sprintf(wp_t('EINST.FEHLER_RESERVE'), $wp_res_max);
+            $wp_ff[] = 'budget_schreiben';
         } else {
-            $wp_cfg['budget_schreiben'] = $res;
+            $wp_cfg['budget_schreiben'] = (int) $wp_res;
         }
+    }
+    $takt = trim(wp_g('takt', (string) $wp_cfg['takt']));
+    $wp_unten = wp_takt_untergrenze($wp_cfg['hersteller'], (int) $wp_cfg['budget_schreiben']);
+    if (!preg_match('/^[0-9]+$/', $takt)) {
+        $wp_fehler[] = sprintf(wp_t('EINST.FEHLER_ZAHL'), wp_t('EINST.L_TAKT'));
+        $wp_ff[] = 'takt';
+    } elseif ((int) $takt < $wp_unten) {
+        $wp_fehler[] = sprintf(wp_t('EINST.FEHLER_TAKT'), (int) $takt, $wp_unten,
+                               wp_e($info ? $info['name'] : ''));
+        $wp_ff[] = 'takt';
+    } elseif ((int) $takt > 3600) {
+        $wp_fehler[] = sprintf(wp_t('EINST.FEHLER_BEREICH'), wp_e(wp_t('EINST.L_TAKT')), $wp_unten, 3600);
+        $wp_ff[] = 'takt';
+    } else {
+        $wp_cfg['takt'] = (int) $takt;
     }
 
     if ($wp_cfg['hersteller'] === 'emsesp') {
-        $hc = (int) wp_g('ems_hc', '1');
-        if ($hc < 1 || $hc > 8) {
+        $hc = trim(wp_g('ems_hc', (string) $wp_cfg['ems_hc']));
+        if (!preg_match('/^[0-9]+$/', $hc) || (int) $hc < 1 || (int) $hc > 8) {
             $wp_fehler[] = sprintf(wp_t('EINST.FEHLER_BEREICH'), wp_e(wp_t('EINST.L_EMS_HC')), 1, 8);
+            $wp_ff[] = 'ems_hc';
         } else {
-            $wp_cfg['ems_hc'] = $hc;
+            $wp_cfg['ems_hc'] = (int) $hc;
         }
         $wp_cfg['ems_thermostat'] = !empty($_POST['ems_thermostat']) ? 1 : 0;
 
-        $wp_sg_art_alt = (string) $wp_cfg['ems_sg_art'];
-        $art = wp_g('ems_sg_art', 'nachbildung');
-        $wp_cfg['ems_sg_art'] = $art === 'klemmen' ? 'klemmen' : 'nachbildung';
+        $art = wp_g('ems_sg_art', (string) $wp_cfg['ems_sg_art']);
+        if (!in_array($art, array('nachbildung', 'klemmen'), true)) {
+            $wp_fehler[] = sprintf(wp_t('EINST.FEHLER_AUSWAHL'), wp_e(wp_t('EINST.L_EMS_SG_ART')));
+            $wp_ff[] = 'ems_sg_art';
+        } else {
+            $wp_cfg['ems_sg_art'] = $art;
+        }
         foreach (array('ems_gpio1', 'ems_gpio4') as $wp_gf) {
-            $v = (int) wp_g($wp_gf, '0');
-            if ($v < 0 || $v > 48) {
+            $v = trim(wp_g($wp_gf, (string) $wp_cfg[$wp_gf]));
+            if (!preg_match('/^[0-9]+$/', $v) || (int) $v > 48) {
                 $wp_fehler[] = sprintf(wp_t('EINST.FEHLER_BEREICH'),
                     wp_e(wp_t('EINST.L_' . strtoupper($wp_gf))), 0, 48);
+                $wp_ff[] = $wp_gf;
             } else {
-                $wp_cfg[$wp_gf] = $v;
+                $wp_cfg[$wp_gf] = (int) $v;
             }
         }
-        /* Der Weg ueber die Klemmen ohne Pins waere ein eingeschalteter
-         * Schalter, der nichts tut. Lieber jetzt beanstanden als spaeter
-         * suchen lassen, warum die Sperre nicht ankommt. */
-        /* Diese beiden Beanstandungen betreffen eine KOMBINATION, nicht ein
-         * einzelnes Feld. Alles andere wird unten trotz Beanstandung
-         * gespeichert - dieser Zustand aber darf nicht in die Konfiguration:
-         * "Klemmen" ohne Pins waere ein eingeschalteter Schalter, der nichts
-         * tut. Deshalb faellt der Weg auf den vorherigen Wert zurueck. */
+        /* "Klemmen" ohne zwei verschiedene Pins waere ein eingeschalteter
+         * Schalter, der nichts tut - beanstandet, und es wird nichts
+         * gespeichert (bis 0.9.26 fiel nur dieser Weg auf den alten Wert
+         * zurueck, der Rest wurde gespeichert). */
         if ($wp_cfg['ems_sg_art'] === 'klemmen'
             && ((int) $wp_cfg['ems_gpio1'] <= 0 || (int) $wp_cfg['ems_gpio4'] <= 0)) {
             $wp_fehler[] = wp_t('EINST.FEHLER_EMS_GPIO');
-            $wp_cfg['ems_sg_art'] = $wp_sg_art_alt;
+            $wp_ff[] = 'ems_gpio1';
+            $wp_ff[] = 'ems_gpio4';
         }
         if ($wp_cfg['ems_sg_art'] === 'klemmen'
             && (int) $wp_cfg['ems_gpio1'] === (int) $wp_cfg['ems_gpio4']
             && (int) $wp_cfg['ems_gpio1'] > 0) {
             $wp_fehler[] = wp_t('EINST.FEHLER_EMS_GPIO_GLEICH');
-            $wp_cfg['ems_sg_art'] = $wp_sg_art_alt;
+            $wp_ff[] = 'ems_gpio1';
+            $wp_ff[] = 'ems_gpio4';
         }
     }
 
-    /* mqtt_ein und mqtt_topic werden hier NICHT mehr angefasst: sie
-     * wohnen im Reiter MQTT und haben dort ein eigenes Formular. */
+    /* mqtt_ein und mqtt_topic werden hier NICHT angefasst: sie wohnen im
+     * Reiter MQTT und haben dort ein eigenes Formular. */
 
-    /* MELDEN ist richtig, BLOCKIEREN nicht.
-     *
-     * Bis 0.9.10 stand hier if (!$wp_fehler). Gemessen am 16.08.2026: ein
-     * Heizkreis von 99 verhinderte, dass der im selben Formular gueltig
-     * geaenderte Takt von 900 gespeichert wurde - der Benutzer korrigiert dann
-     * einen Fehler nach dem anderen und verliert bei jedem Anlauf seine
-     * uebrigen Eingaben. Das steht als eigener Fehler in REGELN_1, Abschnitt 11.
-     *
-     * Jede Pruefung oben setzt ihr Feld nur im gueltigen Fall; ein beanstandetes
-     * Feld behaelt also seinen bisherigen Wert. Gespeichert wird deshalb immer,
-     * und die Beanstandungen stehen gesammelt darueber. */
-    if (wp_config_write($wp_cfg)) { $wp_meldungen[] = wp_t('EINST.GESPEICHERT'); }
-    else { $wp_fehler[] = sprintf(wp_t('EINST.FEHLER_SPEICHERN'), wp_e($wp_p['configdir'])); }
+    if (count($wp_fehler) > $wp_f0) {
+        wp_nichts_gespeichert($wp_fehler, $wp_f0,
+            array('geraet', 'gebaeude', 'system', 'zone', 'dhw', 'veto_stunden', 'cop_tage', 'takt',
+                  'budget_schreiben', 'ems_hc', 'ems_sg_art', 'ems_gpio1', 'ems_gpio4'),
+            array('cop_ein', 'ems_thermostat'), $wp_ff);
+    } elseif (wp_config_write($wp_cfg)) {
+        $wp_meldungen[] = wp_t('EINST.GESPEICHERT');
+    } else {
+        $wp_fehler[] = sprintf(wp_t('EINST.FEHLER_SPEICHERN'), wp_e($wp_p['configdir']));
+    }
     $wp_cfg = wp_config();
     $wp_tab = 'tab-settings';
 }
@@ -495,15 +578,11 @@ if ($wp_post && isset($_POST['speichern_geraet'])) {
  * Formulare denselben Handler aus, setzte dieser die Haken des jeweils
  * nicht abgeschickten Formulars per isset() auf 0. */
 if ($wp_post && isset($_POST['save_mqtt'])) {
-    $wp_mcfg = wp_config();
+    $wp_f0 = count($wp_fehler);
+    $wp_malt = wp_config();
+    $wp_mcfg = $wp_malt;
     $wp_mcfg['mqtt_ein'] = !empty($_POST['mqtt_ein']) ? 1 : 0;
-    /* PRUEFEN, nicht zurechtbiegen.
-     *
-     * Bis 0.9.10 lief hier ein preg_replace, das alles Unerlaubte still
-     * entfernte. Gemessen am 16.08.2026: aus "wärmepumpe/haus" wurde
-     * "wrmepumpe/haus", und der Benutzer las "Einstellungen gespeichert."
-     * Wer sein Abo im Gateway nach der eigenen Notiz eintraegt, bekommt dann
-     * nie eine Nachricht und sucht den Fehler ueberall, nur nicht hier. */
+    /* PRUEFEN, nicht zurechtbiegen (seit 0.9.10). */
     $wp_mt = trim((string) (isset($_POST['mqtt_topic']) && !is_array($_POST['mqtt_topic'])
         ? $_POST['mqtt_topic'] : ''));
     if ($wp_mt === '') {
@@ -513,14 +592,41 @@ if ($wp_post && isset($_POST['save_mqtt'])) {
     } else {
         $wp_mcfg['mqtt_topic'] = $wp_mt;
     }
-    /* Das Gueltige speichern, das Beanstandete melden - nicht alles verwerfen.
-     * $wp_mcfg traegt bei einer Beanstandung noch den bisherigen Themenpfad,
-     * der Haken ist aber schon uebernommen. */
-    if (wp_config_write($wp_mcfg)) {
+    /* Bei einer Beanstandung wird auch der Haken NICHT uebernommen (Bauliste
+     * O1; bis 0.9.26 "Das Gueltige speichern" - MQTT war danach aus). */
+    if (count($wp_fehler) > $wp_f0) {
+        wp_nichts_gespeichert($wp_fehler, $wp_f0, array('mqtt_topic'), array('mqtt_ein'), array('mqtt_topic'));
+    } elseif (wp_config_write($wp_mcfg)) {
         $wp_meldungen[] = wp_t('EINST.GESPEICHERT');
         // Das Abo wandert mit dem Praefix; der Rueckgabewert wird angesehen.
         if (!wp_abo_nachziehen(wp_config())) {
             $wp_fehler[] = wp_t('MQTT.ABO_SCHREIBFEHLER');
+        }
+        /* Abraeumen beim Praefixwechsel und bei "MQTT aus", mit Nachlesen beim
+         * Broker (Entscheidung Nr. 26, Bauliste M1). Das alte Praefix wird
+         * VORHER vorgemerkt (neben dem Datenordner, uebersteht das Upgrade) und
+         * erst gestrichen, wenn der Broker bestaetigt; die Deinstallation leert
+         * alle vorgemerkten mit. Bis 0.9.26 standen nach einem Wechsel 7 Themen
+         * des alten Praefixes weiter im Broker (waermepumpe_agenten/mqtt
+         * Befund 5). */
+        $wp_ap = (string) $wp_malt['mqtt_topic'];
+        $wp_np = (string) $wp_mcfg['mqtt_topic'];
+        $wp_liste = wp_mqtt_alte_praefixe();
+        $wp_liste_neu = array_values(array_diff($wp_liste, array($wp_np)));
+        if ($wp_ap !== $wp_np) {
+            $wp_liste_neu[] = $wp_ap;
+            wp_mqtt_alte_praefixe_setzen($wp_liste_neu);
+            $wp_er = wp_mqtt_praefix_raeumen($wp_ap);
+            $wp_meldungen[] = wp_mqtt_raeum_meldung($wp_er, $wp_ap);
+            if ($wp_er['lage'] === 'ok') {
+                wp_mqtt_alte_praefixe_setzen(array_diff($wp_liste_neu, array($wp_ap)));
+            }
+        } elseif ($wp_liste_neu !== $wp_liste) {
+            wp_mqtt_alte_praefixe_setzen($wp_liste_neu);
+        }
+        if (!empty($wp_malt['mqtt_ein']) && empty($wp_mcfg['mqtt_ein'])) {
+            $wp_er = wp_mqtt_praefix_raeumen($wp_np);
+            $wp_meldungen[] = wp_mqtt_raeum_meldung($wp_er, $wp_np);
         }
     } else {
         $wp_fehler[] = sprintf(wp_t('EINST.FEHLER_SPEICHERN'), wp_e(wp_paths()['configdir']));
@@ -531,69 +637,74 @@ if ($wp_post && isset($_POST['save_mqtt'])) {
 
 /* ================= SG Ready speichern ================= */
 if ($wp_post && isset($_POST['speichern_sg'])) {
+    $wp_f0 = count($wp_fehler);
+    $wp_ff = array();
     $wp_cfg['sg_ein']     = !empty($_POST['sg_ein']) ? 1 : 0;
     $wp_cfg['ww_boost_4'] = !empty($_POST['ww_boost_4']) ? 1 : 0;
 
+    /* Ganze Zahlen werden GEPRUEFT, nicht mit (int) zurechtgebogen (Bauliste
+     * O3; bis 0.9.26 wurde aus "3.9" eine 3 und aus "7.5" eine 7). */
     foreach (array('anhebung_3' => 15, 'anhebung_4' => 15) as $f => $max) {
-        $v = (int) wp_g($f, '0');
-        if ($v < 0 || $v > $max) {
+        $v = trim(wp_g($f, (string) $wp_cfg[$f]));
+        if (!preg_match('/^[0-9]+$/', $v) || (int) $v > $max) {
             $wp_fehler[] = sprintf(wp_t('EINST.FEHLER_BEREICH'), wp_e(wp_t('SG.L_' . strtoupper($f))), 0, $max);
+            $wp_ff[] = $f;
         } else {
-            $wp_cfg[$f] = $v;
+            $wp_cfg[$f] = (int) $v;
         }
     }
-    $sp = (int) wp_g('sperre_max', (string) WP_SPERRE_MAX);
-    if ($sp < 5 || $sp > 720) {
-        $wp_fehler[] = sprintf(wp_t('EINST.FEHLER_BEREICH'), wp_e(wp_t('SG.L_SPERRE')), 5, 720);
+    foreach (array('sperre_max' => 'SG.L_SPERRE', 'anhebung_max' => 'SG.L_ANHEBUNG_MAX') as $f => $wp_lab) {
+        $v = trim(wp_g($f, (string) $wp_cfg[$f]));
+        if (!preg_match('/^[0-9]+$/', $v) || (int) $v < 5 || (int) $v > 720) {
+            $wp_fehler[] = sprintf(wp_t('EINST.FEHLER_BEREICH'), wp_e(wp_t($wp_lab)), 5, 720);
+            $wp_ff[] = $f;
+        } else {
+            $wp_cfg[$f] = (int) $v;
+        }
+    }
+    /* Ein GELEERTES Feld heisst "selbst merken" (Bauliste O4): bis 0.9.26 blieb
+     * dann der alte Wert stehen, und die Hilfe ("Leer lassen: dann merkt sich das
+     * Plugin ... selbst") traf nach einmaligem Eintrag nicht mehr zu
+     * (waermepumpe_agenten/oberflaeche Befund 4). Eine Eingabe wird als Zahl
+     * geprueft, nicht mit (float) gelesen ("abc" wurde 0). */
+    $bs = trim(wp_g('basis_soll', ''));
+    if ($bs === '') {
+        $wp_cfg['basis_soll'] = 0;
+    } elseif (!wp_zahl_in($bs, 0, 90)) {
+        $wp_fehler[] = sprintf(wp_t('EINST.FEHLER_BEREICH'), wp_e(wp_t('SG.L_BASIS')), 0, 90);
+        $wp_ff[] = 'basis_soll';
     } else {
-        $wp_cfg['sperre_max'] = $sp;
-    }
-    $bs = wp_g('basis_soll', '');
-    if ($bs !== '') {
-        $bs = (float) str_replace(',', '.', $bs);
-        if ($bs < 0 || $bs > 90) {
-            $wp_fehler[] = sprintf(wp_t('EINST.FEHLER_BEREICH'), wp_e(wp_t('SG.L_BASIS')), 0, 90);
-        } else {
-            $wp_cfg['basis_soll'] = $bs;
-        }
+        $wp_cfg['basis_soll'] = (float) str_replace(',', '.', $bs);
     }
 
-    /* Melden, nicht blockieren - siehe die Begruendung im Zweig darueber.
-     * Jede Pruefung setzt ihr Feld nur im gueltigen Fall. */
-    if (wp_config_write($wp_cfg)) { $wp_meldungen[] = wp_t('SG.GESPEICHERT'); }
-    else { $wp_fehler[] = sprintf(wp_t('EINST.FEHLER_SPEICHERN'), wp_e($wp_p['configdir'])); }
+    if (count($wp_fehler) > $wp_f0) {
+        wp_nichts_gespeichert($wp_fehler, $wp_f0,
+            array('anhebung_3', 'anhebung_4', 'sperre_max', 'anhebung_max', 'basis_soll'),
+            array('sg_ein', 'ww_boost_4'), $wp_ff);
+    } elseif (wp_config_write($wp_cfg)) {
+        $wp_meldungen[] = wp_t('SG.GESPEICHERT');
+    } else {
+        $wp_fehler[] = sprintf(wp_t('EINST.FEHLER_SPEICHERN'), wp_e($wp_p['configdir']));
+    }
     $wp_cfg = wp_config();
     $wp_tab = 'tab-sgready';
 }
 
 /* ================= Feldzuordnung speichern ================= */
 if ($wp_post && isset($_POST['speichern_zuordnung'])) {
-    $text = isset($_POST['zuordnung']) ? (string) $_POST['zuordnung'] : '';
-    $text = preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/', '', $text);
-    /* Zeichen zaehlen, nicht Bytes. strlen() zaehlt Bytes, und ein Umlaut
-     * belegt in UTF-8 zwei davon - Parameternamen mit Umlauten wurden damit
-     * frueher abgewiesen, als die Grenze es hergibt.
-     *
-     * Bewusst ohne mb_strlen: mbstring ist eine eigene Erweiterung, dieses
-     * Plugin meldet sie nirgends an und benutzt sie sonst nicht. PCRE mit /u
-     * kann dasselbe ohne zusaetzliches Paket. */
-    $wp_zeichen = preg_match_all('/./us', $text);
-    if ($wp_zeichen === false) { $wp_zeichen = strlen($text); }
-    if ($wp_zeichen > WP_ZUORDNUNG_MAX) {
-        $wp_fehler[] = sprintf(wp_t('TEST.FEHLER_ZUORDNUNG_LANG'), WP_ZUORDNUNG_MAX);
+    $wp_f0 = count($wp_fehler);
+    $text = isset($_POST['zuordnung']) && !is_array($_POST['zuordnung']) ? (string) $_POST['zuordnung'] : '';
+    /* Dieselbe Pruefung wie beim Zurueckspielen (wp_zuordnung_pruefen(),
+     * Bauliste O5). Bis 0.9.26 wurden Steuerzeichen hier still entfernt, das
+     * Zurueckspielen wies dagegen jeden Zeilenumbruch ab - die eigene Sicherung
+     * mit mehrzeiliger Zuordnung liess sich nie zurueckspielen. */
+    foreach (wp_zuordnung_pruefen($text) as $wp_m) { $wp_fehler[] = $wp_m; }
+    if (count($wp_fehler) > $wp_f0) {
+        wp_nichts_gespeichert($wp_fehler, $wp_f0, array('zuordnung'), array(), array('zuordnung'));
     } else {
-        $bekannt = array_keys(wp_felder());
-        foreach (wp_zuordnung_lesen($text) as $n => $v) {
-            if (!in_array($n, $bekannt, true)) {
-                $wp_fehler[] = sprintf(wp_t('TEST.FEHLER_ZUORDNUNG_FELD'), wp_e($n),
-                                       wp_e(implode(', ', $bekannt)));
-            }
-        }
-        if (!$wp_fehler) {
-            $wp_cfg['zuordnung'] = $text;
-            if (wp_config_write($wp_cfg)) { $wp_meldungen[] = wp_t('TEST.ZUORDNUNG_GESPEICHERT'); }
-            else { $wp_fehler[] = sprintf(wp_t('EINST.FEHLER_SPEICHERN'), wp_e($wp_p['configdir'])); }
-        }
+        $wp_cfg['zuordnung'] = $text;
+        if (wp_config_write($wp_cfg)) { $wp_meldungen[] = wp_t('TEST.ZUORDNUNG_GESPEICHERT'); }
+        else { $wp_fehler[] = sprintf(wp_t('EINST.FEHLER_SPEICHERN'), wp_e($wp_p['configdir'])); }
     }
     $wp_cfg = wp_config();
     $wp_tab = 'tab-test';
@@ -610,8 +721,17 @@ if ($wp_post && isset($_POST['test'])) {
 
 /* ================= Protokoll leeren ================= */
 if ($wp_post && isset($_POST['log_leeren'])) {
-    @file_put_contents($wp_p['logdir'] . '/waermepumpe.log', '');
-    $wp_meldungen[] = wp_t('LOG.GELEERT');
+    /* Erfolg nur, wenn die Datei nachgelesen leer ist (Bauliste O7; bis 0.9.26
+     * stand "Protokoll geleert." auch bei schreibgeschuetzter Datei mit 151 Byte,
+     * waermepumpe_agenten/oberflaeche Befund 8). */
+    $wp_ld = $wp_p['logdir'] . '/waermepumpe.log';
+    $wp_lr = is_file($wp_ld) ? @file_put_contents($wp_ld, '') : 0;
+    clearstatcache(true, $wp_ld);
+    if (!is_file($wp_ld) || ($wp_lr === 0 && filesize($wp_ld) === 0)) {
+        $wp_meldungen[] = wp_t('LOG.GELEERT');
+    } else {
+        $wp_fehler[] = sprintf(wp_t('LOG.LEEREN_FEHL'), (int) @filesize($wp_ld));
+    }
     $wp_tab = 'tab-log';
 }
 
@@ -626,7 +746,17 @@ $wp_info  = wp_hersteller_info($wp_cfg['hersteller']);
  * kaeme trotzdem nicht an die Anlage; die Datei waere wertlos. Damit
  * traegt sie ein Geheimnis, und der Hinweis am Knopf sagt das. */
 if ($wp_post && isset($_POST['wp_sichern'])) {
-    $wp_js = json_encode(wp_sicherung_bauen(),
+    /* X-3 (Bauliste O5): die eigene Ausgabe wird durch die Pruefung des
+     * Zurueckspielens geschickt; was dort abgewiesen wuerde, nennt ein Kopf
+     * _warnung (nur Namen, nie Werte) - und die Seite sagt es schon vor dem
+     * Klick (Hinweis neben dem Knopf). */
+    $wp_sich = wp_sicherung_bauen();
+    $wp_warn = wp_nicht_zurueckspielbar();
+    if ($wp_warn) {
+        $wp_sich = array_merge(array('_warnung' => 'Diese Werte liessen sich so nicht zurueckspielen: '
+                                                   . implode(', ', $wp_warn)), $wp_sich);
+    }
+    $wp_js = json_encode($wp_sich,
         JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     if ($wp_js !== false) {
         header('Content-Type: application/json; charset=utf-8');
@@ -693,6 +823,8 @@ if ($wp_post) {
         'meldungen'   => array_values($wp_meldungen),
         'fehler'      => array_values($wp_fehler),
         'testausgabe' => substr((string) $wp_testausgabe, 0, 262144),
+        'eingaben'    => $GLOBALS['wp_eingaben'],
+        'falsch'      => $GLOBALS['wp_falsch'],
     ));
     header('Location: index.php?form=' . $wp_ziel, true, 303);
     exit;
@@ -847,7 +979,7 @@ if (class_exists('LBWeb', false)) {
       echo (int) $wp_stand['zeit'] > 0 ? wp_e(wp_zeitspanne(time() - (int) $wp_stand['zeit']))
                                        : wp_e(wp_t('ALLG.NIE')); ?></b></div>
   <div class="sm-kachel"><?= wp_e(wp_t('KACHEL.STUFE')) ?>
-    <b><?= (int) ($wp_stand['stufe_gesetzt'] ?: $wp_cfg['sg_stufe']) ?></b></div>
+    <b><?= wp_e(wp_stufe_gilt($wp_stand, $wp_cfg)) ?></b></div>
 <?php if ($wp_info && !empty($wp_info['budget'])) { ?>
   <div class="sm-kachel"><?= wp_e(wp_t('KACHEL.BUDGET')) ?>
     <b><?= (int) wp_budget_rest($wp_cfg['hersteller']) ?> / <?= (int) $wp_info['budget'] ?></b></div>
@@ -883,10 +1015,10 @@ if (class_exists('LBWeb', false)) {
 
 <div class="sm-feld">
   <label for="wp_hersteller"><?= wp_e(wp_t('EINST.L_HERSTELLER')) ?></label>
-  <select data-role="none" name="hersteller" id="wp_hersteller">
+  <select data-role="none" name="hersteller" id="wp_hersteller"<?= wp_mark('hersteller') ?>>
     <option value=""><?= wp_e(wp_t('EINST.O_BITTE_WAEHLEN')) ?></option>
 <?php foreach (wp_hersteller() as $wp_k => $wp_h) { ?>
-    <option value="<?= wp_e($wp_k) ?>"<?= $wp_cfg['hersteller'] === $wp_k ? ' selected' : '' ?>><?= wp_e($wp_h['name']) ?></option>
+    <option value="<?= wp_e($wp_k) ?>"<?= wp_ein('hersteller', $wp_cfg['hersteller']) === $wp_k ? ' selected' : '' ?>><?= wp_e($wp_h['name']) ?></option>
 <?php } ?>
   </select>
 </div>
@@ -894,18 +1026,18 @@ if (class_exists('LBWeb', false)) {
 <?php if ($wp_cfg['hersteller'] === 'vaillant') { ?>
 <div class="sm-feld">
   <label for="wp_marke"><?= wp_e(wp_t('EINST.L_MARKE')) ?></label>
-  <select data-role="none" name="marke" id="wp_marke">
+  <select data-role="none" name="marke" id="wp_marke"<?= wp_mark('marke') ?>>
 <?php foreach (wp_va_marken() as $wp_k => $wp_n) { ?>
-    <option value="<?= wp_e($wp_k) ?>"<?= $wp_cfg['marke'] === $wp_k ? ' selected' : '' ?>><?= wp_e($wp_n) ?></option>
+    <option value="<?= wp_e($wp_k) ?>"<?= wp_ein('marke', $wp_cfg['marke']) === $wp_k ? ' selected' : '' ?>><?= wp_e($wp_n) ?></option>
 <?php } ?>
   </select>
 </div>
 <?php $wp_laender = wp_va_laender($wp_cfg['marke']); if ($wp_laender) { ?>
 <div class="sm-feld">
   <label for="wp_land"><?= wp_e(wp_t('EINST.L_LAND')) ?></label>
-  <select data-role="none" name="land" id="wp_land">
+  <select data-role="none" name="land" id="wp_land"<?= wp_mark('land') ?>>
 <?php foreach ($wp_laender as $wp_k => $wp_n) { ?>
-    <option value="<?= wp_e($wp_k) ?>"<?= $wp_cfg['land'] === $wp_k ? ' selected' : '' ?>><?= wp_e($wp_n) ?></option>
+    <option value="<?= wp_e($wp_k) ?>"<?= wp_ein('land', $wp_cfg['land']) === $wp_k ? ' selected' : '' ?>><?= wp_e($wp_n) ?></option>
 <?php } ?>
   </select>
   <div class="sm-hilfe"><?= sprintf(wp_t('EINST.H_LAND'),
@@ -919,7 +1051,7 @@ if (class_exists('LBWeb', false)) {
 <div class="sm-feld">
   <label for="wp_benutzer"><?= wp_e(wp_t($wp_cfg['hersteller'] === 'vaillant'
       ? 'EINST.L_BENUTZER_VA' : 'EINST.L_BENUTZER')) ?></label>
-  <input data-role="none" type="email" name="benutzer" id="wp_benutzer" value="<?= wp_e($wp_geh['benutzer']) ?>" size="40">
+  <input data-role="none" type="email" name="benutzer" id="wp_benutzer" value="<?= wp_e(wp_ein('benutzer', $wp_geh['benutzer'])) ?>"<?= wp_mark('benutzer') ?> size="40">
   <div class="sm-hilfe"><?= wp_t($wp_cfg['hersteller'] === 'vaillant'
       ? 'EINST.H_BENUTZER_VA' : 'EINST.H_BENUTZER') ?></div>
 </div>
@@ -935,12 +1067,12 @@ if (class_exists('LBWeb', false)) {
 <?php } elseif ($wp_cfg['hersteller'] !== '' && $wp_cfg['hersteller'] !== 'emsesp') { ?>
 <div class="sm-feld">
   <label for="wp_client_id"><?= wp_e(wp_t('EINST.L_CLIENTID')) ?></label>
-  <input data-role="none" type="text" name="client_id" id="wp_client_id" value="<?= wp_e($wp_geh['client_id']) ?>" size="44">
+  <input data-role="none" type="text" name="client_id" id="wp_client_id" value="<?= wp_e(wp_ein('client_id', $wp_geh['client_id'])) ?>"<?= wp_mark('client_id') ?> size="44">
   <div class="sm-hilfe"><?= sprintf(wp_t('EINST.H_CLIENTID'), wp_e($wp_info['portal'])) ?></div>
 </div>
 <div class="sm-feld">
   <label for="wp_client_secret"><?= wp_e(wp_t('EINST.L_SECRET')) ?></label>
-  <input data-role="none" type="password" name="client_secret" id="wp_client_secret" value="" size="44"
+  <input data-role="none" type="password" name="client_secret" id="wp_client_secret" value=""<?= wp_mark('client_secret') ?> size="44"
          placeholder="<?= wp_e($wp_geh['client_secret'] !== '' ? wp_t('EINST.P_GESETZT') : wp_t('EINST.P_LEER')) ?>">
   <div class="sm-hilfe"><?= wp_t('EINST.H_SECRET') ?></div>
   <label style="font-weight:400;"><input data-role="none" type="checkbox" name="secret_loeschen" value="1">
@@ -953,12 +1085,12 @@ if (class_exists('LBWeb', false)) {
 <div class="sm-feld">
   <label for="wp_ems_url"><?= wp_e(wp_t('EINST.L_EMS_URL')) ?></label>
   <input data-role="none" type="text" name="ems_url" id="wp_ems_url" size="44"
-         value="<?= wp_e($wp_cfg['ems_url']) ?>" placeholder="http://ems-esp.local">
+         value="<?= wp_e(wp_ein('ems_url', $wp_cfg['ems_url'])) ?>" placeholder="http://ems-esp.local"<?= wp_mark('ems_url') ?>>
   <div class="sm-hilfe"><?= wp_t('EINST.H_EMS_URL') ?></div>
 </div>
 <div class="sm-feld">
   <label for="wp_ems_token"><?= wp_e(wp_t('EINST.L_EMS_TOKEN')) ?></label>
-  <input data-role="none" type="password" name="ems_token" id="wp_ems_token" value="" size="44"
+  <input data-role="none" type="password" name="ems_token" id="wp_ems_token" value=""<?= wp_mark('ems_token') ?> size="44"
          placeholder="<?= wp_e($wp_geh['ems_token'] !== '' ? wp_t('EINST.P_GESETZT') : wp_t('EINST.P_LEER')) ?>">
   <div class="sm-hilfe"><?= wp_t('EINST.H_EMS_TOKEN') ?></div>
   <label style="font-weight:400;"><input data-role="none" type="checkbox" name="ems_token_loeschen" value="1">
@@ -970,7 +1102,7 @@ if (class_exists('LBWeb', false)) {
 <div class="sm-feld">
   <label for="wp_redirect"><?= wp_e(wp_t('EINST.L_REDIRECT')) ?></label>
   <input data-role="none" type="text" name="redirect_uri" id="wp_redirect" size="52"
-         value="<?= wp_e($wp_geh['redirect_uri']) ?>">
+         value="<?= wp_e(wp_ein('redirect_uri', $wp_geh['redirect_uri'])) ?>"<?= wp_mark('redirect_uri') ?>>
   <div class="sm-hilfe"><?= wp_t('EINST.H_REDIRECT') ?></div>
 </div>
 <?php } ?>
@@ -1059,19 +1191,19 @@ if (class_exists('LBWeb', false)) {
 <input data-role="none" type="hidden" name="activetab" value="tab-settings">
 <div class="sm-feld">
   <label for="wp_geraet"><?= wp_e(wp_t('EINST.L_GERAET')) ?></label>
-  <input data-role="none" type="text" name="geraet" id="wp_geraet" value="<?= wp_e($wp_cfg['geraet']) ?>" size="44">
+  <input data-role="none" type="text" name="geraet" id="wp_geraet" value="<?= wp_e(wp_ein('geraet', $wp_cfg['geraet'])) ?>"<?= wp_mark('geraet') ?> size="44">
 </div>
 <?php if ($wp_cfg['hersteller'] === 'melcloud') { ?>
 <div class="sm-feld">
   <label for="wp_gebaeude"><?= wp_e(wp_t('EINST.L_GEBAEUDE')) ?></label>
-  <input data-role="none" type="text" name="gebaeude" id="wp_gebaeude" value="<?= wp_e($wp_cfg['gebaeude']) ?>" size="16">
+  <input data-role="none" type="text" name="gebaeude" id="wp_gebaeude" value="<?= wp_e(wp_ein('gebaeude', $wp_cfg['gebaeude'])) ?>"<?= wp_mark('gebaeude') ?> size="16">
   <div class="sm-hilfe"><?= wp_t('EINST.H_GEBAEUDE') ?></div>
 </div>
 <?php } ?>
 <?php if ($wp_cfg['hersteller'] === 'myuplink' || $wp_cfg['hersteller'] === 'vaillant') { ?>
 <div class="sm-feld">
   <label for="wp_system"><?= wp_e(wp_t('EINST.L_SYSTEM')) ?></label>
-  <input data-role="none" type="text" name="system" id="wp_system" value="<?= wp_e($wp_cfg['system']) ?>" size="44">
+  <input data-role="none" type="text" name="system" id="wp_system" value="<?= wp_e(wp_ein('system', $wp_cfg['system'])) ?>"<?= wp_mark('system') ?> size="44">
   <div class="sm-hilfe"><?= wp_t($wp_cfg['hersteller'] === 'vaillant'
       ? 'EINST.H_SYSTEM_VA' : 'EINST.H_SYSTEM') ?></div>
 </div>
@@ -1080,29 +1212,29 @@ if (class_exists('LBWeb', false)) {
 <?php if ($wp_cfg['hersteller'] === 'vaillant') { ?>
 <div class="sm-feld">
   <label for="wp_zone"><?= wp_e(wp_t('EINST.L_ZONE')) ?></label>
-  <input data-role="none" type="number" name="zone" id="wp_zone" value="<?= (int) $wp_cfg['zone'] ?>" min="0" max="10">
+  <input data-role="none" type="number" name="zone" id="wp_zone" value="<?= wp_e(wp_ein('zone', (int) $wp_cfg['zone'])) ?>"<?= wp_mark('zone') ?> min="0" max="10">
   <div class="sm-hilfe"><?= wp_t('EINST.H_ZONE') ?></div>
 </div>
 <div class="sm-feld">
   <label for="wp_dhw"><?= wp_e(wp_t('EINST.L_DHW')) ?></label>
-  <input data-role="none" type="number" name="dhw" id="wp_dhw" value="<?= (int) $wp_cfg['dhw'] ?>" min="0" max="255">
+  <input data-role="none" type="number" name="dhw" id="wp_dhw" value="<?= wp_e(wp_ein('dhw', (int) $wp_cfg['dhw'])) ?>"<?= wp_mark('dhw') ?> min="0" max="255">
   <div class="sm-hilfe"><?= wp_t('EINST.H_DHW') ?></div>
 </div>
 <div class="sm-feld">
   <label for="wp_veto"><?= wp_e(wp_t('EINST.L_VETO_STUNDEN')) ?></label>
   <input data-role="none" type="number" name="veto_stunden" id="wp_veto"
-         value="<?= wp_e($wp_cfg['veto_stunden']) ?>" min="1" max="24" step="1">
+         value="<?= wp_e(wp_ein('veto_stunden', $wp_cfg['veto_stunden'])) ?>" min="1" max="24" step="1"<?= wp_mark('veto_stunden') ?>>
   <div class="sm-hilfe"><?= wp_t('EINST.H_VETO') ?></div>
 </div>
 <div class="sm-feld">
-  <label style="font-weight:400;"><input data-role="none" type="checkbox" name="cop_ein" value="1"<?= $wp_cfg['cop_ein'] ? ' checked' : '' ?>>
+  <label style="font-weight:400;"><input data-role="none" type="checkbox" name="cop_ein" value="1"<?= wp_an('cop_ein', $wp_cfg['cop_ein']) ? ' checked' : '' ?>>
     <?= wp_e(wp_t('EINST.L_COP')) ?></label>
   <div class="sm-hilfe"><?= wp_t('EINST.H_COP') ?></div>
 </div>
 <div class="sm-feld">
   <label for="wp_coptage"><?= wp_e(wp_t('EINST.L_COP_TAGE')) ?></label>
   <input data-role="none" type="number" name="cop_tage" id="wp_coptage"
-         value="<?= (int) $wp_cfg['cop_tage'] ?>" min="1" max="365" step="1">
+         value="<?= wp_e(wp_ein('cop_tage', (int) $wp_cfg['cop_tage'])) ?>" min="1" max="365" step="1"<?= wp_mark('cop_tage') ?>>
   <div class="sm-hilfe"><?= wp_t('EINST.H_COP_TAGE') ?></div>
 </div>
 <?php if (!empty($wp_stand['cop_grund'])) { ?>
@@ -1114,19 +1246,19 @@ if (class_exists('LBWeb', false)) {
 <div class="sm-feld">
   <label for="wp_ems_hc"><?= wp_e(wp_t('EINST.L_EMS_HC')) ?></label>
   <input data-role="none" type="number" name="ems_hc" id="wp_ems_hc"
-         value="<?= (int) $wp_cfg['ems_hc'] ?>" min="1" max="8" step="1">
+         value="<?= wp_e(wp_ein('ems_hc', (int) $wp_cfg['ems_hc'])) ?>" min="1" max="8" step="1"<?= wp_mark('ems_hc') ?>>
   <div class="sm-hilfe"><?= wp_t('EINST.H_EMS_HC') ?></div>
 </div>
 <div class="sm-feld">
-  <label style="font-weight:400;"><input data-role="none" type="checkbox" name="ems_thermostat" value="1"<?= $wp_cfg['ems_thermostat'] ? ' checked' : '' ?>>
+  <label style="font-weight:400;"><input data-role="none" type="checkbox" name="ems_thermostat" value="1"<?= wp_an('ems_thermostat', $wp_cfg['ems_thermostat']) ? ' checked' : '' ?>>
     <?= wp_e(wp_t('EINST.L_EMS_THERMOSTAT')) ?></label>
   <div class="sm-hilfe"><?= wp_t('EINST.H_EMS_THERMOSTAT') ?></div>
 </div>
 <div class="sm-feld">
   <label for="wp_ems_sg_art"><?= wp_e(wp_t('EINST.L_EMS_SG_ART')) ?></label>
-  <select data-role="none" name="ems_sg_art" id="wp_ems_sg_art">
-    <option value="nachbildung"<?= $wp_cfg['ems_sg_art'] === 'nachbildung' ? ' selected' : '' ?>><?= wp_e(wp_t('EINST.O_EMS_NACHBILDUNG')) ?></option>
-    <option value="klemmen"<?= $wp_cfg['ems_sg_art'] === 'klemmen' ? ' selected' : '' ?>><?= wp_e(wp_t('EINST.O_EMS_KLEMMEN')) ?></option>
+  <select data-role="none" name="ems_sg_art" id="wp_ems_sg_art"<?= wp_mark('ems_sg_art') ?>>
+    <option value="nachbildung"<?= wp_ein('ems_sg_art', $wp_cfg['ems_sg_art']) === 'nachbildung' ? ' selected' : '' ?>><?= wp_e(wp_t('EINST.O_EMS_NACHBILDUNG')) ?></option>
+    <option value="klemmen"<?= wp_ein('ems_sg_art', $wp_cfg['ems_sg_art']) === 'klemmen' ? ' selected' : '' ?>><?= wp_e(wp_t('EINST.O_EMS_KLEMMEN')) ?></option>
   </select>
   <div class="sm-hilfe"><?= wp_t('EINST.H_EMS_SG_ART') ?></div>
 </div>
@@ -1135,12 +1267,12 @@ if (class_exists('LBWeb', false)) {
 <div class="sm-feld">
   <label for="wp_ems_gpio1"><?= wp_e(wp_t('EINST.L_EMS_GPIO1')) ?></label>
   <input data-role="none" type="number" name="ems_gpio1" id="wp_ems_gpio1"
-         value="<?= (int) $wp_cfg['ems_gpio1'] ?>" min="0" max="48" step="1">
+         value="<?= wp_e(wp_ein('ems_gpio1', (int) $wp_cfg['ems_gpio1'])) ?>" min="0" max="48" step="1"<?= wp_mark('ems_gpio1') ?>>
 </div>
 <div class="sm-feld">
   <label for="wp_ems_gpio4"><?= wp_e(wp_t('EINST.L_EMS_GPIO4')) ?></label>
   <input data-role="none" type="number" name="ems_gpio4" id="wp_ems_gpio4"
-         value="<?= (int) $wp_cfg['ems_gpio4'] ?>" min="0" max="48" step="1">
+         value="<?= wp_e(wp_ein('ems_gpio4', (int) $wp_cfg['ems_gpio4'])) ?>" min="0" max="48" step="1"<?= wp_mark('ems_gpio4') ?>>
   <div class="sm-hilfe"><?= wp_t('EINST.H_EMS_GPIO') ?></div>
 </div>
 <?php } ?>
@@ -1148,16 +1280,19 @@ if (class_exists('LBWeb', false)) {
 
 <div class="sm-feld">
   <label for="wp_takt"><?= wp_e(wp_t('EINST.L_TAKT')) ?></label>
-  <input data-role="none" type="number" name="takt" id="wp_takt" value="<?= (int) $wp_cfg['takt'] ?>"
-         min="<?= (int) $wp_info['mindesttakt'] ?>" max="3600" step="10">
-  <div class="sm-hilfe"><?= sprintf(wp_t('EINST.H_TAKT'), (int) $wp_info['mindesttakt'], wp_e($wp_info['name'])) ?></div>
+<?php /* Die Untergrenze ist dieselbe Rechnung wie beim Speichern - bei
+   Daikin samt Budgettakt (Bauliste O3). */
+   $wp_takt_unten = wp_takt_untergrenze($wp_cfg['hersteller'], (int) $wp_cfg['budget_schreiben']); ?>
+  <input data-role="none" type="number" name="takt" id="wp_takt" value="<?= wp_e(wp_ein('takt', (int) $wp_cfg['takt'])) ?>"
+         min="<?= (int) $wp_takt_unten ?>" max="3600" step="10"<?= wp_mark('takt') ?>>
+  <div class="sm-hilfe"><?= sprintf(wp_t('EINST.H_TAKT'), (int) $wp_takt_unten, wp_e($wp_info['name'])) ?></div>
 </div>
 
 <?php if (!empty($wp_info['budget'])) { ?>
 <div class="sm-feld">
   <label for="wp_reserve"><?= wp_e(wp_t('EINST.L_RESERVE')) ?></label>
   <input data-role="none" type="number" name="budget_schreiben" id="wp_reserve"
-         value="<?= (int) $wp_cfg['budget_schreiben'] ?>" min="0" max="<?= (int) $wp_info['budget'] - 10 ?>" step="5">
+         value="<?= wp_e(wp_ein('budget_schreiben', (int) $wp_cfg['budget_schreiben'])) ?>" min="0" max="<?= (int) min(150, (int) $wp_info['budget'] - 10) ?>" step="5"<?= wp_mark('budget_schreiben') ?>>
   <div class="sm-hilfe"><?= sprintf(wp_t('EINST.H_RESERVE'), (int) $wp_info['budget'],
       (int) $wp_cfg['budget_schreiben'],
       (int) $wp_info['budget'] - (int) $wp_cfg['budget_schreiben'],
@@ -1177,6 +1312,9 @@ if (class_exists('LBWeb', false)) {
 <h2><?= wp_t('EINST.H_SICHERUNG') ?></h2>
 <div class="sm-hinweis"><?= wp_t('EINST.SICH_ERKLAERUNG') ?></div>
 <div class="sm-warnung"><?= wp_t('EINST.SICH_WARNUNG') ?></div>
+<?php $wp_sw = wp_nicht_zurueckspielbar(); if ($wp_sw) { ?>
+<div class="sm-warnung"><?= sprintf(wp_t('EINST.SICH_NICHT_ZURUECKSPIELBAR'), wp_e(implode(', ', $wp_sw))) ?></div>
+<?php } ?>
 <div class="sm-knopfreihe">
   <!-- ZWEI GETRENNTE Formulare. Das Sichern schickt einen Download und ruft
        exit auf; das Zurueckspielen braucht enctype="multipart/form-data".
@@ -1226,15 +1364,21 @@ if (class_exists('LBWeb', false)) {
   <?php echo wp_fmt(); ?>
 <input data-role="none" type="hidden" name="activetab" value="tab-sgready">
 <div class="sm-feld">
-  <label style="font-weight:400;"><input data-role="none" type="checkbox" name="sg_ein" value="1"<?= $wp_cfg['sg_ein'] ? ' checked' : '' ?>>
+  <label style="font-weight:400;"><input data-role="none" type="checkbox" name="sg_ein" value="1"<?= wp_an('sg_ein', $wp_cfg['sg_ein']) ? ' checked' : '' ?>>
     <?= wp_e(wp_t('SG.L_EIN')) ?></label>
   <div class="sm-hilfe"><?= wp_t('SG.H_EIN') ?></div>
 </div>
 
 <div class="sm-feld">
   <label for="wp_sperre"><?= wp_e(wp_t('SG.L_SPERRE')) ?></label>
-  <input data-role="none" type="number" name="sperre_max" id="wp_sperre" value="<?= (int) $wp_cfg['sperre_max'] ?>" min="5" max="720" step="5">
+  <input data-role="none" type="number" name="sperre_max" id="wp_sperre" value="<?= wp_e(wp_ein('sperre_max', (int) $wp_cfg['sperre_max'])) ?>" min="5" max="720" step="5"<?= wp_mark('sperre_max') ?>>
   <div class="sm-hilfe"><?= wp_t('SG.H_SPERRE') ?></div>
+</div>
+
+<div class="sm-feld">
+  <label for="wp_anhebung_max"><?= wp_e(wp_t('SG.L_ANHEBUNG_MAX')) ?></label>
+  <input data-role="none" type="number" name="anhebung_max" id="wp_anhebung_max" value="<?= wp_e(wp_ein('anhebung_max', (int) $wp_cfg['anhebung_max'])) ?>" min="5" max="720" step="5"<?= wp_mark('anhebung_max') ?>>
+  <div class="sm-hilfe"><?= wp_t('SG.H_ANHEBUNG_MAX') ?></div>
 </div>
 
 <h3><?= wp_e(wp_t('SG.H_NACHBILDUNG')) ?></h3>
@@ -1242,19 +1386,19 @@ if (class_exists('LBWeb', false)) {
 
 <div class="sm-feld">
   <label for="wp_basis"><?= wp_e(wp_t('SG.L_BASIS')) ?></label>
-  <input data-role="none" type="text" name="basis_soll" id="wp_basis" value="<?= $wp_cfg['basis_soll'] > 0 ? wp_e($wp_cfg['basis_soll']) : '' ?>" size="8">
+  <input data-role="none" type="text" name="basis_soll" id="wp_basis" value="<?= wp_e(wp_ein('basis_soll', $wp_cfg['basis_soll'] > 0 ? $wp_cfg['basis_soll'] : '')) ?>"<?= wp_mark('basis_soll') ?> size="8">
   <div class="sm-hilfe"><?= wp_t('SG.H_BASIS') ?></div>
 </div>
 <div class="sm-feld">
   <label for="wp_anh3"><?= wp_e(wp_t('SG.L_ANHEBUNG_3')) ?></label>
-  <input data-role="none" type="number" name="anhebung_3" id="wp_anh3" value="<?= (int) $wp_cfg['anhebung_3'] ?>" min="0" max="15">
+  <input data-role="none" type="number" name="anhebung_3" id="wp_anh3" value="<?= wp_e(wp_ein('anhebung_3', (int) $wp_cfg['anhebung_3'])) ?>"<?= wp_mark('anhebung_3') ?> min="0" max="15">
 </div>
 <div class="sm-feld">
   <label for="wp_anh4"><?= wp_e(wp_t('SG.L_ANHEBUNG_4')) ?></label>
-  <input data-role="none" type="number" name="anhebung_4" id="wp_anh4" value="<?= (int) $wp_cfg['anhebung_4'] ?>" min="0" max="15">
+  <input data-role="none" type="number" name="anhebung_4" id="wp_anh4" value="<?= wp_e(wp_ein('anhebung_4', (int) $wp_cfg['anhebung_4'])) ?>"<?= wp_mark('anhebung_4') ?> min="0" max="15">
 </div>
 <div class="sm-feld">
-  <label style="font-weight:400;"><input data-role="none" type="checkbox" name="ww_boost_4" value="1"<?= $wp_cfg['ww_boost_4'] ? ' checked' : '' ?>>
+  <label style="font-weight:400;"><input data-role="none" type="checkbox" name="ww_boost_4" value="1"<?= wp_an('ww_boost_4', $wp_cfg['ww_boost_4']) ? ' checked' : '' ?>>
     <?= wp_e(wp_t('SG.L_WWBOOST')) ?></label>
   <div class="sm-hilfe"><?= wp_t('SG.H_WWBOOST') ?></div>
 </div>
@@ -1329,12 +1473,12 @@ if (!$wp_verlauf) { ?>
 <input data-role="none" type="hidden" name="save_mqtt" value="1">
 <input data-role="none" type="hidden" name="activetab" value="tab-mqtt">
 <div class="sm-feld">
-  <label style="font-weight:400;"><input data-role="none" type="checkbox" name="mqtt_ein" value="1"<?= $wp_cfg['mqtt_ein'] ? ' checked' : '' ?>>
+  <label style="font-weight:400;"><input data-role="none" type="checkbox" name="mqtt_ein" value="1"<?= wp_an('mqtt_ein', $wp_cfg['mqtt_ein']) ? ' checked' : '' ?>>
     <?= wp_e(wp_t('EINST.L_MQTT_EIN')) ?></label>
 </div>
 <div class="sm-feld">
   <label for="wp_topic"><?= wp_e(wp_t('EINST.L_MQTT_TOPIC')) ?></label>
-  <input data-role="none" type="text" name="mqtt_topic" id="wp_topic" value="<?= wp_e($wp_cfg['mqtt_topic']) ?>" size="30">
+  <input data-role="none" type="text" name="mqtt_topic" id="wp_topic" value="<?= wp_e(wp_ein('mqtt_topic', $wp_cfg['mqtt_topic'])) ?>"<?= wp_mark('mqtt_topic') ?> size="30">
 </div>
 <div class="sm-legende"><span><i class="sm-punkt sm-b-aktion"></i> <?= wp_t('LEGENDE.AKTION') ?></span></div>
 <div class="sm-knopfreihe">
@@ -1373,6 +1517,14 @@ foreach (wp_statusfelder() as $wp_n => $wp_d) { ?>
     <td><?= wp_t($wp_d[3]) ?></td>
     <td><?= wp_e(wp_t(!empty($wp_ret[$wp_n]) ? 'MQTT.RETAIN_JA' : 'MQTT.RETAIN_NEIN')) ?></td>
     <td><?= isset($wp_raus[$wp_n]) ? wp_e($wp_raus[$wp_n]) : '&mdash;' ?></td></tr>
+<?php } ?>
+<?php /* Das Lebenszeichen (Bauliste M2): dieselbe Quelle wie der Sendecode,
+   wp_lebenszeichen_themen(). Nie retained. */
+foreach (wp_lebenszeichen_themen() as $wp_n => $wp_lt) { ?>
+<tr><td><span class="sm-mono"><?= wp_e($wp_cfg['mqtt_topic']) ?>/<?= wp_e($wp_n) ?></span></td>
+    <td><?= wp_t($wp_lt) ?></td>
+    <td><?= wp_e(wp_t('MQTT.RETAIN_NEIN')) ?></td>
+    <td><?= $wp_n === 'status/ts' ? wp_e((int) $wp_stand['zeit']) : '&mdash;' ?></td></tr>
 <?php } ?>
 </table>
 </div>
@@ -1609,7 +1761,7 @@ if (wp_ww_moeglich($wp_cfg['hersteller'])) { ?>
 <input data-role="none" type="hidden" name="activetab" value="tab-test">
 <div class="sm-feld">
   <label for="wp_zuordnung"><?= wp_e(wp_t('TEST.L_ZUORDNUNG')) ?></label>
-  <textarea data-role="none" name="zuordnung" id="wp_zuordnung" rows="6" cols="60"><?= wp_e($wp_cfg['zuordnung']) ?></textarea>
+  <textarea data-role="none" name="zuordnung" id="wp_zuordnung" rows="6" cols="60"<?= wp_mark('zuordnung') ?>><?= wp_e(wp_ein('zuordnung', $wp_cfg['zuordnung'])) ?></textarea>
   <div class="sm-hilfe"><?= sprintf(wp_t('TEST.HILFE_ZUORDNUNG'), wp_e(implode(', ', array_keys(wp_felder())))) ?></div>
 </div>
 <div class="sm-knopfreihe">

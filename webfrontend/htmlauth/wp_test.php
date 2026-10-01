@@ -13,6 +13,56 @@ function wp_pruefzeile($stand, $frage, $antwort)
     return array((int) $stand, $frage, $antwort);
 }
 
+/**
+ * Den EIGENEN Endpunkt ueber 127.0.0.1 aufrufen (Bauliste O11, Regeln/04
+ * Pflichtzeile "Antwortet der eigene Endpunkt?"). Das ist die einzige Zeile,
+ * die die Stelle anspricht, die spaeter der Miniserver anspricht - sie findet
+ * getrennte Baeume (html/htmlauth), die keine Lesepruefung sieht.
+ * Serverseitig ist 127.0.0.1 die richtige Adresse. Aufgerufen wird nur
+ * selftest=1: der Endpunkt prueft das Token und schaltet nichts.
+ * Rueckgabe: array(konnte, HTTP-Code, Rumpf); konnte=0 heisst: weder curl noch
+ * allow_url_fopen - dann ist die Zeile "nicht pruefbar".
+ */
+function wp_endpunkt_probe()
+{
+    $p = wp_paths();
+    $cfg = wp_config();
+    $url = 'http://127.0.0.1/plugins/' . rawurlencode($p['plugin']) . '/index.php?selftest=1&token='
+         . rawurlencode((string) $cfg['aktionstoken']);
+    $code = 0;
+    $rumpf = '';
+    $konnte = 0;
+    if (function_exists('curl_init')) {
+        $konnte = 1;
+        $ch = curl_init($url);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_TIMEOUT, 3);
+        curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 2);
+        curl_setopt($ch, CURLOPT_FOLLOWLOCATION, false);
+        $rumpf = (string) curl_exec($ch);
+        $code = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        if (PHP_VERSION_ID < 80000) { curl_close($ch); }
+    } elseif (ini_get('allow_url_fopen')) {
+        $konnte = 1;
+        $ctx = stream_context_create(array('http' => array(
+            'timeout' => 3, 'ignore_errors' => true, 'follow_location' => 0)));
+        set_error_handler(function () { return true; });
+        $fp = @fopen($url, 'r', false, $ctx);
+        if ($fp !== false) {
+            $meta = @stream_get_meta_data($fp);
+            $rumpf = (string) @stream_get_contents($fp);
+            @fclose($fp);
+            $kopf = (is_array($meta) && isset($meta['wrapper_data']) && is_array($meta['wrapper_data']))
+                ? $meta['wrapper_data'] : array();
+            foreach ($kopf as $zk) {
+                if (is_string($zk) && preg_match('#^HTTP/\S+\s+(\d{3})#', $zk, $m)) { $code = (int) $m[1]; }
+            }
+        }
+        restore_error_handler();
+    }
+    return array($konnte, $code, substr($rumpf, 0, 200));
+}
+
 function wp_pruefungen()
 {
     $cfg = wp_config();
@@ -167,6 +217,11 @@ function wp_pruefungen()
         if (is_array($d) && $d) {
             $z[] = wp_pruefzeile(1, wp_t('TEST.F_GERAET'),
                 sprintf(wp_t('TEST.A_GERAET_EMS'), count($d), (int) $cfg['ems_hc']));
+        } elseif ($grund === 'KEINE_ADRESSE') {
+            /* Ohne Gatewayadresse wurde nichts gefragt - ein Strich, kein
+             * Kreuz mit einer Ursache ueber den Bus (Bauliste O8,
+             * waermepumpe_agenten/oberflaeche Befund 9). */
+            $z[] = wp_pruefzeile(-1, wp_t('TEST.F_GERAET'), wp_t('TEST.A_GERAET_EMS_KEINE_ADRESSE'));
         } else {
             $z[] = wp_pruefzeile(0, wp_t('TEST.F_GERAET'), wp_t('TEST.A_GERAET_EMS_LEER'));
         }
@@ -219,7 +274,7 @@ function wp_pruefungen()
     foreach (wp_felder() as $name => $d) {
         if (!wp_kandidaten($name, $cfg)) { continue; }   // fuer diesen Hersteller nicht vorgesehen
         $moeglich++;
-        if (isset($stand['werte'][$name])) { $treffer++; } else { $ohne[] = $name; }
+        if (isset($stand['werte'][$name]) && $stand['werte'][$name] !== '-') { $treffer++; } else { $ohne[] = $name; }
     }
     if ($moeglich === 0) {
         $z[] = wp_pruefzeile(-1, wp_t('TEST.F_ZUORDNUNG'), wp_t('TEST.A_ZUORDNUNG_KEINE'));
@@ -279,6 +334,23 @@ function wp_pruefungen()
         $b = (float) $cfg['basis_soll'];
         $z[] = wp_pruefzeile($b > 0 ? 1 : 0, wp_t('TEST.F_BASIS'),
             $b > 0 ? sprintf(wp_t('TEST.A_BASIS_OK'), $b) : wp_t('TEST.A_BASIS_FEHLT'));
+    }
+
+    /* ---- Hoechstdauer der Anhebung (Entscheidung Nr. 31, Bauliste C6) ---- */
+    if (!empty($cfg['sg_ein'])) {
+        $wp_s = (int) $stand['stufe_gesetzt'];
+        if (($wp_s === 3 || $wp_s === 4) && (int) $stand['stufe_zeit'] > 0) {
+            $wp_ende = (int) $stand['stufe_zeit'] + (int) $cfg['anhebung_max'] * 60;
+            if ($cfg['hersteller'] === 'vaillant') {
+                $wp_ende = min($wp_ende, (int) $stand['stufe_zeit'] + wp_va_veto_sekunden($cfg));
+            }
+            $z[] = wp_pruefzeile($wp_ende > time() ? 1 : 0, wp_t('TEST.F_ANHEBUNG'),
+                sprintf(wp_t($wp_ende > time() ? 'TEST.A_ANHEBUNG_LAEUFT' : 'TEST.A_ANHEBUNG_UEBER'), $wp_s,
+                    wp_e(date('d.m.Y H:i', (int) $stand['stufe_zeit'])), wp_e(date('d.m.Y H:i', $wp_ende))));
+        } else {
+            $z[] = wp_pruefzeile(-1, wp_t('TEST.F_ANHEBUNG'),
+                sprintf(wp_t('TEST.A_ANHEBUNG_KEINE'), (int) $cfg['anhebung_max']));
+        }
     }
 
     /* ---- Tagesbudget ---- */
@@ -475,6 +547,54 @@ function wp_pruefungen()
     $gut = preg_match('/^[A-Za-z0-9]{24,}$/', (string) $cfg['aktionstoken']) ? 1 : 0;
     $z[] = wp_pruefzeile($gut, wp_t('TEST.F_TOKEN'),
         $gut ? wp_t('TEST.A_TOKEN_OK') : wp_t('TEST.A_TOKEN_FEHLT'));
+
+    /* ---- Tragen alle Formulare das Merkmal? (Bauliste O11, Regeln/04) ----
+     * Gezaehlt am Quelltext der Oberflaeche: jedes Formular braucht ein Merkmal. */
+    $wp_q = @file_get_contents(__DIR__ . '/index.php');
+    if ($wp_q === false || $wp_q === '') {
+        $z[] = wp_pruefzeile(-1, wp_t('TEST.F_FORMULARE'), wp_t('TEST.A_REITER_UNLESBAR'));
+    } else {
+        $wp_nform = preg_match_all('/<form\b/', $wp_q);
+        $wp_nfmt = substr_count($wp_q, 'echo wp_fmt();');
+        $z[] = wp_pruefzeile(($wp_nform > 0 && $wp_nform === $wp_nfmt) ? 1 : 0, wp_t('TEST.F_FORMULARE'),
+            sprintf(wp_t('TEST.A_FORMULARE'), $wp_nfmt, $wp_nform));
+    }
+
+    /* ---- Steht der Cron-Eintrag? (Bauliste O11, Regeln/04 Raumklima 0.11.8) ----
+     * An ALLEN Cron-Orten gesucht; ein Eintrag muss eine Datei sein. */
+    $wp_pp = wp_paths();
+    if ($wp_pp['home'] === '') {
+        $z[] = wp_pruefzeile(-1, wp_t('TEST.F_CRON'), wp_t('TEST.A_CRON_KEINE_WURZEL'));
+    } else {
+        $wp_treffer = glob($wp_pp['home'] . '/system/cron/cron.*/' . $wp_pp['plugin']);
+        $wp_treffer = is_array($wp_treffer) ? $wp_treffer : array();
+        $wp_dateien = array_values(array_filter($wp_treffer, 'is_file'));
+        if ($wp_dateien && count($wp_dateien) === count($wp_treffer)) {
+            $z[] = wp_pruefzeile(1, wp_t('TEST.F_CRON'),
+                sprintf(wp_t('TEST.A_CRON_OK'), wp_e(implode(', ', $wp_dateien))));
+        } elseif ($wp_treffer) {
+            $z[] = wp_pruefzeile(0, wp_t('TEST.F_CRON'),
+                sprintf(wp_t('TEST.A_CRON_KEINE_DATEI'), wp_e(implode(', ', $wp_treffer))));
+        } else {
+            $z[] = wp_pruefzeile(0, wp_t('TEST.F_CRON'),
+                sprintf(wp_t('TEST.A_CRON_FEHLT'), wp_e($wp_pp['home'] . '/system/cron/cron.01min/' . $wp_pp['plugin'])));
+        }
+    }
+
+    /* ---- Antwortet der eigene Endpunkt? (Bauliste O11) ---- */
+    if (preg_match('/^[A-Za-z0-9]{24,}$/', (string) $cfg['aktionstoken'])) {
+        list($wp_kann, $wp_code, $wp_rumpf) = wp_endpunkt_probe();
+        if (!$wp_kann) {
+            $z[] = wp_pruefzeile(-1, wp_t('TEST.F_ENDPUNKT'), wp_t('TEST.A_ENDPUNKT_UNPRUEFBAR'));
+        } elseif ($wp_code === 0) {
+            $z[] = wp_pruefzeile(-1, wp_t('TEST.F_ENDPUNKT'), wp_t('TEST.A_ENDPUNKT_KEINE_VERBINDUNG'));
+        } elseif ($wp_code === 200 && strpos($wp_rumpf, 'SELFTEST;OK=1') === 0) {
+            $z[] = wp_pruefzeile(1, wp_t('TEST.F_ENDPUNKT'), wp_t('TEST.A_ENDPUNKT_OK'));
+        } else {
+            $z[] = wp_pruefzeile(0, wp_t('TEST.F_ENDPUNKT'), sprintf(wp_t('TEST.A_ENDPUNKT_FALSCH'),
+                $wp_code, wp_e(trim(substr($wp_rumpf, 0, 80)))));
+        }
+    }
 
     /* ---- Selbsttest des Endpunkts ----
      *

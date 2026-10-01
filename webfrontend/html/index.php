@@ -170,11 +170,15 @@ if ($aktion === 'status') {
 if ($aktion === 'werte') {
     header('Content-Type: application/json; charset=utf-8');
     $s = wp_stand();
+    /* OK und STUFE aus derselben Quelle wie Statuszeile und MQTT (Bauliste C4,
+     * C5): OK=0 ab dem Dreifachen des Takts, STUFE die wirklich gesetzte oder
+     * "-". Bis 0.9.26 stand hier die angeforderte Stufe. "alter" bleibt. */
+    $wp_a = wp_ausgabewerte($s, $cfg);
     echo json_encode(array(
-        'ok'     => (int) $s['ok'],
+        'ok'     => (int) $wp_a['OK'],
         'zeit'   => (int) $s['zeit'],
         'alter'  => $s['zeit'] > 0 ? time() - (int) $s['zeit'] : -1,
-        'stufe'  => (int) ($s['stufe_gesetzt'] ?: $cfg['sg_stufe']),
+        'stufe'  => $wp_a['STUFE'],
         'budget' => wp_budget_rest($cfg['hersteller']),
         'werte'  => $s['werte'],
     ), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) . "\n";
@@ -203,7 +207,14 @@ if ($aktion === 'ww_boost') {
         wp_ende(400, 'WP;OK=0;AKTION=ww_boost;GRUND=EIN_UNGUELTIG');
     }
     $ein = (int) $roh;
-    list($ok, $grund, $was) = wp_ww_boost($cfg, $ein === 1);
+    /* Befehlsbremse (Bauliste C3, X-7, Nr. 19): derselbe Wert wie der zuletzt
+     * gesendete innerhalb von 60 s geht nicht noch einmal hinaus - Antwort
+     * UNVERAENDERT=1, nichts gesendet, nichts geschrieben. Nach einem
+     * Fehlschlag gilt die Wiederholregel (wp_ww_befehl()). */
+    list($ok, $grund, $was, $gleich) = wp_ww_befehl($cfg, $ein);
+    if ($gleich) {
+        wp_ende(200, 'WP;OK=1;AKTION=ww_boost;EIN=' . $ein . ';UNVERAENDERT=1');
+    }
     if (!$ok) {
         wp_ende(502, 'WP;OK=0;AKTION=ww_boost;EIN=' . $ein . ';GRUND=' . $grund);
     }
@@ -260,18 +271,37 @@ if (isset($_GET['stufe'])) {
     wp_ende(400, 'WP;OK=0;GRUND=STUFE_FEHLT');
 }
 
-$cfg['sg_stufe'] = $stufe;
-// Ab jetzt darf gesetzt werden - vorher hat niemand darum gebeten.
-$cfg['sg_angefordert'] = 1;
-if (!wp_config_write($cfg)) {
-    wp_ende(500, 'WP;OK=0;GRUND=NICHT_GESPEICHERT');
+list($k1, $k2) = wp_sg_klemmen($stufe);
+
+/* Befehlsbremse (Bauliste C3, X-7, Nr. 19). Gilt die angeforderte Stufe schon
+ * wirklich (wp_stufe_gilt(), nicht der Wunsch) und ist sie auch die zuletzt
+ * angeforderte, wird nichts gesendet und nichts geschrieben: UNVERAENDERT=1.
+ * Bis 0.9.26 kam dreimal dieselbe Antwort ohne diesen Hinweis, und jeder Aufruf
+ * schrieb Konfiguration und Zweitschrift (gemessen, waermepumpe_agenten/code
+ * Befund 3). */
+if (wp_stufe_gilt(wp_stand(), $cfg) === $stufe && (int) $cfg['sg_stufe'] === $stufe
+    && !empty($cfg['sg_angefordert'])) {
+    printf("WP;OK=1;AKTION=sgready;STUFE=%d;K1=%d;K2=%d;UNVERAENDERT=1\n", $stufe, $k1, $k2);
+    exit;
+}
+
+// Geschrieben wird nur, was sich aendert.
+if ((int) $cfg['sg_stufe'] !== $stufe || empty($cfg['sg_angefordert'])) {
+    $cfg['sg_stufe'] = $stufe;
+    // Ab jetzt darf gesetzt werden - vorher hat niemand darum gebeten.
+    $cfg['sg_angefordert'] = 1;
+    if (!wp_config_write($cfg)) {
+        wp_ende(500, 'WP;OK=0;GRUND=NICHT_GESPEICHERT');
+    }
 }
 
 // Sofort durchsetzen, nicht bis zum naechsten Cron warten: wer per PV-Ueber-
-// schuss anlaufen laesst, will nicht bis zu einer Minute Verzug.
-list($ok, $grund, $was) = wp_sg_durchsetzen($cfg);
+// schuss anlaufen laesst, will nicht bis zu einer Minute Verzug. Ist derselbe
+// Zustand eben gescheitert, gilt die Wiederholregel (Bauliste C2):
+// GRUND=WIEDERHOLUNG_GEBREMST, nichts gesendet.
+list($ok, $grund, $was) = wp_sg_durchsetzen($cfg, true);
 if (!$ok) {
     wp_ende(502, 'WP;OK=0;STUFE=' . $stufe . ';GRUND=' . $grund);
 }
-list($k1, $k2) = wp_sg_klemmen($stufe);
-printf("WP;OK=1;AKTION=sgready;STUFE=%d;K1=%d;K2=%d\n", $stufe, $k1, $k2);
+printf("WP;OK=1;AKTION=sgready;STUFE=%d;K1=%d;K2=%d%s\n", $stufe, $k1, $k2,
+       $grund === 'UNVERAENDERT' ? ';UNVERAENDERT=1' : '');

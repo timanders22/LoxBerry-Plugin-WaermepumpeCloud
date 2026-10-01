@@ -84,6 +84,24 @@ if [ -z "$BASE" ]; then
     echo "<WARNING> Es wurde nichts gesichert."
     exit 1
 fi
+
+# ---------- Upgrade-Marke, als Erstes (Bauliste I1, Entscheidung 1) ----------
+# Daran erkennt preinstall.sh die Aktualisierung (kein Altersvergleich) und
+# laesst die Zweitschriften liegen; postupgrade.sh entfernt sie wieder,
+# uninstall ebenfalls. Bis 0.9.26 gab es keine Marke - die Linie konnte Update
+# und Neuinstallation nicht unterscheiden (waermepumpe_agenten/installer
+# Befund 1). Sie liegt NEBEN dem Datenordner: im Ordner loeschte sie
+# purge_installation mit.
+mkdir -p "$BASE/data/plugins" 2>/dev/null
+WP_MARKE="$BASE/data/plugins/$PFOLDER.upgrade_laeuft"
+date +%s > "$WP_MARKE" 2>/dev/null
+if [ -s "$WP_MARKE" ]; then
+    echo "<INFO> Aktualisierung vermerkt ($WP_MARKE)."
+else
+    echo "<WARNING> Die Marke $WP_MARKE liess sich nicht anlegen. preinstall.sh haelt diese"
+    echo "<WARNING> Aktualisierung dann fuer eine Neuinstallation und legt die Zweitschriften"
+    echo "<WARNING> beiseite; die Einstellungen kommen trotzdem aus der Update-Sicherung zurueck."
+fi
 # $LBPCONFIG zeigt auf <home>/config/plugins, OHNE Pluginordner - deshalb wird
 # er angehaengt. Bis 0.9.10 stand er nur im Rueckfallzweig; war die Variable
 # gesetzt (der Regelfall), sicherte dieses Skript zwei Streudateien eine Ebene
@@ -108,10 +126,14 @@ CFGDIR="${LBPCONFIG:-$BASE/config/plugins}/$PFOLDER"
 # Zugangsdaten, und was neben dem Ordner liegt, ueberlebt sonst auch die
 # Deinstallation.
 RUECKFALL="${LBPCONFIG:-$BASE/config/plugins}/$PFOLDER.upgrade"
+# Einen Rest aus einem frueheren, abgebrochenen Lauf nicht liegen lassen -
+# auch dann nicht, wenn derselbe Ort gleich wieder die Sicherung aufnimmt
+# (Entscheidung 1: nie einen Bestand aus einem frueheren Vorgang einspielen;
+# bis 0.9.26 blieb ohne sechstes Argument eine Datei aus einem frueheren Lauf
+# liegen, wenn sie diesmal nicht gesichert wurde).
+rm -rf "${RUECKFALL:?}" 2>/dev/null
 if [ -n "$ARGV6" ] && [ -d "$ARGV6" ]; then
     SICHERUNG="$ARGV6/waermepumpe_upgrade"
-    # Einen Rest aus einem frueheren, abgebrochenen Lauf nicht liegen lassen.
-    rm -rf "$RUECKFALL" 2>/dev/null
 else
     echo "<INFO> Kein Arbeitsordner uebergeben - Rueckfall neben den Konfigordner."
     SICHERUNG="$RUECKFALL"

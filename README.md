@@ -50,6 +50,44 @@ Ein Knopf im Reiter *Test* fragt das Gateway, **was sich schreiben lässt**
 Liste kommt vom Gerät und stimmt auch bei einem Modell, das dieses Plugin nie
 gesehen hat.
 
+## Stand der Messungen
+
+Anmeldung am echten myVAILLANT-Konto an einer aroTHERM plus getestet, Abruf und SG Ready an der Anlage ungemessen.
+
+## Neu in 0.9.26
+
+Durchgang mit vier Prüfern (Befunde: `Pruefung-Durchgang-2026-09-29/WaermepumpeCloud_BEFUNDE_UND_VERBESSERUNGEN.md`, Entscheidungen 1, 4, 5, 8, 16, 19, 26 und 31).
+Gemessen mit Attrappen für die Herstellerdienste, Broker und Gateway unter PHP 7.4, 8.3 und 8.5 sowie im Installer-Prüfstand. Anmeldung am echten myVAILLANT-Konto an einer aroTHERM plus getestet, Abruf und SG Ready an der Anlage ungemessen.
+
+* **SG Ready:**
+  * Der Rückfall aus der Sperre gelingt auch ohne gemerkten Grundsollwert (Stufe 2 schaltet dann nur ein). Bisher blieb die Heizung bei MELCloud unbegrenzt aus.
+  * **Neu: Höchstdauer auch für die Anhebung** (Stufe 3/4, einstellbar, ab Werk wie die Sperre).
+  * `STUFE` meldet die wirklich gesetzte Stufe: `-` vor dem ersten Schalten, nach Ablauf der myVAILLANT-Schnellabweichung 2.
+  * Gescheiterte Schaltbefehle werden höchstens im Abruftakt wiederholt, bei Daikin nur aus der Schreibreserve.
+  * Gleicher Wert binnen 60 s → `UNVERAENDERT=1`, es wird nichts geschrieben.
+* **Ehrliche Werte:**
+  * `OK=0` ab dem Dreifachen des Abruftakts; `ALTER -1` vor dem ersten Abruf.
+  * Ein Feld, das ein Abruf nicht mehr liefert, steht als `-`.
+  * `EIN`, `KOMPRESSOR` und `WWZWANG` kommen als 1/0.
+* **Anmeldung:**
+  * Browser-Anmeldung und Code-Einlösung melden Erfolg nur, wenn das Merkmal gespeichert ist.
+  * Ein abgelaufenes Merkmal wird nie benutzt.
+  * Der Anmeldezeitpunkt übersteht ein Update.
+* **Speichern:**
+  * Bei einer Beanstandung wird nichts gespeichert; die Eingaben kommen markiert zurück; nichts wird still gekappt.
+  * Leerer Grundsollwert = das Plugin merkt ihn sich selbst.
+  * Zurückspielen prüft jeden Wert, ein leeres Token behält das geltende; „Einstellungen sichern“ warnt.
+  * Der Reiter Test zeigt von Geheimnissen nur die Länge.
+* **Installer:**
+  * Eine Neuinstallation legt Reste nach `.alt`, statt alte Zugangsdaten einzuspielen.
+  * Die Deinstallation wartet auf einen laufenden Abruf.
+  * postinstall prüft curl.
+* **MQTT:**
+  * Präfixwechsel, „MQTT aus“ und Deinstallation räumen die zurückbehaltenen Themen ab.
+  * Neue Lebenszeichen `status/ts` und `status/zaehler`.
+* Die README sagte bisher, das Plugin sei ohne Wärmepumpe entstanden; das war falsch und ist berichtigt.
+* **In Loxone:** Die Ausfallerkennung auf `OK` prüfen. Wer `STUFE` auswertet: vor dem ersten Schalten steht jetzt `-`.
+
 ## Neu in 0.9.25
 
 Sammelnachzug vom 30.09.2026, sonst keine Änderung: `curl_close()` wird nur
@@ -333,6 +371,9 @@ Hand schadet nicht.
 * Es hängt weiterhin **keine Wärmepumpe und kein Herstellerkonto** am
   Prüfstand; auf dem Gerät des Hauses ist myVAILLANT ohne Zugangsdaten
   eingetragen. Alle Cloud-Wege sind also so ungemessen wie zuvor.
+  *Überholt:* am 17.09.2026 wurde 0.9.20 am LoxBerry des Hauses mit einem
+  echten myVAILLANT-Konto gemessen (siehe „Neu in 0.9.21“); den heutigen
+  Stand nennt der Abschnitt „Stand der Messungen“ oben.
 * Ob der Zustand nach einem Neustart des Miniservers dank Retain wirklich
   sofort ansteht, ist erst messbar, wenn das Plugin Werte hat.
 
@@ -746,16 +787,20 @@ und rechnet den kleinstmöglichen Abruftakt daraus aus.
 
 ## myVAILLANT im Einzelnen
 
-**Es gibt keine offene Schnittstelle.** Angemeldet wird mit denselben
-Zugangsdaten wie in der App, über einen OpenID-Connect-Fluss mit PKCE gegen
-einen Keycloak unter `identity.vaillant-group.com`. Alles, was das Plugin
+**Es gibt keine offene Schnittstelle.** Angemeldet wird **einmal im eigenen
+Browser**: die Anmeldeseite verlangt seit 2026 eine Bot-Prüfung (ALTCHA), die
+der Mensch selbst ankreuzt — das Plugin löst sie nicht. Danach tauscht es den
+Code aus der Umleitungsadresse gegen ein Erneuerungsmerkmal und erneuert von da
+an selbst, über einen OpenID-Connect-Fluss mit PKCE gegen einen Keycloak unter
+`identity.vaillant-group.com`. Alles, was das Plugin
 dafür tut, ist der quelloffenen Bibliothek
 [myPyllant](https://github.com/signalkraft/myPyllant) entnommen — Adressen,
 Kopfzeilen, Feldnamen. Nichts davon ist geraten, und Vaillant kann es
 jederzeit ändern.
 
-Der Anmeldefluss läuft in drei Schritten, und zwei Fallstricke stehen als
-Kommentar im Quelltext, weil sie beide lautlos scheitern:
+Der frühere Anmeldefluss mit E-Mail und Passwort läuft in drei Schritten und
+scheitert heute an der Bot-Prüfung (Meldung `BOTPRUEFUNG`); zwei Fallstricke
+stehen als Kommentar im Quelltext, weil sie beide lautlos scheitern:
 
 * **Kekse.** Der erste Schritt setzt Sitzungskekse, der zweite gelingt nur mit
   ihnen. Ohne Keksglas antwortet der Keycloak mit einer neuen Anmeldeseite
@@ -824,10 +869,11 @@ an; ohne gemerkten Ausgangswert würde sich die Anhebung bei jedem Durchlauf
 weiter aufaddieren. Das Plugin merkt sich den Wert beim ersten Abruf im
 Normalbetrieb und hebt vorher gar nicht an.
 
-## Feldzuordnung ohne Gerät
+## Feldzuordnung mit mehreren Kandidaten
 
-Dieses Plugin ist ohne Wärmepumpe entstanden. Die genaue Gestalt der Antwort
-hängt am Modell, und ein geratener Pfad scheitert still. Deshalb:
+Die genaue Gestalt der Antwort hängt am Modell, und ein geratener Pfad
+scheitert still. Gemessen ist bisher nur die Anmeldung an einem echten
+myVAILLANT-Konto, nicht die Antwort einer Anlage. Deshalb:
 
 * je Feld **mehrere Kandidatenpfade**, der erste Treffer gewinnt
 * der Reiter *Test* sagt für **jedes** Feld, welcher Kandidat gegriffen hat —

@@ -153,6 +153,31 @@ WP_UPDSICH="${LBPCONFIG:-$BASE/config/plugins}/$PFOLDER.upgrade"
 if [ -n "$ARGV6" ] && [ -d "$ARGV6/waermepumpe_upgrade" ]; then
     WP_UPDSICH="$ARGV6/waermepumpe_upgrade"
 fi
+# ---------- PHP-Erweiterung curl (Bauliste I5) ----------
+# dpkg/apt fordert php-curl an. Das Metapaket zeigt aber auf die Standardfassung
+# der Distribution, nicht unbedingt auf die PHP-Fassung, mit der LoxBerry
+# Oberflaeche und Cron faehrt (Regeln/06). Ohne curl_init ist myVAILLANT weder
+# anmeldbar noch erneuerbar (wp_va_http()), und die Installation meldete
+# trotzdem Erfolg (waermepumpe_agenten/installer Befund 5). Gemeldet wird, was
+# die PHP-Fassung dieses Aufrufs wirklich kann; eingespielt wird nichts.
+if command -v php >/dev/null 2>&1; then
+    WP_PHPV=$(php -r 'echo PHP_MAJOR_VERSION . "." . PHP_MINOR_VERSION;' 2>/dev/null)
+    case "$WP_PHPV" in
+        [0-9]*.[0-9]*) ;;
+        *) WP_PHPV="" ;;
+    esac
+    if php -r 'exit(function_exists("curl_init") ? 0 : 1);' >/dev/null 2>&1; then
+        echo "<OK> PHP ${WP_PHPV:-?} bringt die Erweiterung curl mit."
+    else
+        echo "<WARNING> Der PHP-Fassung ${WP_PHPV:-?} fehlt die Erweiterung curl. Ohne sie lassen sich"
+        echo "<WARNING> myVAILLANT und die Anmeldung im Browser nicht benutzen; die uebrigen Hersteller"
+        echo "<WARNING> laufen ueber den Rueckfallweg ohne curl. Abhilfe als root:"
+        echo "<WARNING>   apt-get install php${WP_PHPV:-<fassung>}-curl"
+    fi
+else
+    echo "<WARNING> Es wurde kein PHP gefunden - die Erweiterung curl liess sich nicht pruefen."
+fi
+
 if wp_hersteller_da "$CFGDIR/waermepumpe.json"; then
     echo "<OK> Die Konfiguration ist eingerichtet (Hersteller eingetragen)."
 elif wp_hersteller_da "$WP_UPDSICH/waermepumpe.json"; then
