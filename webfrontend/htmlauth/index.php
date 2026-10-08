@@ -993,6 +993,28 @@ if (class_exists('LBWeb', false)) {
 <?php foreach ($wp_fehler as $wp_f) { ?><li><?= $wp_f ?></li><?php } ?></ul></div>
 <?php } ?>
 
+<?php /* Kopf (Entscheidung Nr. 43, seit 0.9.28): Statusuebersicht ueber den
+   Reitern, immer sichtbar. Bis 0.9.27 standen Hersteller, Alter der Daten,
+   SG-Ready-Zustand und Budget als Kacheln oben im Reiter Einstellungen.
+   Nur Werte, die oben schon gelesen sind - keine Netzabfrage. */ ?>
+<table class="sm-tbl" style="max-width:620px">
+<tr><th><?= wp_e(wp_t('KACHEL.EIGENSCHAFT')) ?></th><th><?= wp_e(wp_t('KACHEL.WERT')) ?></th></tr>
+<tr><td><?= wp_e(wp_t('KACHEL.DIENST')) ?></td>
+    <td><?= wp_e(sprintf(wp_t('KACHEL.OHNE_DIENST'), (int) $wp_cfg['takt'])) ?></td></tr>
+<tr><td><?= wp_e(wp_t('KACHEL.HERSTELLER')) ?></td>
+    <td><b><?= wp_e($wp_info ? $wp_info['name'] : wp_t('ALLG.KEINER')) ?></b></td></tr>
+<tr><td><?= wp_e(wp_t('KACHEL.DATEN')) ?></td>
+    <td class="<?= (int) $wp_stand['ok'] ? 'sm-an' : 'sm-aus' ?>"><?php
+      echo (int) $wp_stand['zeit'] > 0 ? wp_e(wp_zeitspanne(time() - (int) $wp_stand['zeit']))
+                                       : wp_e(wp_t('ALLG.NIE')); ?></td></tr>
+<tr><td><?= wp_e(wp_t('KACHEL.STUFE')) ?></td>
+    <td><b><?= wp_e(wp_stufe_gilt($wp_stand, $wp_cfg)) ?></b></td></tr>
+<?php if ($wp_info && !empty($wp_info['budget'])) { ?>
+<tr><td><?= wp_e(wp_t('KACHEL.BUDGET')) ?></td>
+    <td><b><?= (int) wp_budget_rest($wp_cfg['hersteller']) ?> / <?= (int) $wp_info['budget'] ?></b></td></tr>
+<?php } ?>
+</table>
+
 <!-- Reiterleiste: echte Links, JavaScript faengt den Klick ab. Der Link
      traegt die Adresse - jeder Reiter ist verlinkbar, die Zurueck-Taste tut
      das Erwartete, und faellt das Skript aus, bleibt die Seite bedienbar.
@@ -1020,21 +1042,7 @@ if (class_exists('LBWeb', false)) {
 
 <!-- ================= Reiter: Einstellungen ================= -->
 <div class="sm-seite<?= $wp_tab === 'tab-settings' ? ' sm-active' : '' ?>" id="tab-settings">
-
-<div class="sm-kacheln">
-  <div class="sm-kachel"><?= wp_e(wp_t('KACHEL.HERSTELLER')) ?>
-    <b><?= wp_e($wp_info ? $wp_info['name'] : wp_t('ALLG.KEINER')) ?></b></div>
-  <div class="sm-kachel"><?= wp_e(wp_t('KACHEL.DATEN')) ?>
-    <b class="<?= (int) $wp_stand['ok'] ? 'sm-an' : 'sm-aus' ?>"><?php
-      echo (int) $wp_stand['zeit'] > 0 ? wp_e(wp_zeitspanne(time() - (int) $wp_stand['zeit']))
-                                       : wp_e(wp_t('ALLG.NIE')); ?></b></div>
-  <div class="sm-kachel"><?= wp_e(wp_t('KACHEL.STUFE')) ?>
-    <b><?= wp_e(wp_stufe_gilt($wp_stand, $wp_cfg)) ?></b></div>
-<?php if ($wp_info && !empty($wp_info['budget'])) { ?>
-  <div class="sm-kachel"><?= wp_e(wp_t('KACHEL.BUDGET')) ?>
-    <b><?= (int) wp_budget_rest($wp_cfg['hersteller']) ?> / <?= (int) $wp_info['budget'] ?></b></div>
-<?php } ?>
-</div>
+<div class="sm-hinweis"><?= wp_t('EINST.WAS_IST_DAS') ?></div>
 
 <h2><?= wp_e(wp_t('EINST.H_HERSTELLER')) ?></h2>
 <div class="sm-warnung"><?= wp_t('EINST.HERSTELLER_TEXT') ?></div>

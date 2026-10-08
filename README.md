@@ -62,6 +62,16 @@ Adresse und Vorlage müssen im Heimnetz liegen; die Sprechtoken stehen in keiner
 Prüfzeile im Reiter Test; dort zeigt die Prüfadresse das Aktionstoken nur noch maskiert (Knopf „Adresse
 kopieren“).
 
+## Neu in 0.9.28
+
+Kopf wie alle Hausplugins: Statusübersicht über den Reitern, Zusammenfassung oben im ersten Reiter.
+
+* **Statusübersicht über den Reitern** als Tabelle: Dienst (ohne – Abruf per Cron, mit Takt), Hersteller,
+  Alter der Daten, SG-Ready-Zustand und, wo es eines gibt, das Tagesbudget. Die vier Werte standen bisher
+  als Kacheln oben im Reiter Einstellungen; dort sind sie entfallen.
+* **Zusammenfassung** des Plugins in einem grünen Kasten oben im Reiter Einstellungen.
+* Nur Oberfläche; gerendert unter PHP 7.4, 8.4 und 8.5, nicht am Gerät angesehen.
+
 ## Stand der Messungen
 
 Anmeldung am echten myVAILLANT-Konto an einer aroTHERM plus getestet, Abruf und SG Ready an der Anlage ungemessen.
