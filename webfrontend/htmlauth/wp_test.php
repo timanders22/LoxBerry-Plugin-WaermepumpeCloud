@@ -543,6 +543,11 @@ function wp_pruefungen()
                 $wann));
     }
 
+    /* ---- Ansagen (Nr. 36 b): Ausgabeart, Anlaesse, letzte Ansage. Alexa-NG/Chromecast werden
+     * gefragt (selftest=1, spricht nicht) - wp_pruefungen() laeuft nur bei offenem Reiter Test. ---- */
+    list($wp_ast, $wp_atext) = wp_pruefe_ansage(true);
+    $z[] = wp_pruefzeile($wp_ast, wp_t('DURCHSAGE.PRUEF'), $wp_atext);
+
     /* ---- Token ---- */
     $gut = preg_match('/^[A-Za-z0-9]{24,}$/', (string) $cfg['aktionstoken']) ? 1 : 0;
     $z[] = wp_pruefzeile($gut, wp_t('TEST.F_TOKEN'),
@@ -606,8 +611,17 @@ function wp_pruefungen()
          * nur die Adresse an. Ob der Miniserver sie erreicht, weiss allein
          * der Miniserver. Bis 0.9.16 stand hier ein gruener Haken und hat
          * eine Pruefung behauptet, die nie stattgefunden hat. */
+        /* WP-k1 (08.10.2026): Die Adresse traegt das Aktionstoken. Bis 0.9.26 stand es hier im Klartext
+         * und landete beim Kopieren aus der Seite in Nachrichten (02.10. geschehen). Jetzt maskiert; die
+         * ganze Adresse holt der Knopf "Adresse kopieren" in die Zwischenablage. Der Reiter "Einbindung in
+         * Loxone" zeigt sie zum Abschreiben weiter vollstaendig (Hausstandard). */
+        $wp_sa = wp_endpunkt('status') . '&selftest=1';
+        $wp_sm = str_replace('token=' . $cfg['aktionstoken'], 'token=' . wp_maske($cfg['aktionstoken']), $wp_sa);
         $z[] = wp_pruefzeile(-1, wp_t('TEST.F_SELFTEST'),
-            sprintf(wp_t('TEST.A_SELFTEST'), wp_e(wp_endpunkt('status') . '&selftest=1')));
+            sprintf(wp_t('TEST.A_SELFTEST'), wp_e($wp_sm))
+            . ' <button data-role="none" type="button" class="sm-btn sm-b-lesen" data-adresse="' . wp_e($wp_sa)
+            . '" data-ok="' . wp_e(wp_t('TEST.ADRESSE_KOPIERT')) . '" data-fehl="' . wp_e(wp_t('TEST.ADRESSE_NICHT_KOPIERT'))
+            . '" onclick="return wpAdresseKopieren(this);">' . wp_e(wp_t('TEST.K_ADRESSE_KOPIEREN')) . '</button>');
     }
 
     return $z;

@@ -115,6 +115,13 @@ try {
     /* Das Lebenszeichen geht bei JEDEM Cron-Lauf hinaus, auch wenn kein Abruf
      * faellig war (Regeln/07, Abschnitt 3; Bauliste M2). Fluechtig. */
     wp_mqtt_lebenszeichen();
+    /* Nr. 36 b (Stufe 2): Ansagen ueber die gemeinsame Sprachausgabe, ab Werk aus - NACH Abruf,
+     * MQTT und Lebenszeichen, ohne Einfluss auf den Rueckgabewert (wp_ansage_takt() in wp_lib.php). */
+    try {
+        wp_ansage_takt($grund);
+    } catch (Throwable $wp_ae) {
+        wp_log('Ansage: abgebrochen (' . get_class($wp_ae) . ') - der Abruf ist davon nicht betroffen.');
+    }
 } finally {
     flock($fh, LOCK_UN);
     fclose($fh);

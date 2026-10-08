@@ -50,9 +50,55 @@ Ein Knopf im Reiter *Test* fragt das Gateway, **was sich schreiben lässt**
 Liste kommt vom Gerät und stimmt auch bei einem Modell, das dieses Plugin nie
 gesehen hat.
 
+### Ansagen über die gemeinsame Sprachausgabe (seit 0.9.27, ab Werk aus)
+
+Bis zu drei Ereignisse sagt das Plugin auf Wunsch an – über den Loxone Music Server, MusicServer4Home, eine
+eigene Adressvorlage, Alexa-NG oder Google-Lautsprecher (Chromecast 4 Lox NG): **die Herstellercloud
+weist die Anmeldung ab** und **seit mehr als 30 Minuten (mindestens dem Dreifachen des Abruftakts)
+kommen keine Werte** sowie – nur bei myVAILLANT – **die Wärmepumpe meldet eine Störung** (Liste der
+Diagnosecodes nicht leer; angesagt wird die Anzahl). Jedes Ereignis einzeln abwählbar, angesagt wird nur
+der Beginn, höchstens einmal je Ereignis und Stunde; ein einzelner misslungener Abruf löst nichts aus.
+Adresse und Vorlage müssen im Heimnetz liegen; die Sprechtoken stehen in keiner Sicherung. Testansage und
+Prüfzeile im Reiter Test; dort zeigt die Prüfadresse das Aktionstoken nur noch maskiert (Knopf „Adresse
+kopieren“).
+
 ## Stand der Messungen
 
 Anmeldung am echten myVAILLANT-Konto an einer aroTHERM plus getestet, Abruf und SG Ready an der Anlage ungemessen.
+
+## Neu in 0.9.27
+
+Ansagen über die gemeinsame Sprachausgabe (Modul 1.1.1), ab Werk aus (Entscheidung 36/40); Störungsansage bei
+myVAILLANT (WP-Ansage-1, Entscheidung 02.10.); Prüfadresse im Reiter Test maskiert (WP-k1).
+Gemessen unter PHP 7.4 und 8.5 gegen Attrappen (Music Server, Alexa-NG, Herstellerdienste, EMS-ESP); nicht am Gerät,
+nicht an einem echten Lautsprecher, nicht an einer echten Herstellercloud. Die Diagnosecode-Adresse ist am Konto des
+Hausherrn gemessen (200, leere Liste); einen echten Eintrag gab es noch nicht.
+
+* **Neu: Ansagen bei bis zu drei Ereignissen (ab Werk aus).** Reiter Einstellungen, Abschnitt „Ansagen“: Loxone
+  Music Server, MusicServer4Home, eine eigene Adressvorlage, Alexa-NG oder Google-Lautsprecher (Chromecast 4 Lox NG).
+  Angesagt wird, wenn die Herstellercloud die Anmeldung abweist (abgelaufen oder Zugangsdaten abgelehnt), wenn seit
+  mehr als 30 Minuten (mindestens dem Dreifachen des Abruftakts) keine Werte kommen und mindestens zwei Abrufe in Folge
+  scheiterten, und – nur bei myVAILLANT – wenn die Wärmepumpe eine Störung meldet. Jedes Ereignis lässt sich einzeln
+  abwählen.
+* **Störung (myVAILLANT):** Nach jedem gelungenen Abruf fragt das Plugin die Liste der Diagnosecodes ab – nur mit
+  gewählter Ausgabeart und gesetztem Haken, sonst geht keine zusätzliche Anfrage hinaus. Angesagt wird die Anzahl,
+  sobald die Liste nicht mehr leer ist („myVAILLANT meldet eine Störung“). Die übrigen Hersteller liefern dem Plugin
+  keinen Fehlercode.
+* Angesagt wird nur der Beginn eines Ereignisses, höchstens einmal je Ereignis und Stunde; ein einzelner
+  misslungener Abruf und ein Netzfehler beim Anmelden lösen nichts aus. Der Satz kommt aus der Sprachdatei
+  (deutsch/englisch).
+* Adresse des Music Servers und Adressvorlage müssen im Heimnetz liegen – eine andere Adresse wird beim Speichern
+  abgewiesen und vor jedem Senden erneut geprüft. Lautstärke 0 und Zonen wie `1,2,` oder `2~0` werden abgewiesen.
+* Testansage per Knopf im Reiter Test; die Zeile „Ansagen“ zeigt Ausgabeart, gewählte Ereignisse, die letzte Ansage
+  und bei myVAILLANT die zuletzt gelesene Zahl der Diagnosecodes.
+* **Reiter Test:** Die Prüfadresse des Endpunkts zeigt das Aktionstoken nur noch maskiert; die ganze Adresse kopiert
+  der Knopf „Adresse kopieren“. Der Reiter „Einbindung in Loxone“ zeigt sie weiter vollständig zum Abschreiben.
+* Die Sprechtoken für Alexa-NG und Chromecast 4 Lox NG stehen nie in der Seite, im Protokoll oder in einer
+  Sicherung; eine Sicherungsdatei, die eines trägt, wird abgewiesen, das gespeicherte bleibt.
+* Statuszeile, MQTT und Protokoll des Abrufs bleiben unverändert; die Ansage läuft im Minutentakt danach.
+* Einbindung in Loxone: kein neuer Baustein nötig (Satz unter der Baustein-Liste).
+
+**In Loxone:** nichts zu tun; wer die Ansagen will, wählt im Reiter Einstellungen eine Ausgabeart.
 
 ## Neu in 0.9.26
 

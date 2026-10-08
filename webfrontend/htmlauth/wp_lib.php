@@ -96,6 +96,10 @@ function wp_fassung()
      * im User-Agent, und das ist eine Auskunft. */
     return $f;
 }
+/* Gemeinsame Sprachausgabe (Abschrift von Werkzeuge/gemeinsam/sprachausgabe.php, Nr. 36 b).
+ * Liegt neben dieser Datei; die Datei schuetzt sich selbst gegen doppeltes Laden. Der
+ * Abrufdienst bin/wp_abruf.php erreicht sie ueber diese Bibliothek. */
+require_once __DIR__ . '/sprachausgabe.php';
 define('WP_STUFEN', 4);          // SG Ready kennt genau vier Zustaende
 define('WP_SPERRE_MAX', 120);    // Minuten, danach faellt die Sperre von selbst
 define('WP_ZUORDNUNG_MAX', 4000);
@@ -623,6 +627,12 @@ function wp_vorgaben()
         // MQTT
         'mqtt_ein'     => 1,
         'mqtt_topic'   => 'waermepumpe',
+        /* Nr. 36 b (Stufe 2): Ansagen ueber die gemeinsame Sprachausgabe. Ab Werk keine Ausgabe
+         * ('aus'); die beiden Anlaesse sind an, wirken aber erst mit einer Ausgabeart. */
+        'ansage_anmeldung' => 1,
+        'ansage_ausfall'   => 1,
+        'ansage_stoerung'  => 1,   // WP-Ansage-1: nur myVAILLANT (Diagnosecodes)
+        'tts'          => ansage_vorgaben('aus'),
         // Endpunkt
         'aktionstoken' => '',
     );
@@ -846,6 +856,9 @@ function wp_config($token_anlegen = true)
     $cfg['basis_soll']       = (float) $cfg['basis_soll'];
     $cfg['geraetetyp']       = (int) $cfg['geraetetyp'];
     $cfg['mqtt_ein']         = empty($cfg['mqtt_ein']) ? 0 : 1;
+    $cfg['ansage_anmeldung'] = empty($cfg['ansage_anmeldung']) ? 0 : 1;
+    $cfg['ansage_ausfall']   = empty($cfg['ansage_ausfall']) ? 0 : 1;
+    $cfg['ansage_stoerung']  = empty($cfg['ansage_stoerung']) ? 0 : 1;
     /* Nicht kuerzen (Nebenbefund N2): substr() zaehlte Bytes und schnitt
      * mitten in ein UTF-8-Zeichen; die Grenze in Zeichen pruefen Formular und
      * Zurueckspielen (wp_zuordnung_pruefen()) und beanstanden statt zu kuerzen. */
@@ -1814,6 +1827,9 @@ function wp_mu_token()
          * Einmal-Schluessel im Protokoll muss den Grund tragen"): ein neuer
          * HTTP-Code kommt sofort ins Protokoll, nicht erst nach einer Stunde.
          * Dasselbe an den fuenf gleichartigen Stellen dieser Datei. */
+        if ((int) $a['code'] === 400 || (int) $a['code'] === 401) {
+            wp_anmeldung_abgewiesen('MYUPLINK_HTTP_' . (int) $a['code']);   // Nr. 36 b: Ansageanlass
+        }
         wp_log('myUplink: Token abgelehnt (HTTP ' . $a['code'] . ')', 'mu_token_' . (int) $a['code']);
         return '';
     }
@@ -1981,6 +1997,7 @@ function wp_oc_token()
         // eigens vermerkt, damit die Selbstpruefung nicht auf die
         // Zugangsdaten zeigt, an denen nichts falsch ist.
         if ($a['code'] === 400 || $a['code'] === 401) {
+            wp_anmeldung_abgewiesen('ONECTA_HTTP_' . (int) $a['code']);     // Nr. 36 b: Ansageanlass
             @file_put_contents(wp_tmpdir() . '/onecta_abgelaufen.stamp', (string) time());
         }
         wp_log('Onecta: Erneuern des Zugangs abgelehnt (HTTP ' . $a['code'] . ')', 'oc_token_' . (int) $a['code']);
@@ -2179,6 +2196,9 @@ function wp_ml_schluessel($erzwingen = false)
     if (!is_array($d) || !isset($d['LoginData']['ContextKey'])) {
         // ErrorId 1 heisst: Zugangsdaten falsch. Das gehoert eigens gemeldet.
         $grund = (isset($d['ErrorId']) && (int) $d['ErrorId'] === 1) ? 'Zugangsdaten abgelehnt' : 'HTTP ' . $a['code'];
+        if (isset($d['ErrorId']) && (int) $d['ErrorId'] === 1) {
+            wp_anmeldung_abgewiesen('MELCLOUD_ZUGANGSDATEN');                 // Nr. 36 b: Ansageanlass
+        }
         wp_log('MELCloud: Anmeldung fehlgeschlagen (' . $grund . ')',
                'ml_login_' . preg_replace('/[^A-Z0-9_]/', '', strtoupper($grund)));
         return '';
@@ -2784,8 +2804,13 @@ function wp_va_token($erzwingen = false)
     list($ok, $grund, $neu) = array_pad(wp_va_erneuern(), 3, '');
     if ($neu !== '') { return (string) $neu; }
     if (!$ok) {
+        $wp_erneuern_grund = (string) $grund;
         list($ok, $grund, $neu) = array_pad(wp_va_anmelden(), 3, '');
         wp_va_letzter_grund($ok ? '' : $grund);
+        /* Nr. 36 b: hat der Anmeldedienst abgelehnt (nicht: keine Verbindung), ist es ein Ansageanlass. */
+        if (!$ok && $neu === '' && (wp_va_grund_abgewiesen($wp_erneuern_grund) || wp_va_grund_abgewiesen($grund))) {
+            wp_anmeldung_abgewiesen('MYVAILLANT');
+        }
         if ($neu !== '') { return (string) $neu; }
         if (!$ok) {
             /* Der Schluessel fuer die Einmal-Sperre traegt den Grund: bis
@@ -5517,6 +5542,296 @@ function wp_sg_durchsetzen($cfg = null, $anforderung = false)
 }
 
 /* ==================================================================
+ * Ansagen ueber die gemeinsame Sprachausgabe (Nr. 36 b, Stufe 2, seit 0.9.27)
+ * ==================================================================
+ *
+ * Ab Werk aus (Ausgabeart 'aus'). Drei Anlaesse, je einzeln abwaehlbar:
+ *   anmeldung  die Herstellercloud weist die Anmeldung ab (abgelaufen oder
+ *              Zugangsdaten abgelehnt) - nicht ein Netzfehler beim Anmelden;
+ *   ausfall    seit mehr als wp_ansage_grenze() Sekunden keine Werte UND
+ *              mindestens zwei misslungene Abrufe in Folge - nie ein
+ *              einzelner Aussetzer;
+ *   stoerung   (nur myVAILLANT, WP-Ansage-1, Entscheidung 02.10.) die Liste der
+ *              Diagnosecodes ist nicht leer - eigener Abruf nach einem
+ *              gelungenen Abruf, nur wenn eine Ausgabeart gewaehlt und der
+ *              Haken an ist; ausgewertet wird nur die Anzahl.
+ * Angesagt wird die FLANKE (Beginn), nicht der Zustand: ein anhaltender
+ * Ausfall spricht einmal; erst nach dem Ende und einem neuen Eintritt wieder,
+ * und hoechstens einmal je Anlass in WP_ANSAGE_SPERRE_S. Der Merker
+ * ansage.json im Datenordner haelt nur Zustand und Zeitpunkt - nie Text oder
+ * Token. Laesst er sich nicht schreiben, wird nichts angesagt (geschlossen).
+ * Gesprochen wird aus dem Minutentakt nach dem Abruf; Statuszeile, MQTT und
+ * Protokoll bleiben davon unberuehrt. Ins Protokoll kommt nur die Kurzform
+ * (ansage_kurz()), nie der Text.
+ *
+ * Die uebrigen Hersteller liefern dieser Linie keinen Fehlercode (wp_felder()):
+ * dort gibt es den Anlass "stoerung" nicht.
+ */
+define('WP_ANSAGE_AUSFALL_S', 1800);   // Untergrenze der Ausfallgrenze; sonst 3x Takt
+define('WP_ANSAGE_SPERRE_S', 3600);    // hoechstens eine Ansage je Anlass in dieser Zeit
+
+/** Erlaubte Ausgabearten: alle des Moduls ausser 'audioserver' (Loxone holt hier keinen Text ab). */
+function wp_ansage_modi()
+{
+    return array('aus', 'musicserver', 'ms4h', 'custom', 'alexang', 'cc4lox');
+}
+
+/** Optionen fuer Formular-Baustein und Formular-Lesen. */
+function wp_ansage_opt()
+{
+    return array('modi' => wp_ansage_modi());
+}
+
+/** Die Anlaesse: Name => Schluessel des Hakens in der Konfiguration. */
+function wp_ansage_anlaesse()
+{
+    return array('anmeldung' => 'ansage_anmeldung', 'ausfall' => 'ansage_ausfall', 'stoerung' => 'ansage_stoerung');
+}
+
+/**
+ * WP-Ansage-1: die Diagnosecodes der Anlage bei myVAILLANT (eigener Abruf, Entscheidung des
+ * Hausherrn 02.10.2026). Am Konto des Hausherrn gemessen (GERAETEMESSUNG_2026-10-02_abend.md):
+ * .../end-user-app-api/v1/systems/<id>/diagnostic-trouble-codes -> 200 mit leerer Liste,
+ * .../tli/diagnostic-trouble-codes -> 404. Die Form eines Eintrags ist noch nicht belegt;
+ * ausgewertet wird deshalb nur die Anzahl. Rueckgabe array(Anzahl|null, Grund); null heisst
+ * "nicht feststellbar" (der gemerkte Zustand bleibt).
+ */
+function wp_va_diagnose($cfg)
+{
+    if ($cfg['hersteller'] !== 'vaillant' || (string) $cfg['system'] === '') { return array(null, 'KEIN_SYSTEM'); }
+    list($code, $d, $fehler) = wp_va_abfrage('GET', wp_va_api('tli') . '/systems/' . rawurlencode($cfg['system'])
+                                             . '/diagnostic-trouble-codes');
+    if ($code !== 200) {
+        $g = $fehler !== '' ? $fehler : 'HTTP_' . $code;
+        wp_log('myVAILLANT: Diagnosecodes nicht gelesen (' . $g . ') - Anlass "Stoerung" nicht feststellbar.',
+               'va_diagnose_' . preg_replace('/[^A-Z0-9_]/', '', strtoupper($g)));
+        return array(null, $g);
+    }
+    if (!is_array($d) || ($d && array_keys($d) !== range(0, count($d) - 1))) {
+        wp_log('myVAILLANT: Diagnosecodes in unbekannter Form (keine Liste) - nicht ausgewertet.', 'va_diagnose_form');
+        return array(null, 'FORM');
+    }
+    return array(count($d), '');
+}
+
+/** Der Block tts, vervollstaendigt (ab Werk 'aus'). */
+function wp_tts($cfg = null)
+{
+    $cfg = $cfg === null ? wp_config() : $cfg;
+    list($t) = ansage_vervollstaendigen(isset($cfg['tts']) && is_array($cfg['tts']) ? $cfg['tts'] : array(), 'aus');
+    return $t;
+}
+
+/** Ist eine Ausgabeart gewaehlt? */
+function wp_ansage_an($cfg = null)
+{
+    $t = wp_tts($cfg);
+    return is_string($t['mode']) && $t['mode'] !== 'aus' && in_array($t['mode'], wp_ansage_modi(), true);
+}
+
+/** Der Kontext des Moduls: Webport, Kopfzeile, Datenordner fuer <art>_letzte.json, Texte. */
+function wp_ansage_k()
+{
+    $p = wp_paths();
+    return array(
+        'port'   => ansage_webport($p['home'] !== '' ? $p['home'] . '/config/system/general.json' : ''),
+        'kopf'   => array('User-Agent: LoxBerry Waermepumpe Cloud'),
+        'ordner' => @is_dir($p['datadir']) ? $p['datadir'] : '',
+        't'      => function ($s) { return wp_t($s); },
+        /* Zu dieser Kennung hat das Modul (1.1.1) keinen Satz; linieneigen, bis der Modulschluessel mit
+         * Stufe 2 kommt (Entwurf, Stufe 2) - wie Intercom 2.2.18. */
+        'schluessel' => array('K_TTS_EINTRAG' => 'DURCHSAGE.SICH_EINTRAG'),
+    );
+}
+
+/** Ab wie vielen Sekunden ohne Werte ist es ein Ausfall? Mindestens 30 min, sonst das Dreifache des Takts. */
+function wp_ansage_grenze($cfg)
+{
+    return max(WP_ANSAGE_AUSFALL_S, 3 * max(60, (int) $cfg['takt']));
+}
+
+function wp_ansage_datei()
+{
+    return wp_datadir() . '/ansage.json';
+}
+
+/**
+ * Die Abweisung einer Anmeldung in DIESEM Lauf (nur im Prozess). Gesetzt an den
+ * Stellen, an denen die Linie sie schon erkennt; '' = keine gesehen.
+ */
+function wp_anmeldung_abgewiesen($neu = null)
+{
+    static $grund = '';
+    if ($neu !== null) { $grund = (string) $neu; }
+    return $grund;
+}
+
+/** Ein Grund aus wp_va_anmelden()/wp_va_erneuern(), der eine Abweisung ist (kein Netzfehler). */
+function wp_va_grund_abgewiesen($g)
+{
+    $g = (string) $g;
+    if ($g === 'BOTPRUEFUNG' || $g === 'ZUGANGSDATEN_ABGELEHNT') { return true; }
+    if (strpos($g, 'TOKEN_ABGELEHNT_') !== 0) { return false; }
+    $rest = substr($g, 16);
+    /* Der Anmeldedienst hat geantwortet und abgelehnt (invalid_grant ...) oder mit 400/401/403;
+     * HTTP_0 (keine Verbindung) und 5xx sind Stoerungen, keine Abweisung. */
+    if (strpos($rest, 'HTTP_') !== 0) { return $rest !== ''; }
+    return in_array($rest, array('HTTP_400', 'HTTP_401', 'HTTP_403'), true);
+}
+
+/**
+ * Die Lage der Anlaesse nach diesem Lauf. true = steht an, false = steht nicht an,
+ * null = in diesem Lauf nicht feststellbar (dann bleibt der gemerkte Zustand).
+ */
+function wp_ansage_lage($cfg, $stand, $grund, $jetzt, $diagnose = null)
+{
+    $l = array('anmeldung' => null, 'ausfall' => false, 'stoerung' => null);
+    if ($cfg['hersteller'] !== 'vaillant') {
+        $l['stoerung'] = false;         // nur myVAILLANT liefert Diagnosecodes
+    } elseif ($diagnose !== null) {
+        $l['stoerung'] = (int) $diagnose > 0;
+    }
+    if ($cfg['hersteller'] === 'emsesp' || $cfg['hersteller'] === '') {
+        $l['anmeldung'] = false;        // EMS-ESP liest ohne Anmeldung
+    } elseif ($grund === 'KEIN_TOKEN') {
+        if (wp_anmeldung_abgewiesen() !== '' || ($cfg['hersteller'] === 'onecta' && wp_oc_abgelaufen())) {
+            $l['anmeldung'] = true;
+        }
+        // sonst: kein Zugang eingerichtet oder Netzfehler beim Anmelden - nicht feststellbar
+    } elseif ($grund === '' || $grund === 'LEERE_ANTWORT' || strpos($grund, 'HTTP_') === 0) {
+        $l['anmeldung'] = false;        // ein Zugriffsmerkmal lag vor
+    }
+    $zeit = (int) $stand['zeit'];
+    $l['ausfall'] = $zeit > 0 && (int) $stand['fehler_folge'] >= 2
+                    && ($jetzt - $zeit) >= wp_ansage_grenze($cfg);
+    return $l;
+}
+
+/** Der Satz einer Ansage - aus der Sprachdatei, ohne Auszeichnung. */
+function wp_ansage_text($anlass, $stand, $jetzt, $anzahl = 0)
+{
+    if ($anlass === 'stoerung') {
+        $t = (int) $anzahl === 1 ? wp_t('DURCHSAGE.TEXT_STOERUNG_EINS')
+                                 : sprintf(wp_t('DURCHSAGE.TEXT_STOERUNG_MEHR'), (int) $anzahl);
+    } elseif ($anlass === 'ausfall') {
+        $t = sprintf(wp_t('DURCHSAGE.TEXT_AUSFALL'), (int) floor(max(0, $jetzt - (int) $stand['zeit']) / 60));
+    } else {
+        $t = wp_t('DURCHSAGE.TEXT_ANMELDUNG');
+    }
+    return trim(html_entity_decode(strip_tags($t), ENT_QUOTES, 'UTF-8'));
+}
+
+/**
+ * Aus bin/wp_abruf.php nach dem Abruf (unter der Abrufsperre). $grund ist die
+ * Rueckgabe von wp_abrufen(). Rueckgabe array(versucht, gescheitert).
+ */
+function wp_ansage_takt($grund, $jetzt = null)
+{
+    $jetzt = $jetzt === null ? time() : (int) $jetzt;
+    $cfg = wp_config();
+    $datei = wp_ansage_datei();
+    if (!wp_ansage_an($cfg)) {
+        /* Aus: nichts sagen, nichts merken - ab Werk entsteht keine Datei. */
+        if (is_file($datei)) { @unlink($datei); }
+        return array(0, 0);
+    }
+    $stand = wp_stand();
+    $m = is_file($datei) ? json_decode((string) @file_get_contents($datei), true) : null;
+    $aktiv = (is_array($m) && isset($m['aktiv']) && is_array($m['aktiv'])) ? $m['aktiv'] : array();
+    $zuletzt = (is_array($m) && isset($m['gesprochen']) && is_array($m['gesprochen'])) ? $m['gesprochen'] : array();
+    $diag_alt = (is_array($m) && isset($m['diagnose']) && is_array($m['diagnose'])) ? $m['diagnose'] : null;
+    /* WP-Ansage-1: Diagnosecodes nur nach einem in DIESEM Lauf gelungenen Abruf (also im Abruftakt), nur bei
+     * myVAILLANT und nur mit Haken - ab Werk und bei abgewaehltem Anlass geht keine zusaetzliche Anfrage hinaus. */
+    $diag = null;
+    if ($cfg['hersteller'] === 'vaillant' && (string) $grund === '' && !empty($cfg['ansage_stoerung'])) {
+        list($diag) = wp_va_diagnose($cfg);
+    }
+    $lage = wp_ansage_lage($cfg, $stand, (string) $grund, $jetzt, $diag);
+    $neu = array();
+    $faellig = array();
+    foreach (wp_ansage_anlaesse() as $an => $schl) {
+        $war = !empty($aktiv[$an]);
+        $ist = $lage[$an] === null ? $war : (bool) $lage[$an];
+        $neu[$an] = $ist ? 1 : 0;
+        if (!$ist || $war) { continue; }            // nur der Beginn
+        if (empty($cfg[$schl])) { continue; }       // abgewaehlt (der Zustand wird trotzdem gemerkt)
+        $t = isset($zuletzt[$an]) ? (int) $zuletzt[$an] : 0;
+        if ($t > 0 && ($jetzt - $t) < WP_ANSAGE_SPERRE_S && ($jetzt - $t) >= -300) {
+            wp_log('Ansage: Anlass ' . $an . ' nicht angesagt - die letzte Ansage dieses Anlasses ist juenger als '
+                 . (int) (WP_ANSAGE_SPERRE_S / 60) . ' Minuten (Wiederholsperre).');
+            continue;
+        }
+        $faellig[] = $an;
+        $zuletzt[$an] = $jetzt;
+    }
+    $alt = array();
+    foreach (wp_ansage_anlaesse() as $an => $schl) { $alt[$an] = !empty($aktiv[$an]) ? 1 : 0; }
+    if ($neu === $alt && !$faellig && is_file($datei) && $diag === null) { return array(0, 0); }
+    foreach ($zuletzt as $kk => $tt) {
+        if (!is_string($kk) || !isset($neu[$kk]) || !is_numeric($tt)) { unset($zuletzt[$kk]); }
+    }
+    $merk = array('aktiv' => $neu, 'gesprochen' => $zuletzt);
+    if ($diag !== null) {
+        $merk['diagnose'] = array('zeit' => $jetzt, 'anzahl' => (int) $diag);   // nur die Anzahl, nie Inhalte
+    } elseif ($diag_alt !== null) {
+        $merk['diagnose'] = $diag_alt;
+    }
+    if (!wp_json_schreiben($datei, $merk)) {
+        wp_log('Ansage: der Merker ' . $datei . ' liess sich nicht schreiben - es wird nichts angesagt.',
+               'ansage_merker');
+        return array(0, 0);
+    }
+    $n = 0;
+    $fehl = 0;
+    if ($faellig) {
+        $tts = wp_tts($cfg);
+        $k = wp_ansage_k();
+        foreach ($faellig as $an) {
+            $r = ansage_sprechen(wp_ansage_text($an, $stand, $jetzt, (int) $diag), $tts, $k);
+            $n++;
+            if ($r['stand'] === 1) {
+                wp_log('Ansage: Anlass ' . $an . ' angesagt (' . ansage_kurz($r) . ').');
+            } else {
+                $fehl++;
+                wp_log('Ansage: Anlass ' . $an . ' nicht angesagt (' . ansage_kurz($r) . '): '
+                     . ansage_kennung_text($r['kennung'], $k) . '. Es wird nicht wiederholt.');
+            }
+        }
+    }
+    return array($n, $fehl);
+}
+
+/** Die Zeile im Reiter Test: Ausgabeart (Modul), dazu die Anlaesse und die letzte Ansage eines Anlasses. */
+function wp_pruefe_ansage($offen)
+{
+    $cfg = wp_config();
+    $k = wp_ansage_k();
+    list($st, $text) = ansage_pruefzeile(wp_tts($cfg), (bool) $offen, $k);
+    if ($st !== -2) {
+        $teile = array();
+        $namen = array('anmeldung' => wp_t('DURCHSAGE.N_ANMELDUNG'), 'ausfall' => wp_t('DURCHSAGE.N_AUSFALL'),
+                       'stoerung' => wp_t('DURCHSAGE.N_STOERUNG'));
+        foreach (wp_ansage_anlaesse() as $an => $schl) {
+            if ($an === 'stoerung' && $cfg['hersteller'] !== 'vaillant') { continue; }
+            $teile[] = $namen[$an] . ' ' . wp_t(empty($cfg[$schl]) ? 'DURCHSAGE.ANLASS_AUS' : 'DURCHSAGE.ANLASS_AN');
+        }
+        $text .= ' ' . wp_e(sprintf(wp_t('DURCHSAGE.T_ANLAESSE'), implode(', ', $teile)));
+        $m = is_file(wp_ansage_datei()) ? json_decode((string) @file_get_contents(wp_ansage_datei()), true) : null;
+        if ($cfg['hersteller'] === 'vaillant' && is_array($m) && isset($m['diagnose']['zeit'], $m['diagnose']['anzahl'])) {
+            $text .= ' ' . wp_e(sprintf(wp_t('DURCHSAGE.T_DIAGNOSE'), (int) $m['diagnose']['anzahl'],
+                                        date('d.m.Y H:i', (int) $m['diagnose']['zeit'])));
+        }
+        $g = (is_array($m) && isset($m['gesprochen']) && is_array($m['gesprochen'])) ? $m['gesprochen'] : array();
+        arsort($g);
+        $an = key($g);
+        if (is_string($an) && isset($namen[$an]) && (int) $g[$an] > 0) {
+            $text .= ' ' . wp_e(sprintf(wp_t('DURCHSAGE.T_ZULETZT'), $namen[$an], date('d.m.Y H:i', (int) $g[$an])));
+        }
+    }
+    return array($st === 1 ? 1 : ($st === 0 ? 0 : -1), $text);
+}
+
+/* ==================================================================
  * Sprache (Pflicht: Deutsch und Englisch)
  *
  * Englisch ist die Rueckfallebene, nicht Deutsch.
@@ -5700,7 +6015,8 @@ function wp_einstellung_pruefen($k, $w, $alle, $jetzt)
         case 'ems_sg_art':
             return in_array($s, array('nachbildung', 'klemmen'), true) ? '' : wp_t('EINST.SICH_G_AUSWAHL');
         case 'ems_thermostat': case 'cop_ein': case 'sg_ein': case 'sg_angefordert':
-        case 'ww_boost_4': case 'mqtt_ein':
+        case 'ww_boost_4': case 'mqtt_ein': case 'ansage_anmeldung': case 'ansage_ausfall':
+        case 'ansage_stoerung':
             return wp_ganzzahl_in($w, 0, 1) ? '' : wp_t('EINST.SICH_G_HAKEN');
         case 'takt':
             $u = wp_takt_untergrenze((string) $wert('hersteller'), (int) $wert('budget_schreiben'));
@@ -5728,7 +6044,7 @@ function wp_einstellung_wert($k, $w)
     $ganz = array('geraetetyp', 'zone', 'dhw', 'veto_stunden', 'cop_tage', 'ems_hc', 'ems_gpio1',
                   'ems_gpio4', 'ems_thermostat', 'cop_ein', 'sg_ein', 'sg_angefordert', 'ww_boost_4',
                   'mqtt_ein', 'takt', 'budget_schreiben', 'sg_stufe', 'sperre_max', 'anhebung_max',
-                  'anhebung_3', 'anhebung_4');
+                  'anhebung_3', 'anhebung_4', 'ansage_anmeldung', 'ansage_ausfall', 'ansage_stoerung');
     if (in_array($k, $ganz, true)) { return (int) trim((string) $w); }
     if ($k === 'basis_soll') { return (float) str_replace(',', '.', trim((string) $w)); }
     if ($k === 'zuordnung') { return (string) $w; }
@@ -5775,11 +6091,14 @@ function wp_sicherung_bauen()
 {
     $aus = array(
         '_hinweis' => 'Sicherung des LoxBerry-Plugins Waermepumpe Cloud. Enthaelt das '
-                    . 'Aktionstoken und die Zugangsdaten der Herstellercloud - wie ein Passwort behandeln.',
+                    . 'Aktionstoken und die Zugangsdaten der Herstellercloud - wie ein Passwort behandeln. '
+                    . 'Die Sprechtoken der Sprachausgabe sind nie enthalten.',
         '_stand'   => date('Y-m-d H:i'),
         '_fassung' => wp_fassung(),
     );
     foreach (wp_config() as $k => $w) { $aus[$k] = $w; }
+    /* Nr. 36 b: die Sprechtoken der Sprachausgabe gehen nie in eine Sicherung. */
+    if (isset($aus['tts']) && is_array($aus['tts'])) { $aus['tts'] = ansage_sicherung_bereinigen($aus['tts']); }
     $g = wp_geheim();
     foreach (wp_geheim_schluessel() as $k) {
         $aus['geheim_' . $k] = isset($g[$k]) ? (string) $g[$k] : '';
@@ -5858,6 +6177,32 @@ function wp_sicherung_lesen($roh, &$geheim_neu = null, &$schluessel_fehl = null)
             $mangel[] = sprintf(wp_t('EINST.SICH_FREMD'),
                                  htmlspecialchars((string) $k, ENT_QUOTES, 'UTF-8'));
             $schluessel_fehl[] = (string) $k;
+            continue;
+        }
+        if ($k === 'tts') {
+            /* Nr. 36 b (Stufe 2): eine Sicherung dieses Plugins traegt nie ein Sprechtoken - traegt
+             * die Datei eines (auch als Liste oder null), stammt sie nicht aus "Einstellungen sichern"
+             * und wird abgewiesen. Die geltenden Sprechtoken bleiben. Ausgabeart, Adresse und Vorlage
+             * werden wie im Formular geprueft (Heimnetz, Entwurf F1). */
+            $tm = ansage_sicherung_mangel($w);
+            if ($tm) {
+                $mangel[] = sprintf(wp_t('DURCHSAGE.SICH_TOKEN'),
+                                    htmlspecialchars(implode(', ', $tm), ENT_QUOTES, 'UTF-8'));
+                $schluessel_fehl[] = 'tts';
+                continue;
+            }
+            $tg = '';
+            $tp = ansage_wert_pruefen($w, $tg, wp_ansage_modi());
+            if ($tp === null) {
+                $mangel[] = sprintf(wp_t('DURCHSAGE.SICH_WERT'),
+                    htmlspecialchars(ansage_kennung_text($tg, wp_ansage_k()), ENT_QUOTES, 'UTF-8'));
+                $schluessel_fehl[] = 'tts';
+                continue;
+            }
+            $tj = (isset($jetzt['tts']) && is_array($jetzt['tts'])) ? $jetzt['tts'] : array();
+            list($tv) = ansage_vervollstaendigen($tp + $tj);
+            $neu['tts'] = ansage_sicherung_tokens_behalten($tv, $tj);
+            $anzahl++;
             continue;
         }
         if (!wp_wert_taugt($w, $k === 'zuordnung')) {

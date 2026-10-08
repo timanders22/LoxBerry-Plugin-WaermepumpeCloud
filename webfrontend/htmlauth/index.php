@@ -710,6 +710,53 @@ if ($wp_post && isset($_POST['speichern_zuordnung'])) {
     $wp_tab = 'tab-test';
 }
 
+/* ================= Ansagen speichern (Nr. 36 b, Stufe 2) =================
+ * Der Formular-Baustein der gemeinsamen Sprachausgabe. Jede Beanstandung verhindert das Speichern
+ * (Nr. 16); die Eingaben kommen markiert zurueck (X-2), die Sprechtoken nie. Ein leeres Tokenfeld
+ * heisst "behalten", der Haken loescht, beides zugleich ist ein Widerspruch. */
+if ($wp_post && isset($_POST['speichern_ansage'])) {
+    $wp_f0 = count($wp_fehler);
+    $wp_acfg = wp_config();
+    $wp_tmangel = array();
+    $wp_tbean = array();
+    $wp_acfg['tts'] = ansage_formular_lesen($_POST, wp_tts($wp_acfg), $wp_tmangel, $wp_tbean, wp_ansage_opt(),
+                                            wp_ansage_k());
+    foreach ($wp_tmangel as $wp_tm) { $wp_fehler[] = wp_e($wp_tm['text']); }
+    foreach (wp_ansage_anlaesse() as $wp_ak) { $wp_acfg[$wp_ak] = !empty($_POST[$wp_ak]) ? 1 : 0; }
+    if (count($wp_fehler) > $wp_f0) {
+        $wp_ax = ansage_x2_felder(wp_ansage_opt());
+        $wp_atext = array();
+        $wp_ahaken = array_values(wp_ansage_anlaesse());
+        foreach ($wp_ax as $wp_an) {
+            if (substr($wp_an, -9) === '_loeschen') { $wp_ahaken[] = $wp_an; } else { $wp_atext[] = $wp_an; }
+        }
+        wp_nichts_gespeichert($wp_fehler, $wp_f0, $wp_atext, $wp_ahaken, $wp_tbean);
+    } elseif (wp_config_write($wp_acfg)) {
+        $wp_meldungen[] = wp_t('EINST.GESPEICHERT');
+        wp_log('Ansagen gespeichert (Ausgabeart ' . (string) $wp_acfg['tts']['mode'] . ').');
+    } else {
+        $wp_fehler[] = sprintf(wp_t('EINST.FEHLER_SPEICHERN'), wp_e($wp_p['configdir']));
+    }
+    $wp_cfg = wp_config();
+    $wp_tab = 'tab-settings';
+}
+
+/* ================= Testansage (Nr. 36 b): POST, Ergebnis als Einmalmeldung, dann 303 =================
+ * Ins Protokoll nur die Kurzform ohne Text und Token. */
+if ($wp_post && isset($_POST['ansage_test'])) {
+    $wp_tk = wp_ansage_k();
+    $wp_ar = ansage_testansage(wp_tts(), $wp_tk);
+    wp_log('Testansage: ' . ansage_kurz($wp_ar));
+    if ($wp_ar['stand'] === 1) {
+        $wp_meldungen[] = wp_e(wp_t('DURCHSAGE.M_TEST_OK'));
+    } elseif ($wp_ar['stand'] === -1) {
+        $wp_meldungen[] = sprintf(wp_e(wp_t('DURCHSAGE.M_TEST_NICHTS')), wp_e(ansage_kennung_text($wp_ar['kennung'], $wp_tk)));
+    } else {
+        $wp_fehler[] = sprintf(wp_e(wp_t('DURCHSAGE.M_TEST_FEHL')), wp_e(ansage_kennung_text($wp_ar['kennung'], $wp_tk)));
+    }
+    $wp_tab = 'tab-test';
+}
+
 /* ================= Test-Aktionen ================= */
 if ($wp_post && isset($_POST['test'])) {
     list($ok, $text) = wp_test_aktion((string) $_POST['test'], wp_g('zusatz'));
@@ -926,6 +973,9 @@ if (class_exists('LBWeb', false)) {
     padding: 10px 12px; margin: 12px 0; font-size: 0.9em; }
 .sm-fehler { border: 1px solid #e0a0a0; background: #fdecec; border-radius: 6px;
     padding: 10px 12px; margin: 12px 0; font-size: 0.9em; }
+/* Nr. 36 b: Marke eines beanstandeten Felds im Formular-Baustein der Sprachausgabe; das Umschalt-Skript
+   des Bausteins zeigt einen Block mit dieser Marke immer an. Die Farbe setzt wp_mark(). */
+.sm-wrap .sm-beanstandet { outline: 2px solid #b00000; background: #fdecec; }
 .sm-an  { color: #1a7f1a; font-weight: 700; }
 .sm-aus { color: #b00000; font-weight: 700; }
 .sm-stufe { display: inline-block; min-width: 26px; text-align: center; font-weight: 700;
@@ -1309,6 +1359,34 @@ if (class_exists('LBWeb', false)) {
 </form>
 <?php } ?>
 
+<?php /* Nr. 36 b (Stufe 2): Ansagen ueber die gemeinsame Sprachausgabe, ab Werk aus. Eigenes Formular,
+   eigener Handler (speichern_ansage). Die Sprechtoken stehen nie in der Seite. */ ?>
+<h2><?= wp_e(wp_t('DURCHSAGE.H')) ?></h2>
+<div class="sm-hinweis"><?= wp_e(wp_t('DURCHSAGE.TEXT')) ?></div>
+<form action="index.php" method="post">
+  <?php echo wp_fmt(); ?>
+<input data-role="none" type="hidden" name="activetab" value="tab-settings">
+<div class="sm-feld">
+  <label><?= wp_e(wp_t('DURCHSAGE.L_ANLAESSE')) ?></label>
+  <label style="font-weight:400;"><input data-role="none" type="checkbox" name="ansage_anmeldung" value="1"<?= wp_an('ansage_anmeldung', $wp_cfg['ansage_anmeldung']) ? ' checked' : '' ?>>
+    <?= wp_e(wp_t('DURCHSAGE.L_ANMELDUNG')) ?></label><br>
+  <label style="font-weight:400;"><input data-role="none" type="checkbox" name="ansage_ausfall" value="1"<?= wp_an('ansage_ausfall', $wp_cfg['ansage_ausfall']) ? ' checked' : '' ?>>
+    <?= wp_e(sprintf(wp_t('DURCHSAGE.L_AUSFALL'), (int) (wp_ansage_grenze($wp_cfg) / 60))) ?></label><br>
+  <label style="font-weight:400;"><input data-role="none" type="checkbox" name="ansage_stoerung" value="1"<?= wp_an('ansage_stoerung', $wp_cfg['ansage_stoerung']) ? ' checked' : '' ?>>
+    <?= wp_e(wp_t('DURCHSAGE.L_STOERUNG')) ?></label>
+  <div class="sm-hilfe"><?= wp_e(wp_t('DURCHSAGE.H_ANLAESSE')) ?></div>
+</div>
+<?= ansage_formular_html(wp_tts($wp_cfg), array(
+    'w' => function ($n, $g) { return wp_ein($n, $g); },
+    'm' => function ($n) { $x = wp_mark($n); return $x === '' ? '' : ' class="sm-beanstandet"' . $x; },
+    'c' => function ($n, $g) { return wp_an($n, $g); },
+    'modi' => wp_ansage_modi()), wp_ansage_k()) ?>
+<div class="sm-knopfreihe">
+  <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="speichern_ansage" value="1"><?= wp_e(wp_t('ALLG.SPEICHERN')) ?></button>
+</div>
+</form>
+<div class="sm-hilfe"><?= wp_e(sprintf(wp_t('DURCHSAGE.TEST_HINWEIS'), wp_t('REITER.TEST'))) ?></div>
+
 <h2><?= wp_t('EINST.H_SICHERUNG') ?></h2>
 <div class="sm-hinweis"><?= wp_t('EINST.SICH_ERKLAERUNG') ?></div>
 <div class="sm-warnung"><?= wp_t('EINST.SICH_WARNUNG') ?></div>
@@ -1599,6 +1677,7 @@ if (wp_ww_moeglich($wp_cfg['hersteller'])) { ?>
 <?php } ?>
 </table>
 <div class="sm-hinweis"><?= wp_t('LOX.BAUSTEINE_ERLAEUTERUNG') ?></div>
+<div class="sm-hilfe"><?= wp_e(wp_t('DURCHSAGE.BAUSTEIN')) ?></div>
 
 <div class="sm-step"><b><?= wp_e(wp_t('LOX.H_GEGENPROBE')) ?></b><br><?= wp_t('LOX.GEGENPROBE') ?></div>
 </div>
@@ -1750,6 +1829,16 @@ if (wp_ww_moeglich($wp_cfg['hersteller'])) { ?>
 </form>
 </div>
 
+<?php /* Nr. 36 b: die Testansage - orange, sie spricht. */ ?>
+<h3><?= wp_e(wp_t('DURCHSAGE.H_TEST')) ?></h3>
+<div class="sm-hilfe"><?= wp_e(wp_t('DURCHSAGE.TEST_TEXT')) ?></div>
+<div class="sm-knopfreihe">
+<form action="index.php" method="post" style="margin:0;"><input data-role="none" type="hidden" name="activetab" value="tab-test">
+  <?php echo wp_fmt(); ?>
+  <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="ansage_test" value="1"><?= wp_e(wp_t('DURCHSAGE.K_TEST')) ?></button>
+</form>
+</div>
+
 <?php if ($wp_testausgabe !== '') { ?>
 <div class="sm-hinweis"><?= $wp_testausgabe ?></div>
 <?php } ?>
@@ -1815,6 +1904,20 @@ if (!$wp_zeilen) { ?>
 	});
 	zeige(<?= json_encode($wp_tab) ?>);
 })();
+/* WP-k1: die Pruefadresse samt Aktionstoken in die Zwischenablage (der Reiter Test zeigt sie maskiert).
+   execCommand zuerst: navigator.clipboard gibt es nur in einem sicheren Kontext, der LoxBerry laeuft
+   ueblicherweise mit http im Heimnetz. */
+function wpAdresseKopieren(k) {
+	var a = k.getAttribute('data-adresse'), ok = false;
+	try {
+		var t = document.createElement('textarea');
+		t.value = a; t.setAttribute('readonly', ''); t.style.position = 'fixed'; t.style.left = '-9999px';
+		document.body.appendChild(t); t.select(); ok = document.execCommand('copy'); document.body.removeChild(t);
+	} catch (e) { ok = false; }
+	if (!ok && navigator.clipboard && window.isSecureContext) { navigator.clipboard.writeText(a); ok = true; }
+	k.textContent = k.getAttribute(ok ? 'data-ok' : 'data-fehl');
+	return false;
+}
 </script>
 <?php
 if (class_exists('LBWeb', false)) { LBWeb::lbfooter(); }
