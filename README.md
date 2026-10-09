@@ -62,6 +62,25 @@ Adresse und Vorlage müssen im Heimnetz liegen; die Sprechtoken stehen in keiner
 Prüfzeile im Reiter Test; dort zeigt die Prüfadresse das Aktionstoken nur noch maskiert (Knopf „Adresse
 kopieren“).
 
+## Neu in 0.9.30
+
+Reiter „Einbindung in Loxone“ zeigt ein Bild der Bausteine aus dem gemeinsamen Musterprojekt und
+verlinkt die Projektdatei; die Baustein-Liste ist die dort in Loxone Config gebaute.
+
+* Unter der Baustein-Liste steht das Bild der Seite „WaermepumpeCloud“ aus dem
+  [LoxBerry-Plugins Musterprojekt](https://github.com/timanders22/LoxBerry-Plugins-Musterprojekt); das Bild liegt im Plugin,
+  nachgeladen wird nichts. Config kürzt lange Bausteinnamen, die vollen Namen stehen in der Tabelle.
+* **Baustein-Liste neu (11 statt 9 Zeilen):** eine Zeile = ein Baustein, nur die Hauptvariante, so
+  wie im Musterprojekt gebaut und verbunden. Die Ausfallmeldung ist ein Schwellwertschalter auf
+  `WP_ALTER` (#3, Ein 900 / Aus 600 s) mit der Benachrichtigung dahinter (#4). Der Anlauf (#6) hängt
+  am Ausgang OL1 des Energiemanagers (#5; in Config „L1“). Die drei SG-Ready-Ausgänge stehen jetzt
+  als eigene Zeilen da: `WP_SGREADY_4` (#7), `WP_SGREADY_1` hinter dem Monoflop (#8, #9) und
+  `WP_SGREADY_2` hinter dem UND „WP Normalbetrieb“ (#10, #11).
+* Neue Hinweise unter der Tabelle: Gpwr, Ppwr, Spwr und Soc kommen aus der eigenen Energiemessung
+  (z. B. EVCC), den Auslöser der Sperre wählt der Anwender, OL1 heißt in Config L1. Die übrigen
+  Hinweise nennen die neuen Nummern.
+* Gerendert unter PHP 7.4, 8.4 und 8.5, nicht am Gerät angesehen.
+
 ## Neu in 0.9.29
 
 Baustein-Liste in der Schreibweise des Leitungswerkzeugs, gemeinsame Sprachausgabe 1.1.2.
@@ -983,6 +1002,10 @@ Daikin-Budget leeren noch das MELCloud-Konto aussperren.
    (System → MQTT Gateway → Reiter *Abonnements*) nur nötig, wenn die
    Prüfzeile im Reiter *Test* rot ist.
 6. *Einbindung in Loxone* → beide Vorlagen herunterladen und einlesen.
+
+Die Bausteine der Baustein-Liste aus dem Reiter *Einbindung in Loxone* stehen fertig verbunden auf
+der Seite „WaermepumpeCloud“ im [LoxBerry-Plugins Musterprojekt](https://github.com/timanders22/LoxBerry-Plugins-Musterprojekt),
+einer gemeinsamen Projektdatei mit allen Plugin-Seiten und Vorlagen.
 
 ## Zugangsdaten
 

@@ -980,6 +980,10 @@ if (class_exists('LBWeb', false)) {
 .sm-aus { color: #b00000; font-weight: 700; }
 .sm-stufe { display: inline-block; min-width: 26px; text-align: center; font-weight: 700;
     border-radius: 4px; padding: 1px 6px; background: #eef3e6; }
+/* Ergaenzung (Welle Bild, Entscheidung 45): Bild der Bausteine aus dem gemeinsamen Musterprojekt. */
+.sm-bild { margin: 12px 0; }
+.sm-bild img { max-width: 100%; height: auto; border: 1px solid #ccc; border-radius: 4px; background: #fff; }
+.sm-bild figcaption { font-size: .9em; color: #555; margin-top: 4px; }
 </style>
 
 <div class="sm-wrap">
@@ -1677,15 +1681,24 @@ if (wp_ww_moeglich($wp_cfg['hersteller'])) { ?>
 <table class="sm-tbl">
 <tr><th>#</th><th><?= wp_e(wp_t('LOX.T_BAUSTEIN')) ?></th><th><?= wp_e(wp_t('LOX.T_NAME')) ?></th>
     <th><?= wp_e(wp_t('LOX.T_PARAMETER')) ?></th><th><?= wp_e(wp_t('LOX.T_VERBINDEN')) ?></th></tr>
-<?php for ($wp_b = 1; $wp_b <= 9; $wp_b++) { ?>
+<?php /* Welle Bild 4 (0.9.30, Entscheidung A): die Liste ist die im LoxBerry-Plugins
+         Musterprojekt in Loxone Config gebaute und mit leitungen_setzen.py verbundene
+         (Musterprojekt/baustein_listen.txt, Abschnitt WaermepumpeCloud) - eine Zeile =
+         ein Baustein, nur die Hauptvariante; bis 0.9.29 neun Zeilen. */ ?>
+<?php for ($wp_b = 1; $wp_b <= 11; $wp_b++) { ?>
 <tr><td><?= $wp_b ?></td><td><?= wp_t('BAUSTEIN.B' . $wp_b . '_TYP') ?></td>
     <td><span class="sm-mono"><?= wp_t('BAUSTEIN.B' . $wp_b . '_NAME') ?></span></td>
     <td><?= wp_t('BAUSTEIN.B' . $wp_b . '_PARAM') ?></td>
     <td><?= wp_t('BAUSTEIN.B' . $wp_b . '_VERB') ?></td></tr>
 <?php } ?>
 </table>
-<div class="sm-hinweis"><?= wp_t('LOX.BAUSTEINE_ERLAEUTERUNG') ?></div>
+<div class="sm-hinweis"><?= wp_t('LOX.BAUSTEINE_ERLAEUTERUNG') ?><br><?= wp_t('LOX.BAUSTEINE_EIGENE') ?><br><?= wp_t('LOX.BAUSTEINE_OL1') ?></div>
 <div class="sm-hilfe"><?= wp_e(wp_t('DURCHSAGE.BAUSTEIN')) ?></div>
+<figure class="sm-bild">
+<img src="einbindung_loxone.png" alt="<?= wp_e(wp_t('LOX.BILD_ALT')) ?>" loading="lazy">
+<figcaption><?= wp_e(wp_t('LOX.BILD_UNTERSCHRIFT')) ?></figcaption>
+</figure>
+<p class="sm-hilfe"><?= wp_t('LOX.MUSTERPROJEKT') ?></p>
 
 <div class="sm-step"><b><?= wp_e(wp_t('LOX.H_GEGENPROBE')) ?></b><br><?= wp_t('LOX.GEGENPROBE') ?></div>
 </div>
