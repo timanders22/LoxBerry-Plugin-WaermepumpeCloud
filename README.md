@@ -62,6 +62,23 @@ Adresse und Vorlage müssen im Heimnetz liegen; die Sprechtoken stehen in keiner
 Prüfzeile im Reiter Test; dort zeigt die Prüfadresse das Aktionstoken nur noch maskiert (Knopf „Adresse
 kopieren“).
 
+## Neu in 0.9.29
+
+Baustein-Liste in der Schreibweise des Leitungswerkzeugs, gemeinsame Sprachausgabe 1.1.2.
+
+* **Baustein-Liste (Reiter Einbindung in Loxone):** Die Spalte „Eingänge verbinden mit“ nennt die
+  Quellen in fester Form: am Statusbaustein `V1 = Ausgang von WP_STUFE (#1)`, am Anlauf
+  `I1 = Ausgang IL von #5`, am Normalbetrieb `I1 = #6 (negiert), I2 = #8 (negiert)`. Das ODER vor der
+  Benachrichtigung (#4) und das UND vor WP_SGREADY_2 (#9) stehen jetzt im Typ („ODER → Benachrichtigung“,
+  „UND → Virtueller Ausgang WP_SGREADY_2“) – beide standen schon im Text. Was aus der eigenen Anlage
+  kommt (Zähler am Energiemanager, PV-Überschuss-Schwelle, weitere Meldungen), bleibt in Worten.
+  Gleiche Bausteine, gleiche Verbindungen.
+* **Sprachausgabe 1.1.2:** gemeinsames Modul und Abschnitt [ANSAGE] mit 157 Sätzen. Den Satz zu einem
+  unbekannten Eintrag im Block der Sprachausgabe bringt jetzt das Modul mit; die eigene Umlenkung ist
+  gestrichen (gleicher Wortlaut). Dazu aus dem Modul: Zeichenzahl bei kaputtem UTF-8 in Zeichen, die
+  Meldung „Port abgewiesen“ nennt das Feld nicht mehr doppelt.
+* Gerendert unter PHP 7.4, 8.4 und 8.5, nicht am Gerät angesehen.
+
 ## Neu in 0.9.28
 
 Kopf wie alle Hausplugins: Statusübersicht über den Reitern, Zusammenfassung oben im ersten Reiter.
