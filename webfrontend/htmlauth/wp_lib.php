@@ -3186,7 +3186,8 @@ function wp_va_ww_boost($cfg, $ein)
  *
  * Die Adressen:
  *
- *   GET  /api/<geraet>/info        alle Werte, ausfuehrlich
+ *   GET  /api/<geraet>/values      alle Werte, Kurznamen (gelesen wird hier)
+ *   GET  /api/<geraet>/info        alle Werte, ausfuehrlich (Rueckfall)
  *   GET  /api/<geraet>/commands    was sich schreiben laesst
  *   GET  /api/<geraet>/entities    alle vorhandenen Groessen
  *   POST /api/<geraet>/<groesse>   schreiben, Rumpf {"value": ...}
@@ -3269,7 +3270,17 @@ function wp_ems_holen($cfg, $pfad)
 {
     $basis = wp_ems_basis($cfg);
     if ($basis === '') { return array(null, 'KEINE_ADRESSE'); }
-    $a = wp_http('GET', $basis . '/api/' . ltrim($pfad, '/'), array(), null, 15);
+    /* 429 heisst bei EMS-ESP 3.8 "gerade beschaeftigt", nicht "Kontingent
+     * erschoepft": kommen Abfragen an VERSCHIEDENE Geraete dicht
+     * hintereinander, weist das Gateway einzelne davon ab (gemessen an 3.8.6,
+     * Geraetesuche: mixer und ventilation 429, die Nachbarn 200). Eine Sekunde
+     * spaeter geht dieselbe Abfrage durch - also bis zu zweimal nachfassen,
+     * statt "nichts da" zu melden. */
+    for ($versuch = 0; ; $versuch++) {
+        $a = wp_http('GET', $basis . '/api/' . ltrim($pfad, '/'), array(), null, 15);
+        if ($a['code'] !== 429 || $versuch >= 2) { break; }
+        sleep(1);
+    }
     if ($a['fehler'] !== '') { return array(null, 'NICHT_ERREICHBAR'); }
     if ($a['code'] === 404) { return array(null, 'NICHT_VORHANDEN'); }
     if ($a['code'] < 200 || $a['code'] >= 300) { return array(null, 'HTTP_' . $a['code']); }
@@ -3284,6 +3295,54 @@ function wp_ems_holen($cfg, $pfad)
         return array(null, 'KEIN_JSON');
     }
     return array($d, '');
+}
+
+/**
+ * Die Werte eines Geraets mit Kurznamen. Rueckgabe: array(Feld|null, Grund).
+ *
+ * Zuerst /values, weil es die Kurznamen und die Unterzweige (hc1, dhw)
+ * liefert. Kennt die Firmware /values nicht (404), wird /info gelesen.
+ *
+ * WARUM NICHT EINFACH /info: bis 0.9.31 wurde nur /info gelesen. Ab
+ * EMS-ESP 3.8 stehen dort ausgeschriebene Schluessel wie
+ * "outside temperature (outdoortemp)", und am thermostat fehlt der Zweig
+ * hc1 - kein einziger Pfad aus wp_felder() griff mehr (gemessen an 3.8.6:
+ * 0 von 12, mit /values 11 von 12). Damit auch der Rueckfall auf /info mit
+ * jeder Fassung taugt, werden ausgeschriebene Schluessel auf ihren Kurznamen
+ * in Klammern zurueckgefuehrt.
+ */
+function wp_ems_werte($cfg, $geraet)
+{
+    list($d, $grund) = wp_ems_holen($cfg, $geraet . '/values');
+    if ($d === null && $grund === 'NICHT_VORHANDEN') {
+        list($d, $grund) = wp_ems_holen($cfg, $geraet . '/info');
+    }
+    return array(is_array($d) ? wp_ems_kurznamen($d) : null, $grund);
+}
+
+/** "outside temperature (outdoortemp)" -> "outdoortemp", rekursiv. Ein schon
+ *  vorhandener Kurzname gewinnt; Schluessel ohne Klammer bleiben, wie sie sind. */
+function wp_ems_kurznamen($d)
+{
+    $out = array();
+    foreach ($d as $k => $v) {
+        if (is_array($v)) { $v = wp_ems_kurznamen($v); }
+        if (is_string($k) && preg_match('/\(([A-Za-z0-9_]+)\)\s*$/', $k, $m)) {
+            if (!array_key_exists($m[1], $d)) { $out[$m[1]] = $v; }
+            continue;
+        }
+        $out[$k] = $v;
+    }
+    return $out;
+}
+
+/** Die Firmwarefassung aus system/info. Bis 3.7 stand sie oben als "version",
+ *  ab 3.8 unter "system". '?' wenn keine von beiden da ist. */
+function wp_ems_fassung($info)
+{
+    if (isset($info['system']['version'])) { return (string) $info['system']['version']; }
+    if (isset($info['version']) && !is_array($info['version'])) { return (string) $info['version']; }
+    return '?';
 }
 
 /**
@@ -3306,12 +3365,12 @@ function wp_ems_lesen($cfg)
     if ($basis === '') { return array('ok' => 0, 'fehler' => 'KEINE_ADRESSE', 'roh' => null); }
 
     $roh = array();
-    list($b, $grund) = wp_ems_holen($cfg, 'boiler/info');
+    list($b, $grund) = wp_ems_werte($cfg, 'boiler');
     if ($b === null) { return array('ok' => 0, 'fehler' => $grund, 'roh' => null); }
     $roh['boiler'] = $b;
 
     if (!empty($cfg['ems_thermostat'])) {
-        list($t, $tg) = wp_ems_holen($cfg, 'thermostat/info');
+        list($t, $tg) = wp_ems_werte($cfg, 'thermostat');
         if (is_array($t)) {
             $hc = 'hc' . (int) $cfg['ems_hc'];
             if (isset($t[$hc]) && is_array($t[$hc])) { $t['hc'] = $t[$hc]; }
@@ -3331,8 +3390,9 @@ function wp_ems_lesen($cfg)
  *
  * Es gibt keinen Endpunkt "gib mir alle Geraete" in der Form, die dieses
  * Plugin braucht - also wird gefragt, wer antwortet. Sieben GET auf ein
- * Geraet im eigenen Netz sind guenstiger als eine Auswertung von
- * system/info, deren Aufbau sich zwischen den Fassungen geaendert hat.
+ * Geraet im eigenen Netz (bei Firmware ohne /values je ein zweites auf
+ * /info) sind guenstiger als eine Auswertung von system/info, deren Aufbau
+ * sich zwischen den Fassungen geaendert hat.
  */
 function wp_ems_geraete()
 {
@@ -3341,7 +3401,7 @@ function wp_ems_geraete()
     $out = array();
     foreach (array('boiler', 'thermostat', 'heatpump', 'mixer', 'solar',
                    'ventilation', 'heatsource') as $g) {
-        list($d, $grund) = wp_ems_holen($cfg, $g . '/values');
+        list($d, $grund) = wp_ems_werte($cfg, $g);
         if (!is_array($d) || !$d) { continue; }
         $out[] = array(
             'id'     => $g,
