@@ -62,6 +62,10 @@ Adresse und Vorlage müssen im Heimnetz liegen; die Sprechtoken stehen in keiner
 Prüfzeile im Reiter Test; dort zeigt die Prüfadresse das Aktionstoken nur noch maskiert (Knopf „Adresse
 kopieren“).
 
+## Neu in 0.9.33
+
+Hinweis zur Analogwertvalidierung berichtigt.
+
 ## Neu in 0.9.32
 
 Einbindung in Loxone: Eingang En der Analogwertvalidierung nicht negieren (Hinweis und Bild); ohne diese
