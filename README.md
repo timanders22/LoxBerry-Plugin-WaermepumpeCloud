@@ -62,6 +62,13 @@ Adresse und Vorlage müssen im Heimnetz liegen; die Sprechtoken stehen in keiner
 Prüfzeile im Reiter Test; dort zeigt die Prüfadresse das Aktionstoken nur noch maskiert (Knopf „Adresse
 kopieren“).
 
+## Neu in 0.9.34
+
+Textnachzug zum Musterprojekt, Reiter **Einbindung in Loxone**, Seite „WaermepumpeCloud“: Spotpreis aWATTar liefert die
+Werte jetzt über MQTT. Nr. 31 ist deshalb ein Virtueller Eingang `spot_awattar_rank` (bisher Virtueller HTTP-Eingang-Befehl
+`SPOT_RANK` aus der Vorlage „Spotpreis aWATTar“): Virtuellen Eingang mit dem Namen aus der Namenstabelle im Reiter ‚Einbindung in Loxone‘ des Plugins Spotpreis aWATTar (ab 1.2.38) anlegen.
+Kasten, Hinweise und Bild der Seite sind nachgezogen. Das Plugin selbst und seine Vorlagen sind unverändert.
+
 ## Neu in 0.9.33
 
 Hinweis zur Analogwertvalidierung berichtigt.
