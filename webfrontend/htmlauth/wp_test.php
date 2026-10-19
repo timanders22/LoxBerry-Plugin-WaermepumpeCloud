@@ -165,7 +165,7 @@ function wp_pruefungen()
          * antwortet das Gateway ueberhaupt? */
         list($d, $grund) = wp_ems_holen($cfg, 'system/info');
         if (is_array($d)) {
-            $fassung = isset($d['version']) ? (string) $d['version'] : '?';
+            $fassung = wp_ems_fassung($d);
             $z[] = wp_pruefzeile(1, wp_t('TEST.F_GATEWAY'),
                 sprintf(wp_t('TEST.A_GATEWAY_OK'), wp_e($fassung)));
         } else {
@@ -213,7 +213,7 @@ function wp_pruefungen()
         /* Bei EMS-ESP gibt es nichts auszuwaehlen - gelesen wird immer
          * boiler, und der Heizkreis ist eine Zahl, keine Kennung. Gefragt
          * wird deshalb, ob unter boiler tatsaechlich etwas steht. */
-        list($d, $grund) = wp_ems_holen($cfg, 'boiler/values');
+        list($d, $grund) = wp_ems_werte($cfg, 'boiler');
         if (is_array($d) && $d) {
             $z[] = wp_pruefzeile(1, wp_t('TEST.F_GERAET'),
                 sprintf(wp_t('TEST.A_GERAET_EMS'), count($d), (int) $cfg['ems_hc']));
@@ -222,6 +222,12 @@ function wp_pruefungen()
              * Kreuz mit einer Ursache ueber den Bus (Bauliste O8,
              * waermepumpe_agenten/oberflaeche Befund 9). */
             $z[] = wp_pruefzeile(-1, wp_t('TEST.F_GERAET'), wp_t('TEST.A_GERAET_EMS_KEINE_ADRESSE'));
+        } elseif ($grund !== '' && $grund !== 'NICHT_VORHANDEN') {
+            /* Bis 0.9.31 landete hier JEDER Fehler unter "steht nichts" - auch
+             * ein 429 oder eine Zeitueberschreitung, bei denen unter boiler
+             * sehr wohl etwas steht. Dann den Grund nennen. */
+            $z[] = wp_pruefzeile(0, wp_t('TEST.F_GERAET'),
+                sprintf(wp_t('TEST.A_GERAET_EMS_FEHL'), wp_e(wp_meld($grund))));
         } else {
             $z[] = wp_pruefzeile(0, wp_t('TEST.F_GERAET'), wp_t('TEST.A_GERAET_EMS_LEER'));
         }
