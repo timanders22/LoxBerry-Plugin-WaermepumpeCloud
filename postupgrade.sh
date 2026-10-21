@@ -252,6 +252,21 @@ fi
 # abgebrochener Lauf kann sie hinterlassen haben.
 rm -rf "$CFGDIR/.upgrade" 2>/dev/null
 
+# ---------- Befehlsbruecke (Gruppe 4 / MQTT, 0.9.35) ----------
+# Erst die Marke entfernen (sonst startet befehlsbruecke.sh nicht - "Aktualisierung im Gang"), dann starten; sie
+# startet nur mit dem Haken "Befehle ueber MQTT annehmen". Der trap oben raeumt die Marke ohnehin am Ende.
+wp_marke_weg
+BBSH="$BASE/bin/plugins/$PFOLDER/befehlsbruecke.sh"
+if [ -f "$BBSH" ]; then
+    BB_AUS=$(timeout 40 bash "$BBSH" start 2>&1 | head -n 1)
+    case "$BB_AUS" in
+        *gestartet*|*laeuft*) echo "<OK> Befehlsbruecke: $BB_AUS" ;;
+        "Haken aus - kein Start.") echo "<INFO> Befehlsbruecke: aus (Reiter MQTT, Haken 'Befehle ueber MQTT annehmen')." ;;
+        Aktualisierung*) echo "<INFO> Befehlsbruecke: $BB_AUS" ;;
+        *) echo "<WARNING> Befehlsbruecke: $BB_AUS - der Minutentakt versucht es erneut." ;;
+    esac
+fi
+
 # Die Schlusszeile sagt, was nachgelesen wurde (BERICHTIGT in 0.9.23; bis
 # 0.9.22 stand hier unbedingt "<OK> Update abgeschlossen.", gemessen Fall Z3).
 if wp_inhalt "$CFGDIR/waermepumpe.json" config; then

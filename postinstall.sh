@@ -178,6 +178,20 @@ else
     echo "<WARNING> Es wurde kein PHP gefunden - die Erweiterung curl liess sich nicht pruefen."
 fi
 
+# ---------- Befehlsbruecke (Gruppe 4 / MQTT, 0.9.35) ----------
+# Bei einer Neuinstallation startet sie nur mit dem Haken "Befehle ueber MQTT annehmen" (ab Werk aus); bei einer
+# Aktualisierung liegt die Marke noch - dann startet sie postupgrade.sh, nachdem die Marke gefallen ist.
+BBSH="$BASE/bin/plugins/$PFOLDER/befehlsbruecke.sh"
+if [ -f "$BBSH" ]; then
+    BB_AUS=$(timeout 40 bash "$BBSH" start 2>&1 | head -n 1)
+    case "$BB_AUS" in
+        *gestartet*|*laeuft*) echo "<OK> Befehlsbruecke: $BB_AUS" ;;
+        "Haken aus - kein Start.") echo "<INFO> Befehlsbruecke: aus (Reiter MQTT, Haken 'Befehle ueber MQTT annehmen')." ;;
+        Aktualisierung*) echo "<INFO> Befehlsbruecke: $BB_AUS" ;;
+        *) echo "<WARNING> Befehlsbruecke: $BB_AUS - der Minutentakt versucht es erneut." ;;
+    esac
+fi
+
 if wp_hersteller_da "$CFGDIR/waermepumpe.json"; then
     echo "<OK> Die Konfiguration ist eingerichtet (Hersteller eingetragen)."
 elif wp_hersteller_da "$WP_UPDSICH/waermepumpe.json"; then

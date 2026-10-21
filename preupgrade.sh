@@ -168,5 +168,12 @@ done
 # Altlast aus 0.9.0: die nie zurueckgespielte Kopie neben dem Original.
 rm -f "$CFGDIR/geheim.json.vorher" 2>/dev/null
 
+# Gruppe 4 / MQTT (0.9.35): die Befehlsbruecke anhalten. Die Marke liegt schon (oben) - der Waechter im
+# Minutentakt startet sie bis postupgrade.sh nicht neu; es ist dieselbe Marke, die befehlsbruecke.sh liest.
+# Bis 0.9.34 gab es keine Bruecke (dann fehlt die Datei).
+BBSH="$BASE/bin/plugins/$PFOLDER/befehlsbruecke.sh"
+if [ -f "$BBSH" ]; then
+    echo "<INFO> Befehlsbruecke: $(timeout 40 bash "$BBSH" stop 2>&1 | head -n 1)"
+fi
 echo "<OK> preupgrade abgeschlossen ($GESICHERT Datei(en) gesichert nach $SICHERUNG)."
 exit 0

@@ -202,6 +202,22 @@ if ($wp_post && isset($_POST['download'])) {
     exit;
 }
 
+/* ================= Vorlage der MQTT-Befehle (Gruppe 4 / MQTT, 0.9.35) =================
+ * Eigener Ausgang "Wärmepumpe Cloud MQTT-Befehle" aus der Tabelle der Befehlsbruecke (bb_vorlage(),
+ * wp_befehle_vorlage()). Liest nur. */
+if ($wp_post && isset($_POST['vorlage_bb'])) {
+    $wp_bv = wp_befehle_vorlage();
+    if (is_array($wp_bv)) {
+        header('Content-Type: application/x-download');
+        header('Content-Disposition: attachment; filename="' . $wp_bv[0] . '"');
+        header('Content-Length: ' . strlen($wp_bv[1]));
+        echo $wp_bv[1];
+        exit;
+    }
+    $wp_fehler[] = wp_t('BEFEHL.FEHLER_VORLAGE');
+    $wp_tab = 'tab-loxone';
+}
+
 /* ================= Zugangsdaten speichern ================= */
 /* NICHTS SPEICHERN BEI EINER BEANSTANDUNG - in allen vier Formularen dieses
  * Reiters und im Reiter SG Ready (Entscheidung Nr. 16, Bauliste O1).
@@ -582,6 +598,9 @@ if ($wp_post && isset($_POST['save_mqtt'])) {
     $wp_malt = wp_config();
     $wp_mcfg = $wp_malt;
     $wp_mcfg['mqtt_ein'] = !empty($_POST['mqtt_ein']) ? 1 : 0;
+    /* Gruppe 4 / MQTT (0.9.35): die beiden Haken der Befehlsbruecke (ab Werk aus). */
+    $wp_mcfg['befehle_mqtt_ein'] = !empty($_POST['befehle_mqtt_ein']) ? 1 : 0;
+    $wp_mcfg['befehle_mqtt_steuern'] = !empty($_POST['befehle_mqtt_steuern']) ? 1 : 0;
     /* PRUEFEN, nicht zurechtbiegen (seit 0.9.10). */
     $wp_mt = trim((string) (isset($_POST['mqtt_topic']) && !is_array($_POST['mqtt_topic'])
         ? $_POST['mqtt_topic'] : ''));
@@ -595,13 +614,21 @@ if ($wp_post && isset($_POST['save_mqtt'])) {
     /* Bei einer Beanstandung wird auch der Haken NICHT uebernommen (Bauliste
      * O1; bis 0.9.26 "Das Gueltige speichern" - MQTT war danach aus). */
     if (count($wp_fehler) > $wp_f0) {
-        wp_nichts_gespeichert($wp_fehler, $wp_f0, array('mqtt_topic'), array('mqtt_ein'), array('mqtt_topic'));
+        wp_nichts_gespeichert($wp_fehler, $wp_f0, array('mqtt_topic'),
+            array('mqtt_ein', 'befehle_mqtt_ein', 'befehle_mqtt_steuern'), array('mqtt_topic'));
     } elseif (wp_config_write($wp_mcfg)) {
         $wp_meldungen[] = wp_t('EINST.GESPEICHERT');
         // Das Abo wandert mit dem Praefix; der Rueckgabewert wird angesehen.
         if (!wp_abo_nachziehen(wp_config())) {
             $wp_fehler[] = wp_t('MQTT.ABO_SCHREIBFEHLER');
         }
+        /* Gruppe 4 / MQTT (0.9.35): die Befehlsbruecke sofort schalten - der Waechter im Minutentakt startet
+         * nach einem Start hoechstens alle 600 s neu (Stammfassung). */
+        list($wp_bart, $wp_baus) = wp_bruecke_schalten();
+        if ($wp_bart === 'ein') { $wp_meldungen[] = wp_t('BEFEHL.M_EIN'); }
+        elseif ($wp_bart === 'aus') { $wp_meldungen[] = wp_t('BEFEHL.M_AUS'); }
+        elseif ($wp_bart === 'start_fehl') { $wp_fehler[] = sprintf(wp_t('BEFEHL.M_START_FEHL'), wp_e($wp_baus)); }
+        elseif ($wp_bart === 'stop_fehl') { $wp_fehler[] = sprintf(wp_t('BEFEHL.M_STOP_FEHL'), wp_e($wp_baus)); }
         /* Abraeumen beim Praefixwechsel und bei "MQTT aus", mit Nachlesen beim
          * Broker (Entscheidung Nr. 26, Bauliste M1). Das alte Praefix wird
          * VORHER vorgemerkt (neben dem Datenordner, uebersteht das Upgrade) und
@@ -989,6 +1016,9 @@ if (class_exists('LBWeb', false)) {
     padding-top: 10px; border-top: 1px solid #e0e0e0; }
 .sm-schritte { margin: 6px 0 0 18px; padding: 0; }
 .sm-schritte li { margin: 3px 0; }
+/* Gruppe 4 / MQTT (0.9.35): Kopierknopf der Namenstabelle, zugeklappte Abschnitte. */
+button.sm-kopie { font-size: 0.8em; padding: 1px 6px; margin-left: 4px; border: 1px solid #ccc; border-radius: 4px; background: #f5f5f5; color: #333; cursor: pointer; }
+details > summary { cursor: pointer; font-weight: 600; color: #4f7d17; margin: 8px 0 6px; }
 </style>
 
 <div class="sm-wrap">
@@ -1571,6 +1601,20 @@ if (!$wp_verlauf) { ?>
   <label style="font-weight:400;"><input data-role="none" type="checkbox" name="mqtt_ein" value="1"<?= wp_an('mqtt_ein', $wp_cfg['mqtt_ein']) ? ' checked' : '' ?>>
     <?= wp_e(wp_t('EINST.L_MQTT_EIN')) ?></label>
 </div>
+<?php /* Gruppe 4 / MQTT (0.9.35, Entwurf wp 3.3): die beiden Haken der Befehlsbruecke, ab Werk aus. */ ?>
+<div class="sm-feld">
+  <label style="font-weight:400;"><input data-role="none" type="checkbox" name="befehle_mqtt_ein" value="1"<?= wp_an('befehle_mqtt_ein', $wp_cfg['befehle_mqtt_ein']) ? ' checked' : '' ?>>
+    <?= wp_e(wp_t('BEFEHL.HAKEN_EIN')) ?></label>
+  <div class="sm-hilfe"><?= wp_t('BEFEHL.HAKEN_HILFE') ?></div>
+<?php if (empty($wp_cfg['mqtt_ein'])) { ?>
+  <div class="sm-hilfe"><?= wp_t('BEFEHL.HAKEN_MQTT_AUS') ?></div>
+<?php } ?>
+</div>
+<div class="sm-feld">
+  <label style="font-weight:400;"><input data-role="none" type="checkbox" name="befehle_mqtt_steuern" value="1"<?= wp_an('befehle_mqtt_steuern', $wp_cfg['befehle_mqtt_steuern']) ? ' checked' : '' ?>>
+    <?= wp_e(wp_t('BEFEHL.HAKEN_STEUERN')) ?></label>
+  <div class="sm-hilfe"><?= wp_t('BEFEHL.HAKEN_STEUERN_HILFE') ?></div>
+</div>
 <div class="sm-feld">
   <label for="wp_topic"><?= wp_e(wp_t('EINST.L_MQTT_TOPIC')) ?></label>
   <input data-role="none" type="text" name="mqtt_topic" id="wp_topic" value="<?= wp_e(wp_ein('mqtt_topic', $wp_cfg['mqtt_topic'])) ?>"<?= wp_mark('mqtt_topic') ?> size="30">
@@ -1619,119 +1663,164 @@ foreach (wp_lebenszeichen_themen() as $wp_n => $wp_lt) { ?>
 <tr><td><span class="sm-mono"><?= wp_e($wp_cfg['mqtt_topic']) ?>/<?= wp_e($wp_n) ?></span></td>
     <td><?= wp_t($wp_lt) ?></td>
     <td><?= wp_e(wp_t('MQTT.RETAIN_NEIN')) ?></td>
-    <td><?= $wp_n === 'status/ts' ? wp_e((int) $wp_stand['zeit']) : '&mdash;' ?></td></tr>
+    <td><?= $wp_n === 'status/ts' ? wp_e((int) $wp_stand['zeit']) : ($wp_n === 'status/ok' ? wp_e((int) $wp_raus['OK']) : '&mdash;') ?></td></tr>
 <?php } ?>
+<?php /* Gruppe 4 / MQTT (0.9.35): das Lebenszeichen der Befehlsbruecke (bb_status_senden(), nie retained). */ ?>
+<tr><td><span class="sm-mono"><?= wp_e($wp_cfg['mqtt_topic']) ?>/status/befehle</span></td>
+    <td><?= wp_t('BEFEHL.TH_STATUS') ?></td>
+    <td><?= wp_e(wp_t('MQTT.RETAIN_NEIN')) ?></td>
+    <td>&mdash;</td></tr>
 </table>
 </div>
 
 <!-- ================= Reiter: Einbindung in Loxone ================= -->
 <div class="sm-seite<?= $wp_tab === 'tab-loxone' ? ' sm-active' : '' ?>" id="tab-loxone">
 <h2><?= wp_e(wp_t('LOX.H_TITEL')) ?></h2>
-<div class="sm-step"><b>1.</b> <?= wp_t('LOX.S1') ?></div>
-<div class="sm-step"><b>2.</b> <?= wp_t('LOX.S2') ?>
-  <div class="sm-pre"><?= wp_e($wp_cfg['mqtt_topic']) ?>/#</div>
-  <?= wp_abo_text() ?></div>
-<div class="sm-step"><b>3.</b> <?= wp_t('LOX.S3') ?>
-  <div class="sm-pre"><?= wp_e(wp_endpunkt('status')) ?></div>
-  <?= wp_t('LOX.S3_HINWEIS') ?>
-  <table class="sm-tbl">
-  <tr><th><?= wp_e(wp_t('LOX.T_TITEL')) ?></th><th><?= wp_e(wp_t('LOX.T_ART')) ?></th><th><?= wp_e(wp_t('LOX.T_BEDEUTUNG')) ?></th></tr>
-<?php foreach (wp_statusfelder() as $wp_n => $wp_d) { ?>
-  <tr><td><span class="sm-mono">WP_<?= wp_e($wp_n) ?></span></td>
-      <td><?= $wp_d[0] ? wp_e(wp_t('LOX.ANALOG')) : wp_e(wp_t('LOX.DIGITAL')) ?></td>
-      <td><?= wp_t($wp_d[3]) ?></td></tr>
+<?php /* Gruppe 4 / MQTT (0.9.35; Entwurf wp 2.5 und 3.3, Bauvorschrift Gruppe 1 Nachtrag 2): MQTT ist der Weg des
+   LoxBerry-Plugins Musterprojekts. Schritt 1 MQTT einschalten, Schritt 2 das Gateway nach seiner Fassung (V1: das Plugin
+   bringt sein Abo selbst mit; V2 und "nicht feststellbar": Hakenliste aus wp_mqtt_hakenliste()), Schritt 3 die
+   Namenstabelle (KEINE Importvorlage fuer Werte), Schritt 4 die Befehle aus der Befehlsbruecke (bb_liste(), EINE Quelle
+   mit der Vorlage "Wärmepumpe Cloud MQTT-Befehle"), Schritt 5 die Ausfallerkennung am Lebenszeichen status/zaehler,
+   Schritt 6 die Musterseiten, Schritt 7 die Gegenprobe. Der Weg ueber HTTP (bis 0.9.34 die Schritte 3 bis 5 dieses
+   Reiters, die Vorlagen und die Gegenprobe) steht darunter, zugeklappt. Alle Namen aus wp_mqtt_gateway_name(). */
+$wp_gpraefix = wp_mqtt_praefix();
+$wp_gm = wp_mqtt_zustand();
+$wp_gwf = (int) $wp_gm['fassung'];
+$wp_namen = wp_mqtt_namen();
+$wp_haken = wp_mqtt_hakenliste();
+$wp_bliste = wp_befehle_liste(); ?>
+<div class="sm-step"><b>1.</b> <?= wp_t('LOX.M_S1') ?>
+<?php if (empty($wp_cfg['mqtt_ein'])) { ?>
+<div class="sm-warnung"><?= wp_t('LOX.M_S1_AUS') ?></div>
 <?php } ?>
-  </table>
 </div>
-<div class="sm-step"><b>4.</b> <?= wp_t('LOX.S4') ?>
-  <div class="sm-pre"><?= wp_e(wp_endpunkt('sgready')) ?>&amp;stufe=1 .. 4</div>
-  <?= wp_t('LOX.S4_KLEMMEN') ?>
-  <div class="sm-pre"><?= wp_e(wp_endpunkt('sgready')) ?>&amp;k1=1&amp;k2=0</div>
-<?php /* Die Warmwasser-Zwangsladung ist ein EIGENER Ausgang und haengt nicht
-   an SG Ready. Sie steht nur da, wo der Hersteller sie kann - sonst stuende
-   hier eine Adresse, die immer mit einer Absage antwortet. */
-if (wp_ww_moeglich($wp_cfg['hersteller'])) { ?>
-  <?= wp_t('LOX.S4_WW') ?>
-  <div class="sm-pre"><?= wp_e(wp_endpunkt('ww_boost')) ?>&amp;ein=1<br><?= wp_e(wp_endpunkt('ww_boost')) ?>&amp;ein=0</div>
-<?php } else { ?>
-  <div class="sm-hilfe"><?= sprintf(wp_t('LOX.S4_WW_NICHT'), wp_e($wp_info ? $wp_info['name'] : '?')) ?></div>
+<div class="sm-step"><b>2.</b> <?= wp_t('LOX.M_S2') ?>
+  <div class="sm-pre"><?= wp_e($wp_gpraefix) ?>/#</div>
+<?php if ($wp_gwf <= 1) { /* V1 oder nicht feststellbar: das Abo (wp_abo_text(), wie im Reiter MQTT) */ ?>
+  <div class="sm-hilfe"><?= wp_abo_text() ?></div>
 <?php } ?>
-  <?= wp_t('LOX.S4_SELFTEST') ?>
-  <div class="sm-pre"><?= wp_e(wp_endpunkt('status')) ?>&amp;selftest=1</div>
+<?php if ($wp_gwf !== 1) { /* V2 oder nicht feststellbar: die Hakenliste, aufgeklappt */ ?>
+<div class="sm-hinweis"><?= sprintf(wp_t('LOX.M_S2_V2'), '<span class="sm-mono">' . wp_e($wp_gpraefix) . '</span>') ?></div>
+<details open><summary><?= wp_e(sprintf(wp_t('LOX.M_HAKEN_AUF'), count($wp_haken))) ?></summary>
+<div class="sm-breit"><table class="sm-tbl">
+<tr><th style="width:34px;">#</th><th><?= wp_e(wp_t('LOX.M_T_THEMA')) ?></th><th><?= wp_e(wp_t('LOX.M_T_NAME')) ?></th><th><?= wp_e(wp_t('LOX.M_T_BEDEUTUNG')) ?></th></tr>
+<?php foreach ($wp_haken as $wp_hi => $wp_hz) { ?>
+<tr><td><?= (int) $wp_hi + 1 ?></td><td><span class="sm-mono"><?= wp_e($wp_hz[0]) ?></span></td><td><span class="sm-mono"><?= wp_e($wp_hz[1]) ?></span></td><td><?= wp_t($wp_hz[2]) ?></td></tr>
+<?php } ?>
+</table></div>
+</details>
+<p class="sm-hilfe"><?= wp_t('LOX.M_NONCACHED') ?></p>
+<?php } ?>
+<p class="sm-hilfe"><?= wp_t('LOX.M_RECONNECT') ?></p>
+<p class="sm-hilfe"><?= wp_t('LOX.M_V1_BEFEHLE') ?></p>
 </div>
-<div class="sm-step"><b>5.</b> <?= wp_t('LOX.S5') ?></div>
 
-<h3><?= wp_e(wp_t('LOX.H_VORLAGE')) ?></h3>
-<div class="sm-hilfe"><?= wp_t('LOX.VORLAGE_TEXT') ?></div>
-<div class="sm-legende">
-<span><i class="sm-punkt sm-b-technik"></i> <?= wp_t('LEGENDE.TECHNIK') ?></span>
+<div class="sm-step"><b>3.</b> <?= wp_t('LOX.M_S3') ?>
+<div class="sm-breit"><table class="sm-tbl">
+<tr><th style="width:34px;">#</th><th><?= wp_e(wp_t('LOX.M_T_NAME')) ?></th><th><?= wp_e(wp_t('LOX.M_T_THEMA')) ?></th><th><?= wp_e(wp_t('LOX.M_T_BEDEUTUNG')) ?></th><th><?= wp_e(wp_t('LOX.M_T_BEREICH')) ?></th><th><?= wp_e(wp_t('LOX.M_T_FEHLWERT')) ?></th><th><?= wp_e(wp_t('LOX.M_T_MUSTER')) ?></th></tr>
+<?php foreach ($wp_namen as $wp_ni => $wp_nz) { ?>
+<tr><td><?= (int) $wp_ni + 1 ?></td><td><span class="sm-mono"><?= wp_e($wp_nz['name']) ?></span> <button data-role="none" type="button" class="sm-kopie" data-kopie="<?= wp_e($wp_nz['name']) ?>"><?= wp_e(wp_t('LOX.M_KOPIEREN')) ?></button></td><td><span class="sm-mono"><?= wp_e($wp_gpraefix . '/' . $wp_nz['thema']) ?></span></td><td><?= wp_t($wp_nz['bedeutung']) ?></td><td><?= wp_e($wp_nz['bereich']) ?></td><td><?= $wp_nz['fehlwert'] === null ? '&ndash;' : wp_e($wp_nz['fehlwert']) ?></td><td><?= wp_e(wp_t($wp_nz['im_muster'] ? 'MQTT.RETAIN_JA' : 'MQTT.RETAIN_NEIN')) ?></td></tr>
+<?php } ?>
+</table></div>
+<p class="sm-hilfe"><?= wp_t('LOX.M_S3_DIGITAL') ?></p>
+<p class="sm-hilfe"><?= wp_t('LOX.M_S3_FEHLWERT') ?></p>
+<p class="sm-hilfe"><?= wp_t('LOX.M_S3_RECHTE') ?></p>
+<p class="sm-hilfe"><?= wp_t('LOX.M_S3_MUSTER') ?></p>
+<p class="sm-hilfe"><?= wp_t('LOX.M_S3_PRAEFIX') ?></p>
+<script>
+(function () {
+    document.querySelectorAll('.sm-kopie').forEach(function (k) {
+        k.addEventListener('click', function () {
+            var n = k.getAttribute('data-kopie');
+            var fertig = function () { k.textContent = <?= json_encode(wp_t('LOX.M_KOPIERT')) ?>; };
+            if (navigator.clipboard && window.isSecureContext) {
+                navigator.clipboard.writeText(n).then(fertig);
+            } else {
+                var f = document.createElement('textarea');
+                f.value = n; document.body.appendChild(f); f.select();
+                try { document.execCommand('copy'); fertig(); } catch (e) {}
+                document.body.removeChild(f);
+            }
+        });
+    });
+})();
+</script>
 </div>
+
+<div class="sm-step"><b>4.</b> <?= wp_t('LOX.M_S4') ?>
+<p class="sm-hilfe"><?= wp_t('LOX.M_S4_SG') ?></p>
+<?php if ($wp_bliste === null) { ?>
+<div class="sm-warnung"><?= wp_t('LOX.M_S4_KEINE') ?></div>
+<?php } else { ?>
+<div class="sm-breit"><table class="sm-tbl">
+<tr><th><?= wp_e(wp_t('BEFEHL.T_BEDEUTUNG')) ?></th><th><?= wp_e(wp_t('BEFEHL.T_TITEL')) ?></th><th><?= wp_e(wp_t('BEFEHL.T_THEMA')) ?></th><th><?= wp_e(wp_t('BEFEHL.T_LOXONE')) ?></th><th><?= wp_e(wp_t('BEFEHL.T_EINGREIFEND')) ?></th><th><?= wp_e(wp_t('BEFEHL.T_SPERRE')) ?></th></tr>
+<?php foreach ($wp_bliste['befehle'] as $wp_bb) {
+    if ($wp_bb['muster']) { continue; }
+    /* Auswahl (sgready): je Wert ein Befehl; Schalter (ww_boost): Ein- und Ausbefehl. */
+    $wp_bl = isset($wp_bb['loxone']['je_wert']) ? array_values($wp_bb['loxone']['je_wert'])
+           : array_values(array_filter(array($wp_bb['loxone']['ein'], $wp_bb['loxone']['aus']), 'strlen')); ?>
+<tr><td><?= wp_e(wp_t($wp_bb['kachel'])) ?></td><td><?= wp_e($wp_bb['titel']) ?></td><td><span class="sm-mono"><?= wp_e($wp_bb['thema']) ?></span></td><td><span class="sm-mono"><?= implode('<br>', array_map('wp_e', $wp_bl)) ?></span></td><td><?= wp_e(wp_t($wp_bb['eingreifend'] ? 'MQTT.RETAIN_JA' : 'MQTT.RETAIN_NEIN')) ?></td><td><?= (int) $wp_bb['sperre_s'] ?> s</td></tr>
+<?php } ?>
+</table></div>
+<p class="sm-hilfe"><?= wp_e(wp_t('BEFEHL.T_QUITTUNG')) ?>: <span class="sm-mono"><?= wp_e($wp_gpraefix) ?>/befehl/…/quittung</span> – <?= wp_e(wp_t('BEFEHL.Q_AUSGEFUEHRT')) ?></p>
+<?php if (!wp_ww_moeglich($wp_cfg['hersteller']) && $wp_cfg['hersteller'] !== '') { ?>
+<p class="sm-hilfe"><?= sprintf(wp_t('LOX.M_S4_NIBE'), wp_e($wp_info ? $wp_info['name'] : '?')) ?></p>
+<?php } ?>
+<p class="sm-hilfe"><?= wp_t('LOX.M_S4_SPERRE') ?></p>
+<p class="sm-hilfe"><?= wp_t('LOX.M_S4_NICHTS') ?></p>
+<div class="sm-legende"><span><i class="sm-punkt sm-b-technik"></i> <?= wp_t('LEGENDE.TECHNIK') ?></span></div>
 <div class="sm-knopfreihe">
 <form action="index.php" method="post" style="margin:0;">
   <?php echo wp_fmt(); ?>
-  <input data-role="none" type="hidden" name="download" value="xml_in">
   <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
-  <button data-role="none" class="sm-btn sm-b-technik" type="submit"><?= wp_e(wp_t('LOX.K_VORLAGE_EIN')) ?></button>
-</form>
-<form action="index.php" method="post" style="margin:0;">
-  <?php echo wp_fmt(); ?>
-  <input data-role="none" type="hidden" name="download" value="xml_out">
-  <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
-  <button data-role="none" class="sm-btn sm-b-technik" type="submit"><?= wp_e(wp_t('LOX.K_VORLAGE_AUS')) ?></button>
+  <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="vorlage_bb" value="1"><?= wp_e(wp_t('BEFEHL.K_VORLAGE')) ?></button>
 </form>
 </div>
+<p class="sm-hilfe"><?= wp_t('LOX.M_S4_VORLAGE') ?></p>
+<?php } ?>
+</div>
+
+<div class="sm-step"><b>5.</b> <?= sprintf(wp_t('LOX.M_S5'), '<span class="sm-mono">' . wp_e(wp_mqtt_gateway_name('status/zaehler')) . '</span>',
+                                 '<span class="sm-mono">' . wp_e(wp_mqtt_gateway_name('status/ok')) . '</span>') ?></div>
+
+<div class="sm-step"><b>6.</b> <?= wp_t('LOX.M_S6') ?></div>
 
 <h3><?= wp_e(wp_t('LOX.H_BAUSTEINE')) ?></h3>
 <div class="sm-hilfe"><?= wp_t('LOX.BAUSTEINE_TEXT') ?></div>
 <?php
 /* Welle Bild 12 VOLL (0.9.31, Hausherr 11.10.2026: Vollausstattung, ein absoluter Laie soll das
- * Maximum leicht uebernehmen koennen): zwei Seiten aus dem LoxBerry-Plugins Musterprojekt, dort in
+ * Maximum leicht uebernehmen koennen): drei Seiten aus dem LoxBerry-Plugins Musterprojekt, dort in
  * Loxone Config gebaut und mit leitungen_setzen.py verbunden (Musterprojekt/baustein_listen.txt,
- * Abschnitte "WaermepumpeCloud" 40, "WaermepumpeCloud Ausfall" 3 (Nummern 3, 4, 43 der Hauptseite)
- * und "WaermepumpeCloud Werte" 45 Zeilen). Je Seite: Ueberschrift,
- * Kasten "So uebernehmen Sie diese Seite", Tabelle, Hinweise, Bild, Link - alle immer sichtbar. Bis
- * 0.9.30 stand hier eine Liste mit 11 Zeilen (BAUSTEIN.B1_* bis B11_*).
- * Titel und Namen der beiden Vorlagen kommen aus DEMSELBEN XML wie die Knoepfe oben
- * (wp_vorlage_ein(), wp_vorlage_aus()); ein Name, den das XML nicht fuehrt, erscheint in
- * geschweiften Klammern. Ausnahme WP_WW_BOOST: die Vorlage fuehrt ihn nur, wenn der Hersteller die
- * Warmwasser-Zwangsladung kann (wp_ww_moeglich()); die Zeile bleibt mit ihrem Hinweis "fehlt beim
- * Hersteller Nibe" stehen. Texte aus [BAUSTEIN]; jede Zelle ist fertiges, maskiertes HTML.
- * Zeile: array(Nr, Typ, Name, Parameter, Eingaenge). */
-$wp_bs_vi_v = wp_vorlage_ein();
-$wp_bs_vq_v = wp_vorlage_aus();
-$wp_bs_kopf = function ($xml) {
-    return preg_match('/<Virtual(?:InHttp|Out) [^>]*?Title="([^"]*)"/', $xml, $m)
-        ? html_entity_decode($m[1], ENT_QUOTES | ENT_XML1, 'UTF-8') : '?';
-};
-$wp_bs_titel = function ($xml) {
-    preg_match_all('/<Virtual(?:InHttpCmd|OutCmd) [^>]*?Title="([^"]*)"/', $xml, $m);
-    $aus = array();
-    foreach ($m[1] as $t) { $aus[] = html_entity_decode($t, ENT_QUOTES | ENT_XML1, 'UTF-8'); }
-    return $aus;
-};
-$wp_bs_vi_titel = $wp_bs_kopf($wp_bs_vi_v[1]);
-$wp_bs_vq_titel = $wp_bs_kopf($wp_bs_vq_v[1]);
-$wp_bs_vi_namen = $wp_bs_titel($wp_bs_vi_v[1]);
-$wp_bs_vq_namen = $wp_bs_titel($wp_bs_vq_v[1]);
-$wp_bs_vi = function ($feld) use ($wp_bs_vi_namen) {
-    $n = 'WP_' . $feld;
-    return in_array($n, $wp_bs_vi_namen, true) ? $n : '{' . $n . '}';
-};
-$wp_bs_vq = function ($n) use ($wp_bs_vq_namen) {
-    return (in_array($n, $wp_bs_vq_namen, true) || $n === 'WP_WW_BOOST') ? $n : '{' . $n . '}';
-};
+ * Abschnitte "WaermepumpeCloud", "WaermepumpeCloud Ausfall" (Nummern 3, 4, 43 der Hauptseite) und
+ * "WaermepumpeCloud Werte"). Je Seite: Ueberschrift, Kasten "So uebernehmen Sie diese Seite", Tabelle,
+ * Hinweise, Bild, Link - alle immer sichtbar.
+ * Gruppe 4 / MQTT (0.9.35, Entwurf wp Abschnitt 9): die Eingaenge sind Virtuelle Eingaenge mit dem Namen, den
+ * das MQTT-Gateway vergibt (wp_mqtt_gateway_name()), die fuenf Befehle haengen am gemeinsamen Ausgang
+ * "LoxBerry MQTT-Gateway" des Musterprojekts (Befehl aus wp_befehl_loxone(), Praefix wie eingestellt); neu
+ * #44/#45 (Sperre und Normalbetrieb auffrischen). Die Liste liest die HTTP-Vorlagen nicht mehr; sie bleiben fuer
+ * bestehende Anlagen. Befehlsnamen wie im Musterprojekt, in beiden Sprachen gleich. Texte aus [BAUSTEIN]; jede
+ * Zelle ist fertiges, maskiertes HTML. Zeile: array(Nr, Typ, Name, Parameter, Eingaenge). */
+$wp_bs_typ_vi = wp_e(sprintf(wp_t('BAUSTEIN.TYP_VI_MQTT'), 'Wärmepumpe Cloud'));
+$wp_bs_typ_vq = wp_e(sprintf(wp_t('BAUSTEIN.TYP_VQ_MQTT'), 'LoxBerry MQTT-Gateway'));
 $wp_bs_mono = function ($s) { return '<span class="sm-mono">' . wp_e($s) . '</span>'; };
+$wp_bs_gw = function ($thema) { return wp_mqtt_gateway_name($thema); };
+$wp_bs_vi = function ($nr, $thema, $param) use ($wp_bs_typ_vi, $wp_bs_mono, $wp_bs_gw) {
+    return array($nr, $wp_bs_typ_vi, $wp_bs_mono($wp_bs_gw($thema)), wp_e(wp_t('BAUSTEIN.' . $param)), '&mdash;');
+};
+$wp_bs_vq = function ($nr, $name, $param, $befehle, $ein) use ($wp_bs_typ_vq, $wp_bs_mono) {
+    return array($nr, $wp_bs_typ_vq, $wp_bs_mono($name), wp_e(vsprintf(wp_t('BAUSTEIN.' . $param), $befehle)),
+                 wp_e(wp_t('BAUSTEIN.E_EINGANG')) . ' = #' . (int) $ein);
+};
+$wp_bs_qneg = wp_e(sprintf(wp_t('BAUSTEIN.E_AUSGANG'), 'Q', 29)) . ' ' . wp_e(wp_t('BAUSTEIN.E_NEG'));
 $wp_bs_m = '&mdash;';
+$wp_bs_ww = 'Wärmepumpe Cloud: Warmwasser-Zwangsladung';
 $wp_bs_seiten = array(
     array('kopf' => 'BL_STEUERN', 'seite' => 'WaermepumpeCloud', 'bild' => 'einbindung_loxone.png', 'zeilen' => array(
-        array(1, wp_e(sprintf(wp_t('BAUSTEIN.TYP_VI_GERAET'), $wp_bs_vi_titel)),
-              $wp_bs_mono($wp_bs_vi_titel),
-              wp_e(wp_t('BAUSTEIN.S1_01_PARAM')),
-              $wp_bs_m),
+        $wp_bs_vi(1, 'STUFE', 'S1_01_PARAM'),
         array(2, wp_e(wp_t('BAUSTEIN.T_STATUS')),
               $wp_bs_mono(wp_t('BAUSTEIN.S1_02_NAME')),
               wp_e(wp_t('BAUSTEIN.S1_02_PARAM')),
-              'V1 = ' . wp_e($wp_bs_vi('STUFE'))),
+              'V1 = #1'),
         array(5, wp_e(wp_t('BAUSTEIN.T_EM')),
               $wp_bs_mono(wp_t('BAUSTEIN.S1_05_NAME')),
               wp_e(wp_t('BAUSTEIN.S1_05_PARAM')),
@@ -1740,26 +1829,17 @@ $wp_bs_seiten = array(
               $wp_bs_mono(wp_t('BAUSTEIN.S1_06_NAME')),
               wp_e(wp_t('BAUSTEIN.S1_06_PARAM')),
               'I1 = ' . wp_e(sprintf(wp_t('BAUSTEIN.E_AUSGANG'), 'OL1', 5)) . ', I2 = #27'),
-        array(7, wp_e(sprintf(wp_t('BAUSTEIN.TYP_VQ_GERAET'), $wp_bs_vq_titel)),
-              $wp_bs_mono($wp_bs_vq('WP_SGREADY_4')),
-              wp_e(wp_t('BAUSTEIN.S1_07_PARAM')),
-              wp_e(wp_t('BAUSTEIN.E_EINGANG')) . ' = #30'),
+        $wp_bs_vq(7, 'Wärmepumpe Cloud: Anlaufbefehl (SG Ready 4)', 'S1_07_PARAM', array(wp_befehl_loxone('sgready', '4')), 30),
         array(8, wp_e(wp_t('BAUSTEIN.T_MONOFLOP')),
               $wp_bs_mono(wp_t('BAUSTEIN.S1_08_NAME')),
               wp_e(wp_t('BAUSTEIN.S1_08_PARAM')),
               wp_e(wp_t('BAUSTEIN.E_EINGANG')) . ' = #14, Reset = #15'),
-        array(9, wp_e(sprintf(wp_t('BAUSTEIN.TYP_VQ_GERAET'), $wp_bs_vq_titel)),
-              $wp_bs_mono($wp_bs_vq('WP_SGREADY_1')),
-              wp_e(wp_t('BAUSTEIN.S1_09_PARAM')),
-              wp_e(wp_t('BAUSTEIN.E_EINGANG')) . ' = #8'),
+        $wp_bs_vq(9, 'Wärmepumpe Cloud: Sperre (SG Ready 1)', 'S1_09_PARAM', array(wp_befehl_loxone('sgready', '1')), 44),
         array(10, wp_e(wp_t('BAUSTEIN.T_UND')),
               $wp_bs_mono(wp_t('BAUSTEIN.S1_10_NAME')),
               wp_e(wp_t('BAUSTEIN.S1_10_PARAM')),
               'I1 = #37 ' . wp_e(wp_t('BAUSTEIN.E_NEG')) . ', I2 = #8 ' . wp_e(wp_t('BAUSTEIN.E_NEG'))),
-        array(11, wp_e(sprintf(wp_t('BAUSTEIN.TYP_VQ_GERAET'), $wp_bs_vq_titel)),
-              $wp_bs_mono($wp_bs_vq('WP_SGREADY_2')),
-              wp_e(wp_t('BAUSTEIN.S1_11_PARAM')),
-              wp_e(wp_t('BAUSTEIN.E_EINGANG')) . ' = #10'),
+        $wp_bs_vq(11, 'Wärmepumpe Cloud: Normalbetrieb (SG Ready 2)', 'S1_11_PARAM', array(wp_befehl_loxone('sgready', '2')), 45),
         array(12, wp_e(wp_t('BAUSTEIN.T_VSCHALTER')),
               $wp_bs_mono(wp_t('BAUSTEIN.S1_12_NAME')),
               wp_e(wp_t('BAUSTEIN.S1_12_PARAM')),
@@ -1812,10 +1892,7 @@ $wp_bs_seiten = array(
               $wp_bs_mono(wp_t('BAUSTEIN.S1_24_NAME')),
               wp_e(wp_t('BAUSTEIN.S1_24_PARAM')),
               'I1 = ' . wp_e(sprintf(wp_t('BAUSTEIN.E_AUSGANG'), 'OL2', 5)) . ', I2 = #23'),
-        array(25, wp_e(sprintf(wp_t('BAUSTEIN.TYP_VQ'), $wp_bs_vq_titel)),
-              $wp_bs_mono($wp_bs_vq('WP_WW_BOOST')),
-              wp_e(wp_t('BAUSTEIN.S1_25_PARAM')),
-              wp_e(wp_t('BAUSTEIN.E_EINGANG')) . ' = #24'),
+        $wp_bs_vq(25, $wp_bs_ww, 'S1_25_PARAM', array(wp_befehl_loxone('ww_boost', '1'), wp_befehl_loxone('ww_boost', '0')), 24),
         array(26, wp_e(wp_t('BAUSTEIN.T_VTASTE')),
               $wp_bs_mono(wp_t('BAUSTEIN.S1_26_NAME')),
               wp_e(wp_t('BAUSTEIN.S1_26_PARAM')),
@@ -1835,7 +1912,7 @@ $wp_bs_seiten = array(
         array(30, wp_e(wp_t('BAUSTEIN.T_UND')),
               $wp_bs_mono(wp_t('BAUSTEIN.S1_30_NAME')),
               $wp_bs_m,
-              'I1 = #28, I2 = ' . wp_e(sprintf(wp_t('BAUSTEIN.E_AUSGANG'), 'Q', 29)) . ' ' . wp_e(wp_t('BAUSTEIN.E_NEG'))),
+              'I1 = #28, I2 = ' . $wp_bs_qneg),
         array(31, wp_e(wp_t('BAUSTEIN.T_SPOT')),
               $wp_bs_mono(wp_t('BAUSTEIN.S1_31_NAME')),
               wp_e(wp_t('BAUSTEIN.S1_31_PARAM')),
@@ -1875,22 +1952,28 @@ $wp_bs_seiten = array(
         array(40, wp_e(wp_t('BAUSTEIN.T_UND')),
               $wp_bs_mono(wp_t('BAUSTEIN.S1_40_NAME')),
               $wp_bs_m,
-              'I1 = #39, I2 = ' . wp_e(sprintf(wp_t('BAUSTEIN.E_AUSGANG'), 'Q', 29)) . ' ' . wp_e(wp_t('BAUSTEIN.E_NEG'))),
-        array(41, wp_e(sprintf(wp_t('BAUSTEIN.TYP_VQ'), $wp_bs_vq_titel)),
-              $wp_bs_mono($wp_bs_vq('WP_SGREADY_3')),
-              wp_e(wp_t('BAUSTEIN.S1_41_PARAM')),
-              wp_e(wp_t('BAUSTEIN.E_EINGANG')) . ' = #40'),
+              'I1 = #39, I2 = ' . $wp_bs_qneg),
+        $wp_bs_vq(41, 'Wärmepumpe Cloud: Einschaltempfehlung (SG Ready 3)', 'S1_41_PARAM', array(wp_befehl_loxone('sgready', '3')), 40),
         array(42, wp_e(wp_t('BAUSTEIN.T_STATUS')),
               $wp_bs_mono(wp_t('BAUSTEIN.S1_42_NAME')),
               wp_e(wp_t('BAUSTEIN.S1_42_PARAM')),
-              'V1 = #8, V2 = #28, V3 = #39, V4 = ' . wp_e($wp_bs_vi('STUFE'))),
+              'V1 = #8, V2 = #28, V3 = #39, V4 = #1'),
+        array(44, wp_e(wp_t('BAUSTEIN.T_UND')),
+              $wp_bs_mono(wp_t('BAUSTEIN.S1_44_NAME')),
+              wp_e(wp_t('BAUSTEIN.S1_44_PARAM')),
+              'I1 = #8, I2 = ' . $wp_bs_qneg),
+        array(45, wp_e(wp_t('BAUSTEIN.T_UND')),
+              $wp_bs_mono(wp_t('BAUSTEIN.S1_45_NAME')),
+              wp_e(wp_t('BAUSTEIN.S1_45_PARAM')),
+              'I1 = #10, I2 = ' . $wp_bs_qneg),
         ),
         'schritte' => array(
-            wp_e(sprintf(wp_t('BAUSTEIN.S1_SCHRITT1'), wp_t('REITER.EINSTELLUNGEN'), wp_t('REITER.TEST'), wp_t('TEST.K_GERAETE'), wp_t('TEST.K_ABRUF'))),
+            wp_e(sprintf(wp_t('BAUSTEIN.S1_SCHRITT1'), wp_t('REITER.EINSTELLUNGEN'), wp_t('REITER.TEST'), wp_t('TEST.K_GERAETE'), wp_t('TEST.K_ABRUF'),
+                         wp_t('REITER.MQTT'), wp_t('BEFEHL.HAKEN_EIN'), wp_t('BEFEHL.HAKEN_STEUERN_KURZ'))),
             wp_e(sprintf(wp_t('BAUSTEIN.S1_SCHRITT2'), wp_t('REITER.SGREADY'), wp_t('SG.L_EIN'))),
-            wp_e(sprintf(wp_t('BAUSTEIN.S1_SCHRITT3'), wp_t('LOX.H_VORLAGE'), wp_t('LOX.K_VORLAGE_EIN'), wp_t('LOX.K_VORLAGE_AUS'))),
-            wp_e(sprintf(wp_t('BAUSTEIN.S1_SCHRITT4'), $wp_bs_vi_v[0], $wp_bs_vq_v[0])),
-            wp_e(sprintf(wp_t('BAUSTEIN.S1_SCHRITT5'), $wp_bs_vi_titel, $wp_bs_vi('STUFE'), $wp_bs_vq_titel, wp_t('LOX.BL_AUSFALL'))),
+            wp_e(sprintf(wp_t('BAUSTEIN.S1_SCHRITT3'), wp_t('LOX.M_S3_KURZ'), $wp_bs_gw('STUFE'))),
+            wp_e(sprintf(wp_t('BAUSTEIN.S1_SCHRITT4'), 'LoxBerry MQTT-Gateway', wp_t('BEFEHL.K_VORLAGE'))),
+            wp_e(sprintf(wp_t('BAUSTEIN.S1_SCHRITT5'), $wp_bs_gw('STUFE'), 'LoxBerry MQTT-Gateway', wp_t('LOX.BL_AUSFALL'))),
             wp_e(wp_t('BAUSTEIN.S1_SCHRITT6')),
             wp_e(wp_t('BAUSTEIN.S1_SCHRITT7')),
             wp_e(sprintf(wp_t('BAUSTEIN.S1_SCHRITT8'), wp_t('LOX.T_VERBINDEN'))),
@@ -1902,15 +1985,16 @@ $wp_bs_seiten = array(
             wp_e(wp_t('BAUSTEIN.S1_H1')),
             wp_e(sprintf(wp_t('BAUSTEIN.S1_H2'), wp_t('REITER.SGREADY'), wp_t('SG.L_SPERRE'), wp_t('SG.L_ANHEBUNG_MAX'))),
             wp_e(wp_t('BAUSTEIN.S1_H3')),
-            wp_e(sprintf(wp_t('BAUSTEIN.S1_H4'), $wp_bs_vq('WP_WW_BOOST'))),
+            wp_e(sprintf(wp_t('BAUSTEIN.S1_H4'), $wp_bs_ww)),
             wp_e(wp_t('BAUSTEIN.S1_H5')),
             wp_e(wp_t('BAUSTEIN.S1_H6')),
+            wp_e(wp_t('BAUSTEIN.S1_H7')),
         )),
     array('kopf' => 'BL_AUSFALL', 'seite' => 'WaermepumpeCloud Ausfall', 'bild' => 'einbindung_loxone_ausfall.png', 'zeilen' => array(
         array(3, wp_e(wp_t('BAUSTEIN.T_SCHWELLE')),
               $wp_bs_mono(wp_t('BAUSTEIN.S3_03_NAME')),
               wp_e(wp_t('BAUSTEIN.S3_03_PARAM')),
-              wp_e(wp_t('BAUSTEIN.E_EINGANG')) . ' = ' . wp_e($wp_bs_vi('ALTER'))),
+              wp_e(wp_t('BAUSTEIN.E_EINGANG')) . ' = ' . wp_e($wp_bs_gw('status/ok'))),
         array(4, wp_e(wp_t('BAUSTEIN.T_BENACHR')),
               $wp_bs_mono(wp_t('BAUSTEIN.S3_04_NAME')),
               wp_e(wp_t('BAUSTEIN.S3_04_PARAM')),
@@ -1921,8 +2005,8 @@ $wp_bs_seiten = array(
               wp_e(wp_t('BAUSTEIN.E_EINGANG')) . ' = #3'),
         ),
         'schritte' => array(
-            wp_e(wp_t('BAUSTEIN.S3_SCHRITT1')),
-            wp_e(sprintf(wp_t('BAUSTEIN.S3_SCHRITT2'), $wp_bs_vi_titel, $wp_bs_vi('ALTER'))),
+            wp_e(sprintf(wp_t('BAUSTEIN.S3_SCHRITT1'), $wp_bs_gw('status/ok'))),
+            wp_e(sprintf(wp_t('BAUSTEIN.S3_SCHRITT2'), $wp_bs_gw('status/ok'))),
             wp_e(wp_t('BAUSTEIN.S3_SCHRITT3')),
             wp_e(sprintf(wp_t('BAUSTEIN.S3_SCHRITT4'), wp_t('LOX.T_VERBINDEN'))),
             wp_e(sprintf(wp_t('BAUSTEIN.S3_SCHRITT5'), wp_t('REITER.TEST'), wp_t('TEST.F_STOERUNG'))),
@@ -1934,26 +2018,14 @@ $wp_bs_seiten = array(
             wp_e(wp_t('BAUSTEIN.S3_H4')),
         )),
     array('kopf' => 'BL_WERTE', 'seite' => 'WaermepumpeCloud Werte', 'bild' => 'einbindung_loxone_werte.png', 'zeilen' => array(
-        array(1, wp_e(sprintf(wp_t('BAUSTEIN.TYP_VI'), $wp_bs_vi_titel)),
-              $wp_bs_mono($wp_bs_vi('OK')),
-              wp_e(wp_t('BAUSTEIN.S2_01_PARAM')),
-              $wp_bs_m),
-        array(2, wp_e(sprintf(wp_t('BAUSTEIN.TYP_VI'), $wp_bs_vi_titel)),
-              $wp_bs_mono($wp_bs_vi('ALTER')),
-              wp_e(wp_t('BAUSTEIN.S2_02_PARAM')),
-              $wp_bs_m),
-        array(3, wp_e(sprintf(wp_t('BAUSTEIN.TYP_VI'), $wp_bs_vi_titel)),
-              $wp_bs_mono($wp_bs_vi('STOERUNG')),
-              wp_e(wp_t('BAUSTEIN.S2_03_PARAM')),
-              $wp_bs_m),
-        array(4, wp_e(sprintf(wp_t('BAUSTEIN.TYP_VI'), $wp_bs_vi_titel)),
-              $wp_bs_mono($wp_bs_vi('BUDGET')),
-              wp_e(wp_t('BAUSTEIN.S2_04_PARAM')),
-              $wp_bs_m),
+        $wp_bs_vi(1, 'status/ok', 'S2_01_PARAM'),
+        $wp_bs_vi(2, 'status/zaehler', 'S2_02_PARAM'),
+        $wp_bs_vi(3, 'STOERUNG', 'S2_03_PARAM'),
+        $wp_bs_vi(4, 'BUDGET', 'S2_04_PARAM'),
         array(5, wp_e(wp_t('BAUSTEIN.T_STATUS')),
               $wp_bs_mono(wp_t('BAUSTEIN.S2_05_NAME')),
               wp_e(wp_t('BAUSTEIN.S2_05_PARAM')),
-              'V1 = #1, V2 = #2, V3 = #3, V4 = #4'),
+              'V1 = #1, V2 = ' . wp_e(sprintf(wp_t('BAUSTEIN.E_AUSGANG'), 'E', 7)) . ', V3 = #3, V4 = #4'),
         array(6, wp_e(wp_t('BAUSTEIN.T_KONSTANTE')),
               $wp_bs_mono(wp_t('BAUSTEIN.S2_06_NAME')),
               wp_e(wp_t('BAUSTEIN.S2_06_PARAM')),
@@ -1966,82 +2038,31 @@ $wp_bs_seiten = array(
               $wp_bs_mono(wp_t('BAUSTEIN.S2_08_NAME')),
               wp_e(wp_t('BAUSTEIN.S2_08_PARAM')),
               wp_e(wp_t('BAUSTEIN.E_EINGANG')) . ' = #7'),
-        array(9, wp_e(sprintf(wp_t('BAUSTEIN.TYP_VI'), $wp_bs_vi_titel)),
-              $wp_bs_mono($wp_bs_vi('AUSSEN')),
-              wp_e(wp_t('BAUSTEIN.S2_09_PARAM')),
-              $wp_bs_m),
-        array(10, wp_e(sprintf(wp_t('BAUSTEIN.TYP_VI'), $wp_bs_vi_titel)),
-              $wp_bs_mono($wp_bs_vi('VORLAUF')),
-              wp_e(wp_t('BAUSTEIN.S2_10_PARAM')),
-              $wp_bs_m),
-        array(11, wp_e(sprintf(wp_t('BAUSTEIN.TYP_VI'), $wp_bs_vi_titel)),
-              $wp_bs_mono($wp_bs_vi('VLSOLL')),
-              wp_e(wp_t('BAUSTEIN.S2_11_PARAM')),
-              $wp_bs_m),
-        array(12, wp_e(sprintf(wp_t('BAUSTEIN.TYP_VI'), $wp_bs_vi_titel)),
-              $wp_bs_mono($wp_bs_vi('RUECKLAUF')),
-              wp_e(wp_t('BAUSTEIN.S2_12_PARAM')),
-              $wp_bs_m),
-        array(13, wp_e(sprintf(wp_t('BAUSTEIN.TYP_VI'), $wp_bs_vi_titel)),
-              $wp_bs_mono($wp_bs_vi('SPREIZUNG')),
-              wp_e(wp_t('BAUSTEIN.S2_13_PARAM')),
-              $wp_bs_m),
-        array(14, wp_e(sprintf(wp_t('BAUSTEIN.TYP_VI'), $wp_bs_vi_titel)),
-              $wp_bs_mono($wp_bs_vi('HEIZKURVE')),
-              wp_e(wp_t('BAUSTEIN.S2_14_PARAM')),
-              $wp_bs_m),
+        $wp_bs_vi(9, 'AUSSEN', 'S2_09_PARAM'),
+        $wp_bs_vi(10, 'VORLAUF', 'S2_10_PARAM'),
+        $wp_bs_vi(11, 'VLSOLL', 'S2_11_PARAM'),
+        $wp_bs_vi(12, 'RUECKLAUF', 'S2_12_PARAM'),
+        $wp_bs_vi(13, 'SPREIZUNG', 'S2_13_PARAM'),
+        $wp_bs_vi(14, 'HEIZKURVE', 'S2_14_PARAM'),
         array(15, wp_e(wp_t('BAUSTEIN.T_STATUS')),
               $wp_bs_mono(wp_t('BAUSTEIN.S2_15_NAME')),
               wp_e(wp_t('BAUSTEIN.S2_15_PARAM')),
               'V1 = #10, V2 = #11, V3 = #12, V4 = #9, V5 = #13, V6 = #14'),
-        array(16, wp_e(sprintf(wp_t('BAUSTEIN.TYP_VI'), $wp_bs_vi_titel)),
-              $wp_bs_mono($wp_bs_vi('RAUM')),
-              wp_e(wp_t('BAUSTEIN.S2_16_PARAM')),
-              $wp_bs_m),
-        array(17, wp_e(sprintf(wp_t('BAUSTEIN.TYP_VI'), $wp_bs_vi_titel)),
-              $wp_bs_mono($wp_bs_vi('SOLL')),
-              wp_e(wp_t('BAUSTEIN.S2_17_PARAM')),
-              $wp_bs_m),
-        array(18, wp_e(sprintf(wp_t('BAUSTEIN.TYP_VI'), $wp_bs_vi_titel)),
-              $wp_bs_mono($wp_bs_vi('WW')),
-              wp_e(wp_t('BAUSTEIN.S2_18_PARAM')),
-              $wp_bs_m),
-        array(19, wp_e(sprintf(wp_t('BAUSTEIN.TYP_VI'), $wp_bs_vi_titel)),
-              $wp_bs_mono($wp_bs_vi('WWSOLL')),
-              wp_e(wp_t('BAUSTEIN.S2_19_PARAM')),
-              $wp_bs_m),
-        array(20, wp_e(sprintf(wp_t('BAUSTEIN.TYP_VI'), $wp_bs_vi_titel)),
-              $wp_bs_mono($wp_bs_vi('WWZWANG')),
-              wp_e(wp_t('BAUSTEIN.S2_20_PARAM')),
-              $wp_bs_m),
-        array(21, wp_e(sprintf(wp_t('BAUSTEIN.TYP_VI'), $wp_bs_vi_titel)),
-              $wp_bs_mono($wp_bs_vi('EIN')),
-              wp_e(wp_t('BAUSTEIN.S2_21_PARAM')),
-              $wp_bs_m),
+        $wp_bs_vi(16, 'RAUM', 'S2_16_PARAM'),
+        $wp_bs_vi(17, 'SOLL', 'S2_17_PARAM'),
+        $wp_bs_vi(18, 'WW', 'S2_18_PARAM'),
+        $wp_bs_vi(19, 'WWSOLL', 'S2_19_PARAM'),
+        $wp_bs_vi(20, 'WWZWANG', 'S2_20_PARAM'),
+        $wp_bs_vi(21, 'EIN', 'S2_21_PARAM'),
         array(22, wp_e(wp_t('BAUSTEIN.T_STATUS')),
               $wp_bs_mono(wp_t('BAUSTEIN.S2_22_NAME')),
               wp_e(wp_t('BAUSTEIN.S2_22_PARAM')),
               'V1 = #16, V2 = #17, V3 = #18, V4 = #19, V5 = #20'),
-        array(23, wp_e(sprintf(wp_t('BAUSTEIN.TYP_VI'), $wp_bs_vi_titel)),
-              $wp_bs_mono($wp_bs_vi('LEISTUNG')),
-              wp_e(wp_t('BAUSTEIN.S2_23_PARAM')),
-              $wp_bs_m),
-        array(24, wp_e(sprintf(wp_t('BAUSTEIN.TYP_VI'), $wp_bs_vi_titel)),
-              $wp_bs_mono($wp_bs_vi('KOMPRESSOR')),
-              wp_e(wp_t('BAUSTEIN.S2_24_PARAM')),
-              $wp_bs_m),
-        array(25, wp_e(sprintf(wp_t('BAUSTEIN.TYP_VI'), $wp_bs_vi_titel)),
-              $wp_bs_mono($wp_bs_vi('TAKTE')),
-              wp_e(wp_t('BAUSTEIN.S2_25_PARAM')),
-              $wp_bs_m),
-        array(26, wp_e(sprintf(wp_t('BAUSTEIN.TYP_VI'), $wp_bs_vi_titel)),
-              $wp_bs_mono($wp_bs_vi('LAUFZEIT')),
-              wp_e(wp_t('BAUSTEIN.S2_26_PARAM')),
-              $wp_bs_m),
-        array(27, wp_e(sprintf(wp_t('BAUSTEIN.TYP_VI'), $wp_bs_vi_titel)),
-              $wp_bs_mono($wp_bs_vi('LAUFANTEIL')),
-              wp_e(wp_t('BAUSTEIN.S2_27_PARAM')),
-              $wp_bs_m),
+        $wp_bs_vi(23, 'LEISTUNG', 'S2_23_PARAM'),
+        $wp_bs_vi(24, 'KOMPRESSOR', 'S2_24_PARAM'),
+        $wp_bs_vi(25, 'TAKTE', 'S2_25_PARAM'),
+        $wp_bs_vi(26, 'LAUFZEIT', 'S2_26_PARAM'),
+        $wp_bs_vi(27, 'LAUFANTEIL', 'S2_27_PARAM'),
         array(28, wp_e(wp_t('BAUSTEIN.T_STATUS')),
               $wp_bs_mono(wp_t('BAUSTEIN.S2_28_NAME')),
               wp_e(wp_t('BAUSTEIN.S2_28_PARAM')),
@@ -2078,18 +2099,9 @@ $wp_bs_seiten = array(
               $wp_bs_mono(wp_t('BAUSTEIN.S2_36_NAME')),
               wp_e(wp_t('BAUSTEIN.S2_36_PARAM')),
               wp_e(wp_t('BAUSTEIN.E_EINGANG')) . ' = #35'),
-        array(37, wp_e(sprintf(wp_t('BAUSTEIN.TYP_VI'), $wp_bs_vi_titel)),
-              $wp_bs_mono($wp_bs_vi('COP')),
-              wp_e(wp_t('BAUSTEIN.S2_37_PARAM')),
-              $wp_bs_m),
-        array(38, wp_e(sprintf(wp_t('BAUSTEIN.TYP_VI'), $wp_bs_vi_titel)),
-              $wp_bs_mono($wp_bs_vi('STROM')),
-              wp_e(wp_t('BAUSTEIN.S2_38_PARAM')),
-              $wp_bs_m),
-        array(39, wp_e(sprintf(wp_t('BAUSTEIN.TYP_VI'), $wp_bs_vi_titel)),
-              $wp_bs_mono($wp_bs_vi('WAERME')),
-              wp_e(wp_t('BAUSTEIN.S2_39_PARAM')),
-              $wp_bs_m),
+        $wp_bs_vi(37, 'COP', 'S2_37_PARAM'),
+        $wp_bs_vi(38, 'STROM', 'S2_38_PARAM'),
+        $wp_bs_vi(39, 'WAERME', 'S2_39_PARAM'),
         array(40, wp_e(wp_t('BAUSTEIN.T_STATUS')),
               $wp_bs_mono(wp_t('BAUSTEIN.S2_40_NAME')),
               wp_e(wp_t('BAUSTEIN.S2_40_PARAM')),
@@ -2116,12 +2128,12 @@ $wp_bs_seiten = array(
               wp_e(wp_t('BAUSTEIN.E_EINGANG')) . ' = #44'),
         ),
         'schritte' => array(
-            wp_e(wp_t('BAUSTEIN.S2_SCHRITT1')),
-            wp_e(sprintf(wp_t('BAUSTEIN.S2_SCHRITT2'), $wp_bs_vi_titel, $wp_bs_vi('STUFE'), $wp_bs_vi('ALTER'))),
+            wp_e(sprintf(wp_t('BAUSTEIN.S2_SCHRITT1'), wp_t('LOX.M_S3_KURZ'))),
+            wp_e(sprintf(wp_t('BAUSTEIN.S2_SCHRITT2'), $wp_bs_gw('status/ok'))),
             wp_e(wp_t('BAUSTEIN.S2_SCHRITT3')),
             wp_e(sprintf(wp_t('BAUSTEIN.S2_SCHRITT4'), wp_t('LOX.T_VERBINDEN'))),
             wp_e(sprintf(wp_t('BAUSTEIN.S2_SCHRITT5'), wp_t('LOX.T_PARAMETER'))),
-            wp_e(sprintf(wp_t('BAUSTEIN.S2_SCHRITT6'), $wp_bs_vi('LEISTUNG'))),
+            wp_e(sprintf(wp_t('BAUSTEIN.S2_SCHRITT6'), $wp_bs_gw('LEISTUNG'))),
             wp_e(sprintf(wp_t('BAUSTEIN.S2_SCHRITT7'), wp_t('REITER.TEST'), wp_t('TEST.K_ZEILE'))),
         ),
         'hinweise' => array(
@@ -2165,7 +2177,63 @@ $wp_bs_seiten = array(
 <?php } ?>
 <div class="sm-hilfe"><?= wp_e(wp_t('DURCHSAGE.BAUSTEIN')) ?></div>
 
+<div class="sm-step"><b>7.</b> <?= sprintf(wp_t('LOX.M_S7'), '<span class="sm-mono">' . wp_e(wp_mqtt_gateway_name('status/zaehler')) . '</span>') ?></div>
+
+<?php /* Gruppe 4 / MQTT (0.9.35): der Weg ueber HTTP (bis 0.9.34 der Weg dieses Plugins) fuer bestehende
+         Anlagen, zugeklappt; Inhalt wie bis 0.9.34, die Schritte ohne Nummer, Ausfallerkennung nur noch fuer HTTP. */ ?>
+<details class="sm-step"><summary><b><?= wp_e(wp_t('LOX.H_HTTP')) ?></b></summary>
+<p class="sm-hilfe"><?= wp_t('LOX.HTTP_ERKLAERUNG') ?></p>
+<div class="sm-step"><?= wp_t('LOX.S3') ?>
+  <div class="sm-pre"><?= wp_e(wp_endpunkt('status')) ?></div>
+  <?= wp_t('LOX.S3_HINWEIS') ?>
+  <table class="sm-tbl">
+  <tr><th><?= wp_e(wp_t('LOX.T_TITEL')) ?></th><th><?= wp_e(wp_t('LOX.T_ART')) ?></th><th><?= wp_e(wp_t('LOX.T_BEDEUTUNG')) ?></th></tr>
+<?php foreach (wp_statusfelder() as $wp_n => $wp_d) { ?>
+  <tr><td><span class="sm-mono">WP_<?= wp_e($wp_n) ?></span></td>
+      <td><?= $wp_d[0] ? wp_e(wp_t('LOX.ANALOG')) : wp_e(wp_t('LOX.DIGITAL')) ?></td>
+      <td><?= wp_t($wp_d[3]) ?></td></tr>
+<?php } ?>
+  </table>
+</div>
+<div class="sm-step"><?= wp_t('LOX.S4') ?>
+  <div class="sm-pre"><?= wp_e(wp_endpunkt('sgready')) ?>&amp;stufe=1 .. 4</div>
+  <?= wp_t('LOX.S4_KLEMMEN') ?>
+  <div class="sm-pre"><?= wp_e(wp_endpunkt('sgready')) ?>&amp;k1=1&amp;k2=0</div>
+<?php /* Die Warmwasser-Zwangsladung ist ein EIGENER Ausgang und haengt nicht
+   an SG Ready. Sie steht nur da, wo der Hersteller sie kann - sonst stuende
+   hier eine Adresse, die immer mit einer Absage antwortet. */
+if (wp_ww_moeglich($wp_cfg['hersteller'])) { ?>
+  <?= wp_t('LOX.S4_WW') ?>
+  <div class="sm-pre"><?= wp_e(wp_endpunkt('ww_boost')) ?>&amp;ein=1<br><?= wp_e(wp_endpunkt('ww_boost')) ?>&amp;ein=0</div>
+<?php } else { ?>
+  <div class="sm-hilfe"><?= sprintf(wp_t('LOX.S4_WW_NICHT'), wp_e($wp_info ? $wp_info['name'] : '?')) ?></div>
+<?php } ?>
+  <?= wp_t('LOX.S4_SELFTEST') ?>
+  <div class="sm-pre"><?= wp_e(wp_endpunkt('status')) ?>&amp;selftest=1</div>
+</div>
+<div class="sm-step"><?= wp_t('LOX.S5') ?></div>
+
+<h3><?= wp_e(wp_t('LOX.H_VORLAGE')) ?></h3>
+<div class="sm-hilfe"><?= wp_t('LOX.VORLAGE_TEXT') ?></div>
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-technik"></i> <?= wp_t('LEGENDE.TECHNIK') ?></span>
+</div>
+<div class="sm-knopfreihe">
+<form action="index.php" method="post" style="margin:0;">
+  <?php echo wp_fmt(); ?>
+  <input data-role="none" type="hidden" name="download" value="xml_in">
+  <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
+  <button data-role="none" class="sm-btn sm-b-technik" type="submit"><?= wp_e(wp_t('LOX.K_VORLAGE_EIN')) ?></button>
+</form>
+<form action="index.php" method="post" style="margin:0;">
+  <?php echo wp_fmt(); ?>
+  <input data-role="none" type="hidden" name="download" value="xml_out">
+  <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
+  <button data-role="none" class="sm-btn sm-b-technik" type="submit"><?= wp_e(wp_t('LOX.K_VORLAGE_AUS')) ?></button>
+</form>
+</div>
 <div class="sm-step"><b><?= wp_e(wp_t('LOX.H_GEGENPROBE')) ?></b><br><?= wp_t('LOX.GEGENPROBE') ?></div>
+</details>
 </div>
 
 <!-- ================= Reiter: Test ================= -->

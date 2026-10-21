@@ -422,6 +422,23 @@ function wp_pruefungen()
             count($wp_sf), count(array_filter($wp_ret))));
     }
 
+    /* ---- Gruppe 4 / MQTT (0.9.35): Namenstabelle und Befehlsbruecke ----
+     * Die Namen der Einbindung in Loxone gegen die gesendeten Themen (Entwurf wp 2.4); die Bruecke gemessen am
+     * Erzeugnis wie im Waechter (Entwurf gemeinsam 2.11), dazu ihre Einrichtungspruefung (--pruefen). Aus (Haken)
+     * ist ein Punkt, kein Kreuz. */
+    list($wp_nok, $wp_ntext) = wp_mqtt_namen_probe();
+    $z[] = wp_pruefzeile($wp_nok, wp_t('TEST.F_NAMEN'), $wp_ntext);
+    list($wp_bok, $wp_btext) = wp_pruef_bruecke();
+    $z[] = wp_pruefzeile($wp_bok, wp_t('TEST.F_BRUECKE'), $wp_btext);
+    $wp_bpz = wp_bruecke_pruefzeilen();
+    if (!$wp_bpz) {
+        $z[] = wp_pruefzeile(-1, wp_t('TEST.F_BRUECKE_PRUEFEN'), wp_t('TEST.A_BRUECKE_PRUEFEN_KEINE'));
+    } else {
+        $wp_bfehl = count(preg_grep('/^\[FEHL\]/', $wp_bpz));
+        $z[] = wp_pruefzeile($wp_bfehl ? 0 : 1, wp_t('TEST.F_BRUECKE_PRUEFEN'),
+            '<span class="sm-mono">' . implode('<br>', array_map('wp_e', $wp_bpz)) . '</span>');
+    }
+
     /* ---- Vorlage wohlgeformt? ---- */
     // Gehoert hierher, nicht erst in die Pruefung vor dem Ausliefern: eine
     // kaputte Vorlage merkt der Anwender sonst erst in Loxone Config, und

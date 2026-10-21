@@ -627,6 +627,11 @@ function wp_vorgaben()
         // MQTT
         'mqtt_ein'     => 1,
         'mqtt_topic'   => 'waermepumpe',
+        /* Gruppe 4 / MQTT (0.9.35): die beiden Haken der Befehlsbruecke, ab Werk aus (Entwurf wp E3):
+         * "Befehle ueber MQTT annehmen" und der zweite Haken "Waermepumpe ueber MQTT steuern" - ohne ihn
+         * quittiert die Bruecke sgready und ww_boost mit "abgelehnt: zweiter Haken aus". */
+        'befehle_mqtt_ein'     => 0,
+        'befehle_mqtt_steuern' => 0,
         /* Nr. 36 b (Stufe 2): Ansagen ueber die gemeinsame Sprachausgabe. Ab Werk keine Ausgabe
          * ('aus'); die beiden Anlaesse sind an, wirken aber erst mit einer Ausgabeart. */
         'ansage_anmeldung' => 1,
@@ -856,6 +861,8 @@ function wp_config($token_anlegen = true)
     $cfg['basis_soll']       = (float) $cfg['basis_soll'];
     $cfg['geraetetyp']       = (int) $cfg['geraetetyp'];
     $cfg['mqtt_ein']         = empty($cfg['mqtt_ein']) ? 0 : 1;
+    $cfg['befehle_mqtt_ein']     = empty($cfg['befehle_mqtt_ein']) ? 0 : 1;
+    $cfg['befehle_mqtt_steuern'] = empty($cfg['befehle_mqtt_steuern']) ? 0 : 1;
     $cfg['ansage_anmeldung'] = empty($cfg['ansage_anmeldung']) ? 0 : 1;
     $cfg['ansage_ausfall']   = empty($cfg['ansage_ausfall']) ? 0 : 1;
     $cfg['ansage_stoerung']  = empty($cfg['ansage_stoerung']) ? 0 : 1;
@@ -4206,7 +4213,10 @@ function wp_nie_retained()
  */
 function wp_lebenszeichen_themen()
 {
-    return array('status/ts' => 'MQTT.LZ_TS', 'status/zaehler' => 'MQTT.LZ_ZAEHLER');
+    /* Gruppe 4 / MQTT (0.9.35, Entwurf wp 2.2 a, E5): dazu status/ok in JEDEM Cron-Lauf - dieselbe Rechnung wie
+     * OK (wp_ausgabewerte()). Nur so kommt "keine frischen Werte" auch bei leerem Tagesbudget oder ohne
+     * Abrufversuch an; OK selbst geht nur mit einem Abruf hinaus. Nie retained (wp_nie_retained()). */
+    return array('status/ts' => 'MQTT.LZ_TS', 'status/zaehler' => 'MQTT.LZ_ZAEHLER', 'status/ok' => 'MQTT.LZ_OK');
 }
 
 /** Themen, die eine veroeffentlichte Fassung (0.9.20 bis 0.9.22) retained
@@ -4523,7 +4533,9 @@ function wp_mqtt_lebenszeichen()
     $n = ($n + 1) % 1000;
     @file_put_contents($f, (string) $n, LOCK_EX);
     $s = wp_stand();
-    return wp_mqtt_senden(array('status/ts' => (int) $s['zeit'], 'status/zaehler' => $n));
+    $wp_aw = wp_ausgabewerte($s, $cfg);
+    return wp_mqtt_senden(array('status/ts' => (int) $s['zeit'], 'status/zaehler' => $n,
+                                'status/ok' => (int) $wp_aw['OK']));
 }
 
 /**
@@ -4862,7 +4874,10 @@ function wp_vorlage_ein()
             // falschen Eingang. Ein falscher Wert ist schlimmer als keiner.
             // In wp_zeile() ist jedem Feld ein Semikolon vorangestellt.
             'check'   => '\i;' . $name . '=\i\v',
-            'analog'  => $analog, 'min' => $min, 'max' => $max,
+            /* Gruppe 4 (0.9.35, Entwurf wp 2.3/2.6): MinVal nimmt den Fehlwert an (-999 bzw. -1, STUFE -1), damit
+             * Loxone ihn nicht abschneidet; Signed folgt von selbst. Die Plausibilitaetsgrenzen bleiben. */
+            'analog'  => $analog, 'min' => (wp_fehlwert($name) !== null ? min($min, wp_fehlwert($name)) : $min),
+            'max' => $max,
         );
     }
     $cfg = wp_config();
@@ -4972,7 +4987,9 @@ function wp_ausgabewerte($stand, $cfg)
     if ($ok && $zeit > 0 && (time() - $zeit) > 3 * max(1, (int) $cfg['takt'])) { $ok = 0; }
     $aus = array(
         'OK'     => $ok,
-        'STUFE'  => wp_stufe_gilt($stand, $cfg),
+        /* Gruppe 4 (0.9.35, Entwurf wp 2.3, E4): -1 statt "-", solange noch kein Zustand gesetzt ist - ueber MQTT
+         * und in der HTTP-Zeile. Intern bleibt "-" (wp_stufe_gilt(), Vergleich im Endpunkt). */
+        'STUFE'  => wp_stufe_gilt($stand, $cfg) === '-' ? -1 : wp_stufe_gilt($stand, $cfg),
         'ALTER'  => $alter,
         'BUDGET' => wp_budget_rest($cfg['hersteller']),
         /* Fehlgeschlagene Abrufe IN FOLGE.
@@ -4986,8 +5003,12 @@ function wp_ausgabewerte($stand, $cfg)
     );
     foreach (wp_statusfelder() as $name => $d) {
         if (isset($aus[$name])) { continue; }          // die vier Zustandsfelder stehen schon
-        if (!isset($stand['werte'][$name])) { continue; }   // kein Wert: nichts senden, keine Null
-        $aus[$name] = $stand['werte'][$name];
+        /* Gruppe 4 (0.9.35, Entwurf wp 2.3, E4; ENTSCHEIDUNGEN Gruppe 3 und 4): kein Wert oder "-" (verschwundener
+         * Zustand, unbekannter Text) sendet den Fehlwert - -999 mit Vorzeichen, sonst -1 (wp_fehlwert()) -, ueber
+         * MQTT UND in der HTTP-Zeile. Bis 0.9.34 ging nichts hinaus, und Loxone las 0 oder behielt einen alten
+         * Wert ("0 °C Ruecklauf" ist eine falsche Aussage). Intern bleibt "-" im Stand. */
+        $v = isset($stand['werte'][$name]) ? $stand['werte'][$name] : null;
+        $aus[$name] = ($v === null || $v === '' || $v === '-') ? wp_fehlwert($name) : $v;
     }
     return $aus;
 }
@@ -6017,7 +6038,7 @@ function wp_einstellung_pruefen($k, $w, $alle, $jetzt)
             return in_array($s, array('nachbildung', 'klemmen'), true) ? '' : wp_t('EINST.SICH_G_AUSWAHL');
         case 'ems_thermostat': case 'cop_ein': case 'sg_ein': case 'sg_angefordert':
         case 'ww_boost_4': case 'mqtt_ein': case 'ansage_anmeldung': case 'ansage_ausfall':
-        case 'ansage_stoerung':
+        case 'ansage_stoerung': case 'befehle_mqtt_ein': case 'befehle_mqtt_steuern':
             return wp_ganzzahl_in($w, 0, 1) ? '' : wp_t('EINST.SICH_G_HAKEN');
         case 'takt':
             $u = wp_takt_untergrenze((string) $wert('hersteller'), (int) $wert('budget_schreiben'));
@@ -6045,7 +6066,8 @@ function wp_einstellung_wert($k, $w)
     $ganz = array('geraetetyp', 'zone', 'dhw', 'veto_stunden', 'cop_tage', 'ems_hc', 'ems_gpio1',
                   'ems_gpio4', 'ems_thermostat', 'cop_ein', 'sg_ein', 'sg_angefordert', 'ww_boost_4',
                   'mqtt_ein', 'takt', 'budget_schreiben', 'sg_stufe', 'sperre_max', 'anhebung_max',
-                  'anhebung_3', 'anhebung_4', 'ansage_anmeldung', 'ansage_ausfall', 'ansage_stoerung');
+                  'anhebung_3', 'anhebung_4', 'ansage_anmeldung', 'ansage_ausfall', 'ansage_stoerung',
+                  'befehle_mqtt_ein', 'befehle_mqtt_steuern');
     if (in_array($k, $ganz, true)) { return (int) trim((string) $w); }
     if ($k === 'basis_soll') { return (float) str_replace(',', '.', trim((string) $w)); }
     if ($k === 'zuordnung') { return (string) $w; }
@@ -6234,6 +6256,12 @@ function wp_sicherung_lesen($roh, &$geheim_neu = null, &$schluessel_fehl = null)
     foreach ($bekannt as $k) {
         if (!array_key_exists($k, $daten)) { $fehlend[] = $k; }
     }
+    /* Gruppe 4 / MQTT (0.9.35, Entwurf wp 3.3): eine Sicherung bis 0.9.34 kennt die beiden Haken der
+     * Befehlsbruecke nicht - damals gab es keine Bruecke. Sie ergibt deshalb "aus" (0), nicht den laufenden
+     * Wert; dass sie fehlten, sagt der Hinweis unten wie bei jedem fehlenden Schluessel. */
+    foreach (array('befehle_mqtt_ein', 'befehle_mqtt_steuern') as $wp_bk) {
+        if (!array_key_exists($wp_bk, $daten)) { $neu[$wp_bk] = 0; }
+    }
     if ($anzahl === 0) {
         $mangel[] = wp_t('EINST.SICH_LEER');
     }
@@ -6375,4 +6403,387 @@ function wp_wachposten()
         return wp_t('WACHE.FALSCH');
     }
     return '';
+}
+
+/* ==================================================================
+ * Gruppe 4 / MQTT (0.9.35): Fehlwerte, Namenstabelle, Befehle und Befehlsbruecke
+ *
+ * Grundlage: Musterprojekt/entwurf_gruppe4_wp.txt (E1-E15 nach Empfehlung bzw. nach
+ * ENTSCHEIDUNGEN_GRUPPE4_MQTT.md), Bauvorschrift wz_bild/GRUPPE4_BAUVORSCHRIFT.md. Fuer Werte ueber
+ * das MQTT-Gateway gibt es KEINE Importvorlage: je Wert ein einfacher Virtueller Eingang, Name genau
+ * so, wie das Gateway ihn vergibt (Gruppe 1 Nachtrag 2). Die Namen kommen aus EINER Funktion
+ * (wp_mqtt_gateway_name()) fuer Namenstabelle, Hakenliste, Baustein-Liste und Selbstpruefung. Die
+ * HTTP-Vorlagen bleiben fuer bestehende Anlagen (Reiter "Einbindung in Loxone", zugeklappt).
+ * ================================================================== */
+
+/**
+ * Der Fehlwert eines Feldes, das die Anlage nicht liefert (Entwurf wp 2.3, E4; ENTSCHEIDUNGEN Gruppe 3
+ * und 4): -999 fuer Felder mit Vorzeichen (Min < 0 in wp_statusfelder(): die Temperaturen und die
+ * Spreizung - -1 °C ist ein echter Wert), sonst -1 (auch STUFE: -1 = noch kein Zustand gesetzt).
+ * null fuer die Felder, die immer einen Wert tragen: OK, ALTER (-1 = noch nie), STOERUNG und BUDGET
+ * (-1 ist dort schon belegt und heisst "kein Tagesbudget", Ausnahme E4).
+ */
+function wp_fehlwert($name)
+{
+    if (in_array((string) $name, array('OK', 'ALTER', 'BUDGET', 'STOERUNG'), true)) { return null; }
+    $sf = wp_statusfelder();
+    if (!isset($sf[$name])) { return null; }
+    return ((float) $sf[$name][1] < 0) ? -999 : -1;
+}
+
+/** Der Themenpraefix, gesaeubert wie in wp_config(). Liest nur (wp_config(false)). */
+function wp_mqtt_praefix()
+{
+    $c = wp_config(false);
+    return trim((string) $c['mqtt_topic'], '/');
+}
+
+/** Der Name, unter dem das MQTT-Gateway ein Thema an den Miniserver gibt: "/", Leerzeichen und "%"
+ *  werden "_" (Regeln/07, Umbenennungsregel beider Gateway-Fassungen) - waermepumpe_STUFE,
+ *  waermepumpe_status_zaehler. */
+function wp_mqtt_gateway_name($thema, $praefix = null)
+{
+    if ($praefix === null) { $praefix = wp_mqtt_praefix(); }
+    return str_replace(array('/', ' ', '%'), '_', trim((string) $praefix, '/') . '/' . (string) $thema);
+}
+
+/** Themen, die das Plugin sendet, die die Musterseiten aber nicht brauchen (Entwurf wp 2.4, E5, E6):
+ *  OK (Signal je Abruf - status/ok traegt dieselbe Aussage jede Minute), ALTER und status/ts (kein
+ *  Alter in Sekunden, Regeln/07), status/befehle (Lebenszeichen der Bruecke; Haken ja, Musterseite nein). */
+function wp_mqtt_nicht_im_muster()
+{
+    return array('OK', 'ALTER', 'status/ts', 'status/befehle');
+}
+
+/** Einheit ohne Formatzeichen (fuer die Spalte Einheit/Bereich): "<v.1> °C" -> "°C". */
+function wp_mqtt_einheit($name)
+{
+    $e = wp_einheiten();
+    if (!isset($e[$name])) { return ''; }
+    return trim(preg_replace('/<v(\.\d)?>/', '', (string) $e[$name]));
+}
+
+/**
+ * Die Namenstabelle (Reiter "Einbindung in Loxone", Schritt 3) - EINE Liste fuer Tabelle, Hakenliste
+ * und Selbstpruefung. Reihenfolge wie wp_statusfelder(), dann das Lebenszeichen und status/befehle (sendet
+ * die Befehlsbruecke). Je Zeile: thema, name, bedeutung (Sprachschluessel), bereich, fehlwert (null = keiner),
+ * im_muster, haken. Alle Werte sind Zahlen (WWZWANG/EIN/KOMPRESSOR macht das Plugin zu 1/0/-1).
+ * $praefix: fuer die Gegenprobe; sonst der eingestellte.
+ */
+function wp_mqtt_namen($praefix = null)
+{
+    if ($praefix === null) { $praefix = wp_mqtt_praefix(); }
+    $ohne = wp_mqtt_nicht_im_muster();
+    $aus = array();
+    foreach (wp_statusfelder() as $t => $d) {
+        $fw = wp_fehlwert($t);
+        $min = ($fw !== null && $fw < (float) $d[1]) ? $fw : $d[1];
+        $u = wp_mqtt_einheit($t);
+        $aus[] = array('thema' => $t, 'name' => wp_mqtt_gateway_name($t, $praefix), 'bedeutung' => $d[3],
+                       'bereich' => (0 + $min) . ' … ' . (0 + $d[2]) . ($u !== '' ? ' ' . $u : ''),
+                       'fehlwert' => $fw, 'im_muster' => !in_array($t, $ohne, true),
+                       'haken' => !in_array($t, $ohne, true));
+    }
+    $lz = wp_lebenszeichen_themen();
+    $lz['status/befehle'] = 'BEFEHL.TH_STATUS';
+    $ber = array('status/ts' => '0 … 2000000000 s', 'status/zaehler' => '0 … 999', 'status/ok' => '0 … 1',
+                 'status/befehle' => '-1 … 1');
+    foreach ($lz as $t => $schl) {
+        $aus[] = array('thema' => $t, 'name' => wp_mqtt_gateway_name($t, $praefix), 'bedeutung' => $schl,
+                       'bereich' => isset($ber[$t]) ? $ber[$t] : '', 'fehlwert' => null,
+                       'im_muster' => !in_array($t, $ohne, true),
+                       'haken' => !in_array($t, $ohne, true) || $t === 'status/befehle');
+    }
+    return $aus;
+}
+
+/** Hakenliste fuer Gateway V2 (Entwurf wp 2.4): die 25 Zahlen der Musterseiten und status/befehle, 26 Haken.
+ *  Kein Thema braucht "Noncached" oder "Zuruecksetzen nach Senden". Je Zeile array(Thema voll, Name,
+ *  Sprachschluessel der Bedeutung). */
+function wp_mqtt_hakenliste()
+{
+    $p = wp_mqtt_praefix();
+    $aus = array();
+    foreach (wp_mqtt_namen($p) as $z) {
+        if ($z['haken']) { $aus[] = array($p . '/' . $z['thema'], $z['name'], $z['bedeutung']); }
+    }
+    return $aus;
+}
+
+/**
+ * Pruefzeile "Namenstabelle" (Entwurf wp 2.4): jeder Name der Tabelle ist ein Thema aus wp_statusfelder()
+ * bzw. wp_lebenszeichen_themen() (dazu status/befehle der Bruecke) unter dem eingestellten Praefix, und
+ * jedes Thema steht in der Tabelle. Die Gegenseite wird OHNE wp_mqtt_gateway_name() gebildet. $namen: fuer
+ * die Gegenprobe (ein falsch geschriebener Name muss rot werden). Rueckgabe array(1|0, Text).
+ */
+function wp_mqtt_namen_probe($namen = null)
+{
+    $p = wp_mqtt_praefix();
+    if ($namen === null) {
+        $namen = array();
+        foreach (wp_mqtt_namen($p) as $z) { $namen[] = $z['name']; }
+    }
+    $soll = array();
+    foreach (array_merge(array_keys(wp_statusfelder()), array_keys(wp_lebenszeichen_themen()), array('status/befehle')) as $t) {
+        $soll[] = strtr($p . '/' . $t, array('/' => '_', ' ' => '_', '%' => '_'));
+    }
+    $nur_tabelle = array_values(array_diff($namen, $soll));
+    $nur_themen = array_values(array_diff($soll, $namen));
+    if ($nur_tabelle || $nur_themen) {
+        return array(0, sprintf(wp_t('TEST.A_NAMEN_NEIN'),
+            wp_e($nur_tabelle ? implode(', ', $nur_tabelle) : '-'), wp_e($nur_themen ? implode(', ', $nur_themen) : '-')));
+    }
+    return array(1, sprintf(wp_t('TEST.A_NAMEN_JA'), count($namen)));
+}
+
+/* ---------------- Befehle: EINE Funktion fuer Endpunkt und Befehlsbruecke ----------------
+ * Bis 0.9.34 stand diese Pruefung in webfrontend/html/index.php. Seit 0.9.35 rufen der HTTP-Endpunkt
+ * (Quelle 'http', Antwort unveraendert) und die Befehlsbruecke (Quelle 'mqtt', bin/befehle_zuordnung.php)
+ * dieselbe Funktion: Wertpruefung, Haken "SG Ready aktiv", Befehlsbremse X-7 (gleicher Zustand -> nichts
+ * senden), Konfiguration nur bei einer Aenderung schreiben, sofort durchsetzen mit Wiederholregel. Die
+ * Token-Pruefung und die Klemmenform k1/k2 bleiben im Endpunkt; auf dem MQTT-Weg ersetzen Broker-Anmeldung
+ * und beide Haken das Token (Entwurf gemeinsam E13). */
+
+/**
+ * Einen Befehl ausfuehren. $aktion 'sgready' (array('stufe' => '1'..'4')) oder 'ww_boost'
+ * (array('ein' => '0'|'1'), fehlt 'ein', gilt '1' wie am Endpunkt). Rueckgabe array(HTTP-Code, Antwortzeile
+ * ohne Zeilenende) - die Zeile wortgleich wie bis 0.9.34 am Endpunkt.
+ */
+function wp_befehl_ausfuehren($aktion, array $par, $quelle = 'http')
+{
+    /* NUR LESEN wie der Endpunkt (wp_config(false)): kein Token anlegen, nichts heilen. */
+    $cfg = wp_config(false);
+    $weg = ($quelle === 'mqtt') ? 'ueber MQTT' : 'ueber den Endpunkt';
+    if ($aktion === 'ww_boost') {
+        /* Bewusst NICHT an sg_ein gebunden (wie bis 0.9.34): wer SG Ready abgeschaltet hat, kann den
+         * Speicher trotzdem laden wollen. */
+        if (!wp_ww_moeglich($cfg['hersteller'])) {
+            return array(501, 'WP;OK=0;AKTION=ww_boost;GRUND=NICHT_UNTERSTUETZT'
+                              . ';HERSTELLER=' . preg_replace('/[^a-z]/', '', (string) $cfg['hersteller']));
+        }
+        $roh = array_key_exists('ein', $par) ? (string) $par['ein'] : '1';
+        if (!preg_match('/^[01]$/', $roh)) {
+            return array(400, 'WP;OK=0;AKTION=ww_boost;GRUND=EIN_UNGUELTIG');
+        }
+        $ein = (int) $roh;
+        /* Befehlsbremse (Bauliste C3, X-7, Nr. 19): derselbe Wert wie der zuletzt gesendete innerhalb von
+         * 60 s geht nicht noch einmal hinaus - UNVERAENDERT=1, nichts gesendet, nichts geschrieben. Nach einem
+         * Fehlschlag gilt die Wiederholregel (wp_ww_befehl()). */
+        list($ok, $grund, $was, $gleich) = wp_ww_befehl($cfg, $ein);
+        if ($gleich) {
+            return array(200, 'WP;OK=1;AKTION=ww_boost;EIN=' . $ein . ';UNVERAENDERT=1');
+        }
+        if (!$ok) {
+            return array(502, 'WP;OK=0;AKTION=ww_boost;EIN=' . $ein . ';GRUND=' . $grund);
+        }
+        wp_log('Warmwasser-Zwangsladung ' . $weg . ' ' . ($ein ? 'ein' : 'aus') . ' (' . $was . ')');
+        return array(200, 'WP;OK=1;AKTION=ww_boost;EIN=' . $ein);
+    }
+    if ($aktion === 'sgready') {
+        if (empty($cfg['sg_ein'])) {
+            return array(403, 'WP;OK=0;GRUND=SGREADY_AUS');
+        }
+        $roh = array_key_exists('stufe', $par) ? (string) $par['stufe'] : '';
+        if (!preg_match('/^[1-4]$/', $roh)) {
+            return array(400, 'WP;OK=0;GRUND=STUFE_UNGUELTIG');
+        }
+        $stufe = (int) $roh;
+        list($k1, $k2) = wp_sg_klemmen($stufe);
+        /* Befehlsbremse (Bauliste C3, X-7, Nr. 19). Gilt die angeforderte Stufe schon wirklich
+         * (wp_stufe_gilt(), nicht der Wunsch) und ist sie auch die zuletzt angeforderte, wird nichts gesendet
+         * und nichts geschrieben: UNVERAENDERT=1. Davon lebt das Auffrischen alle 15 min (Musterseite #29,
+         * #44, #45): es kostet keinen Cloud-Aufruf. */
+        if (wp_stufe_gilt(wp_stand(), $cfg) === $stufe && (int) $cfg['sg_stufe'] === $stufe
+            && !empty($cfg['sg_angefordert'])) {
+            return array(200, sprintf('WP;OK=1;AKTION=sgready;STUFE=%d;K1=%d;K2=%d;UNVERAENDERT=1', $stufe, $k1, $k2));
+        }
+        // Geschrieben wird nur, was sich aendert.
+        if ((int) $cfg['sg_stufe'] !== $stufe || empty($cfg['sg_angefordert'])) {
+            $cfg['sg_stufe'] = $stufe;
+            // Ab jetzt darf gesetzt werden - vorher hat niemand darum gebeten.
+            $cfg['sg_angefordert'] = 1;
+            if (!wp_config_write($cfg)) {
+                return array(500, 'WP;OK=0;GRUND=NICHT_GESPEICHERT');
+            }
+        }
+        /* Sofort durchsetzen, nicht bis zum naechsten Cron warten. Ist derselbe Zustand eben gescheitert,
+         * gilt die Wiederholregel (Bauliste C2): GRUND=WIEDERHOLUNG_GEBREMST, nichts gesendet. */
+        list($ok, $grund, $was) = wp_sg_durchsetzen($cfg, true);
+        if (!$ok) {
+            return array(502, 'WP;OK=0;STUFE=' . $stufe . ';GRUND=' . $grund);
+        }
+        if ($quelle === 'mqtt') {
+            /* Nur der MQTT-Weg schreibt diese Zeile; die Antwort des Endpunkts und sein Protokoll bleiben wie
+             * bis 0.9.34 (Wirkungstest). */
+            wp_log('SG Ready ' . $stufe . ' ' . $weg . ' angefordert' . ($grund === 'UNVERAENDERT' ? ' (galt schon).' : '.'));
+        }
+        return array(200, sprintf('WP;OK=1;AKTION=sgready;STUFE=%d;K1=%d;K2=%d%s', $stufe, $k1, $k2,
+                                  $grund === 'UNVERAENDERT' ? ';UNVERAENDERT=1' : ''));
+    }
+    return array(400, 'WP;OK=0;GRUND=UNBEKANNTE_AKTION');
+}
+
+/** Die Rueckgabe von wp_befehl_ausfuehren() fuer die Bruecke: array(bool, Grund). 200 heisst angenommen,
+ *  auch mit UNVERAENDERT=1; sonst der GRUND der Antwortzeile (SGREADY_AUS, STUFE_UNGUELTIG, NICHT_GESPEICHERT,
+ *  WIEDERHOLUNG_GEBREMST, NICHT_UNTERSTUETZT, KEIN_HERSTELLER, die Cloud-Gruende) in die Quittung. */
+function wp_befehl_bruecke($r)
+{
+    if (is_array($r) && isset($r[0]) && (int) $r[0] === 200) { return array(true, ''); }
+    $z = (is_array($r) && isset($r[1])) ? (string) $r[1] : '';
+    return array(false, preg_match('/;GRUND=([A-Z0-9_]+)/', $z, $m) ? $m[1] : 'FEHLER');
+}
+
+/** Einstellungen fuer die Zuordnung (Entwurf gemeinsam 2.5): Praefix aus mqtt_topic, annehmen = Haken
+ *  "Befehle ueber MQTT annehmen" UND MQTT an, eingreifend = zweiter Haken "Waermepumpe ueber MQTT steuern". */
+function wp_befehle_einstellungen()
+{
+    $c = wp_config(false);
+    $mqtt = !empty($c['mqtt_ein']);
+    return array('praefix' => trim((string) $c['mqtt_topic'], '/'),
+                 'annehmen' => !empty($c['befehle_mqtt_ein']) && $mqtt,
+                 'eingreifend' => !empty($c['befehle_mqtt_steuern']), 'mqtt_ein' => $mqtt);
+}
+
+/** Der Befehl, wie Loxone ihn sendet (Liste "WaermepumpeCloud" #7/#9/#11/#41/#25): "publish <praefix>/befehl/
+ *  <name> <wert>" unter dem eingestellten Praefix; dieselbe Form wie bb_loxone_befehl() der Bruecke. */
+function wp_befehl_loxone($name, $wert)
+{
+    return 'publish ' . wp_mqtt_praefix() . '/befehl/' . $name . ' ' . $wert;
+}
+
+/* ---------------- Befehlsbruecke (bin/befehlsbruecke.php, Stammfassung Werkzeuge/gemeinsam) ---------------- */
+
+/** Wo liegt bin/befehlsbruecke.php? Installiert unter bin/plugins/<ordner>, im Archiv neben webfrontend. */
+function wp_bruecke_datei()
+{
+    $p = wp_paths();
+    $kand = array();
+    if ($p['home'] !== '') { $kand[] = $p['home'] . '/bin/plugins/' . $p['plugin'] . '/befehlsbruecke.php'; }
+    $kand[] = dirname(dirname(__DIR__)) . '/bin/befehlsbruecke.php';
+    foreach ($kand as $k) {
+        if (is_file($k)) { return $k; }
+    }
+    return '';
+}
+
+/** Die Bruecke als Bibliothek laden (BB_NUR_LADEN: kein Hauptteil). */
+function wp_bruecke_laden()
+{
+    if (function_exists('bb_waechter')) { return true; }
+    $f = wp_bruecke_datei();
+    if ($f === '') { return false; }
+    if (!defined('BB_NUR_LADEN')) { define('BB_NUR_LADEN', true); }
+    require_once $f;
+    return function_exists('bb_waechter');
+}
+
+/**
+ * Der Waechter der Bruecke aus dem Minutentakt (bin/wp_abruf.php, Entwurf wp E10): startet sie nur mit dem Haken
+ * "Befehle ueber MQTT annehmen", haelt sie sonst an und sendet <praefix>/status/befehle. Der Aufrufer faengt jede
+ * Ausnahme (try/catch in bin/wp_abruf.php) - der Abruf bleibt davon unberuehrt. Rueckgabe wie bb_waechter() oder
+ * array(null, Grund) ohne Bruecke.
+ */
+function wp_bruecke_waechter()
+{
+    if (!wp_bruecke_laden()) { return array(null, 'bin/befehlsbruecke.php fehlt'); }
+    return bb_waechter();
+}
+
+/**
+ * Direktstart bzw. -stopp beim Speichern des Reiters MQTT (Bauart fer_bruecke_schalten(), eb_bruecke_schalten()):
+ * der Waechter im Minutentakt startet nach einem Start hoechstens alle 600 s neu. befehlsbruecke.sh start startet
+ * nur nach --soll, nie als root, nie waehrend eines Updates, nie doppelt.
+ * Rueckgabe array(''|'ein'|'aus'|'start_fehl'|'stop_fehl', Ausgabe).
+ */
+function wp_bruecke_schalten()
+{
+    if (!wp_bruecke_laden()) { return array('', ''); }
+    $p = bb_pfade();
+    if (!$p) { return array('', ''); }
+    $e = wp_befehle_einstellungen();
+    $laeuft = (bool) bb_dienste();
+    if ($e['annehmen']) {
+        if ($laeuft) { return array('', ''); }
+        list($rc, $aus) = bb_sh($p, 'start');
+        if ($rc === 0 && bb_dienste()) {
+            wp_log('Befehlsbruecke beim Speichern gestartet.');
+            return array('ein', $aus);
+        }
+        wp_log('Befehlsbruecke: Start beim Speichern gescheitert (Rueckgabe ' . (int) $rc . '): ' . substr($aus, 0, 200));
+        return array('start_fehl', $aus);
+    }
+    if (!$laeuft) { return array('', ''); }
+    list($rc, $aus) = bb_sh($p, 'stop');
+    if ($rc === 0 && !bb_dienste()) {
+        wp_log('Befehlsbruecke beim Speichern angehalten.');
+        return array('aus', $aus);
+    }
+    return array('stop_fehl', $aus);
+}
+
+/** Die Befehlsliste der Bruecke (bb_liste(): EINE Quelle fuer Reiter und Vorlage) oder null. */
+function wp_befehle_liste()
+{
+    if (!wp_bruecke_laden()) { return null; }
+    list($z) = bb_zuordnung_laden();
+    if ($z === null) { return null; }
+    list($f) = bb_zuordnung_pruefen($z);
+    if ($f) { return null; }
+    return bb_liste($z, bb_einstellungen($z));
+}
+
+/** Vorlage "Wärmepumpe Cloud MQTT-Befehle" (bb_vorlage()): eigener Virtueller Ausgang an den UDP-Eingang des
+ *  Gateways. Rueckgabe array(name, inhalt) oder null. */
+function wp_befehle_vorlage()
+{
+    $l = wp_befehle_liste();
+    if ($l === null) { return null; }
+    $host = isset($_SERVER['HTTP_HOST']) && $_SERVER['HTTP_HOST'] !== ''
+        ? preg_replace('/[^A-Za-z0-9\.\-]/', '', preg_replace('/:\d+\z/', '', (string) $_SERVER['HTTP_HOST']))
+        : (gethostname() ?: 'loxberry');
+    $mz = wp_mqtt_zustand();
+    $port = (int) $mz['udpport'];
+    return array('VQ_waermepumpe_mqtt.xml', bb_vorlage($l, $host !== '' ? $host : 'loxberry', $port > 0 ? $port : 11884));
+}
+
+/** Zeile "Laeuft die Befehlsbruecke?" (Entwurf gemeinsam 2.11): array(1|0|-1, Text). Gemessen wird das
+ *  Erzeugnis (zustand.json: ts, abo, Zaehler) und ob ein Dienst argumentweise laeuft - wie der Waechter. */
+function wp_pruef_bruecke()
+{
+    if (!wp_bruecke_laden()) { return array(0, wp_t('BEFEHL.P_FEHLT')); }
+    list($z, $fehler) = bb_zuordnung_laden();
+    if ($z === null) { return array(0, sprintf(wp_t('BEFEHL.P_DEFEKT'), wp_e($fehler))); }
+    list($f) = bb_zuordnung_pruefen($z);
+    if ($f) { return array(0, sprintf(wp_t('BEFEHL.P_DEFEKT'), wp_e($f[0]))); }
+    $c = wp_config(false);
+    if (empty($c['befehle_mqtt_ein'])) { return array(-1, wp_t('BEFEHL.P_AUS')); }
+    if (empty($c['mqtt_ein'])) { return array(-1, wp_t('BEFEHL.P_MQTT_AUS')); }
+    if (!bb_pfade()) { return array(-1, wp_t('BEFEHL.P_ARCHIV')); }
+    $zu = bb_zustand_lesen();
+    $alter = ($zu && isset($zu['ts'])) ? time() - (int) $zu['ts'] : null;
+    if (!bb_dienste()) { return array(0, wp_t('BEFEHL.P_STEHT')); }
+    if ($alter === null || $alter > BB_WACHE_GRENZE) { return array(0, sprintf(wp_t('BEFEHL.P_HAENGT'), (int) $alter)); }
+    if (empty($zu['abo'])) {
+        return array(0, sprintf(wp_t('BEFEHL.P_OHNE_ABO'), wp_e(isset($zu['fehler']) ? (string) $zu['fehler'] : '')));
+    }
+    $zl = (isset($zu['zaehler']) && is_array($zu['zaehler'])) ? $zu['zaehler'] : array();
+    $t = sprintf(wp_t('BEFEHL.P_LAEUFT'), date('d.m.Y H:i', isset($zu['start']) ? (int) $zu['start'] : time()),
+                 isset($zl['angenommen']) ? (int) $zl['angenommen'] : 0, isset($zl['abgelehnt']) ? (int) $zl['abgelehnt'] : 0,
+                 isset($zl['verworfen']) ? (int) $zl['verworfen'] : 0);
+    if (!empty($zu['letzter']) && is_array($zu['letzter'])) {
+        $t .= ' ' . sprintf(wp_t('BEFEHL.P_LETZTER'), wp_e((string) $zu['letzter']['name']),
+                            wp_e((string) $zu['letzter']['ergebnis']), max(0, time() - (int) $zu['letzter']['zeit']));
+    }
+    if (!empty($zl['verworfen'])) { $t .= ' ' . wp_t('BEFEHL.P_VERWORFEN'); }
+    return array(1, $t);
+}
+
+/** Die Zeilen von "befehlsbruecke.php --pruefen" (bb_pruefen()) fuer den Reiter Test; leer ohne Bruecke. */
+function wp_bruecke_pruefzeilen()
+{
+    if (!wp_bruecke_laden()) { return array(); }
+    ob_start();
+    bb_pruefen();
+    $aus = (string) ob_get_clean();
+    return array_values(array_filter(explode("\n", $aus), 'strlen'));
 }

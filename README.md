@@ -62,6 +62,35 @@ Adresse und Vorlage müssen im Heimnetz liegen; die Sprechtoken stehen in keiner
 Prüfzeile im Reiter Test; dort zeigt die Prüfadresse das Aktionstoken nur noch maskiert (Knopf „Adresse
 kopieren“).
 
+## Neu in 0.9.35
+
+Werte und Befehle über MQTT – der Weg des [LoxBerry-Plugins Musterprojekts](https://github.com/timanders22/LoxBerry-Plugins-Musterprojekt).
+Der Weg über HTTP (Vorlagen, Wortzeichen, Endpunkt) wirkt weiter.
+
+* **SG Ready und Warmwasser über MQTT (Befehlsbrücke):** `waermepumpe/befehl/sgready` (1, 2, 3 oder 4) und
+  `waermepumpe/befehl/ww_boost` (1 = ein, 0 = aus). Sie wirken nur mit zwei Haken im Reiter **MQTT**:
+  „Befehle über MQTT annehmen“ und „Wärmepumpe über MQTT steuern“ – beide ab Werk aus; für SG Ready gilt
+  daneben weiter „SG Ready aus Loxone annehmen“. Geprüft und ausgeführt wird wie über den Endpunkt: eine Stufe,
+  die schon gilt, geht nicht noch einmal in die Cloud, derselbe Warmwasser-Wert binnen 60 s ebenso nicht, ein
+  gescheiterter Befehl nur nach der Wiederholregel. Bei Nibe lehnt die Brücke `ww_boost` mit
+  `NICHT_UNTERSTUETZT` ab. Quittung auf `…/befehl/<name>/quittung`, Lebenszeichen `waermepumpe/status/befehle`.
+  Neuer Knopf „Vorlage MQTT-Befehle“.
+* **Neues Lebenszeichen `status/ok`** in jedem Cron-Lauf (1 = letzter Abruf gelungen und jünger als dreimal der
+  Abruftakt). Damit kommt „keine frischen Werte“ auch bei leerem Tagesbudget oder hängendem Abruf über MQTT an.
+* **−999 bzw. −1 statt nichts – auch in der HTTP-Statuszeile:** Felder, die der Hersteller nicht liefert,
+  senden −999 (Temperaturen und Spreizung) bzw. −1 (alle übrigen), STUFE −1 statt „-“, solange noch kein
+  Zustand gesetzt ist; ebenso verschwundene Zustände und unbekannte Texte. BUDGET behält −1 = „kein
+  Tagesbudget“. **Wer in einer bestehenden HTTP-Anlage auf „= 0“ prüft, sieht künftig −999 bzw. −1.**
+  KOMPRESSOR, WWZWANG und EIN als Digitaleingang lesen −1 als 1 – dort auf analog umstellen. Die HTTP-Vorlage
+  nimmt die Fehlwerte an (MinVal −999 bzw. −1).
+* **Reiter Einbindung in Loxone:** MQTT zuerst – Gateway V1/V2 mit Hakenliste (26 Datenpunkte), Namenstabelle
+  mit Kopierknopf statt Werte-Vorlage, Befehle, Ausfallerkennung am Lebenszeichen `status/zaehler` (Tmc 300 s);
+  die drei Musterseiten mit Virtuellen Eingängen und den Befehlen am Ausgang „LoxBerry MQTT-Gateway“, Sperre und
+  Normalbetrieb werden alle 15 min aufgefrischt. Der Weg über HTTP steht zugeklappt darunter.
+* Deinstallation: tut nichts, wenn LoxBerry sie für ein anderes Plugin aufruft (dessen Name ein Anfang von
+  „waermepumpe“ ist); sie hält zuerst die Befehlsbrücke an und entfernt deren Optionsdateien.
+* Geprüft unter PHP 7.4, 8.4 und 8.5 mit Attrappen, nicht am Gerät.
+
 ## Neu in 0.9.34
 
 Textnachzug zum Musterprojekt, Reiter **Einbindung in Loxone**, Seite „WaermepumpeCloud“: Spotpreis aWATTar liefert die

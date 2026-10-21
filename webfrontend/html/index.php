@@ -185,44 +185,26 @@ if ($aktion === 'werte') {
     exit;
 }
 
-/* ---------------- ww_boost ----------------
+/* ---------------- ww_boost und sgready ----------------
+ * Gruppe 4 / MQTT (0.9.35, Entwurf wp 3.2): die Pruefung steht in wp_befehl_ausfuehren() (wp_lib.php); dieselbe
+ * Funktion ruft die Befehlsbruecke (bin/befehle_zuordnung.php, Quelle 'mqtt'). Antwort, Code und Protokoll dieses
+ * Endpunkts sind unveraendert (Wirkungstest Quelle gegen Bau): ww_boost 501 NICHT_UNTERSTUETZT vor allem anderen,
+ * EIN_UNGUELTIG (auch ein Feld ?ein[]=), UNVERAENDERT binnen 60 s, 502 mit dem Grund; sgready 403 SGREADY_AUS vor
+ * den Stufenfehlern, STUFE_UNGUELTIG, KLEMME_UNGUELTIG, STUFE_FEHLT, X-7 UNVERAENDERT, 500 NICHT_GESPEICHERT, 502.
+ * Hier bleiben nur das Einlesen der Abfrage und die Klemmenform k1/k2 (Endpunkt, nicht MQTT).
  *
- * Die Warmwasser-Zwangsladung getrennt von SG Ready. Im Sommer will man den
- * Speicher mit PV-Ueberschuss laden und den Heizkreis in Ruhe lassen; ueber
- * Zustand 4 ginge beides nur zusammen.
- *
- * Bewusst NICHT an sg_ein gebunden: wer SG Ready abgeschaltet hat, kann den
- * Speicher trotzdem laden wollen. Das ist eine andere Entscheidung.
- */
+ * ww_boost ist bewusst NICHT an sg_ein gebunden: wer SG Ready abgeschaltet hat, kann den Speicher trotzdem laden
+ * wollen. */
 if ($aktion === 'ww_boost') {
-    if (!wp_ww_moeglich($cfg['hersteller'])) {
-        wp_ende(501, 'WP;OK=0;AKTION=ww_boost;GRUND=NICHT_UNTERSTUETZT'
-                     . ';HERSTELLER=' . preg_replace('/[^a-z]/', '', (string) $cfg['hersteller']));
-    }
-    if (isset($_GET['ein']) && is_array($_GET['ein'])) {
-        wp_ende(400, 'WP;OK=0;AKTION=ww_boost;GRUND=EIN_UNGUELTIG');
-    }
-    $roh = isset($_GET['ein']) ? (string) $_GET['ein'] : '1';
-    if (!preg_match('/^[01]$/', $roh)) {
-        wp_ende(400, 'WP;OK=0;AKTION=ww_boost;GRUND=EIN_UNGUELTIG');
-    }
-    $ein = (int) $roh;
-    /* Befehlsbremse (Bauliste C3, X-7, Nr. 19): derselbe Wert wie der zuletzt
-     * gesendete innerhalb von 60 s geht nicht noch einmal hinaus - Antwort
-     * UNVERAENDERT=1, nichts gesendet, nichts geschrieben. Nach einem
-     * Fehlschlag gilt die Wiederholregel (wp_ww_befehl()). */
-    list($ok, $grund, $was, $gleich) = wp_ww_befehl($cfg, $ein);
-    if ($gleich) {
-        wp_ende(200, 'WP;OK=1;AKTION=ww_boost;EIN=' . $ein . ';UNVERAENDERT=1');
-    }
-    if (!$ok) {
-        wp_ende(502, 'WP;OK=0;AKTION=ww_boost;EIN=' . $ein . ';GRUND=' . $grund);
-    }
-    wp_log('Warmwasser-Zwangsladung ueber den Endpunkt ' . ($ein ? 'ein' : 'aus') . ' (' . $was . ')');
-    wp_ende(200, 'WP;OK=1;AKTION=ww_boost;EIN=' . $ein);
+    /* Nicht uebergeben heisst ein=1 (wie bis 0.9.34); ein Feld ?ein[]=... ist ungueltig wie jeder andere Wert. */
+    $wp_par = array();
+    if (isset($_GET['ein'])) { $wp_par['ein'] = is_array($_GET['ein']) ? '' : (string) $_GET['ein']; }
+    list($wp_code, $wp_zeile) = wp_befehl_ausfuehren('ww_boost', $wp_par, 'http');
+    wp_ende($wp_code, $wp_zeile);
 }
 
 /* ---------------- sgready ---------------- */
+/* SGREADY_AUS kommt VOR den Fehlern der Stufe (wie bis 0.9.34) - die Funktion prueft es fuer den MQTT-Weg ebenso. */
 if (empty($cfg['sg_ein'])) {
     wp_ende(403, 'WP;OK=0;GRUND=SGREADY_AUS');
 }
@@ -230,17 +212,9 @@ if (empty($cfg['sg_ein'])) {
 // Zwei Schreibweisen: die Zustandsnummer, oder die beiden Klemmen einzeln.
 // Die Klemmen sind der ehrlichere Weg - so haengt es in Loxone am Ende auch
 // an zwei Ausgaengen -, aber die Nummer ist bequemer.
-$stufe = 0;
 if (isset($_GET['stufe'])) {
-    // Dieselbe Wache wie unten bei den Klemmen. Sie fehlte hier als einzige.
-    if (is_array($_GET['stufe'])) {
-        wp_ende(400, 'WP;OK=0;GRUND=STUFE_UNGUELTIG');
-    }
-    $roh = (string) $_GET['stufe'];
-    if (!preg_match('/^[1-4]$/', $roh)) {
-        wp_ende(400, 'WP;OK=0;GRUND=STUFE_UNGUELTIG');
-    }
-    $stufe = (int) $roh;
+    // Ein Feld (?stufe[]=) ist so ungueltig wie jede falsche Stufe: STUFE_UNGUELTIG aus der Funktion.
+    $wp_roh = is_array($_GET['stufe']) ? '' : (string) $_GET['stufe'];
 } elseif (isset($_GET['k1']) || isset($_GET['k2'])) {
     /* Die Werte EINMAL einlesen und danach nur noch die Variablen benutzen.
      *
@@ -266,42 +240,12 @@ if (isset($_GET['stufe'])) {
         }
         $klemmen[$k] = (int) $v;
     }
-    $stufe = wp_sg_stufe_aus_klemmen($klemmen['k1'], $klemmen['k2']);
+    $wp_roh = (string) wp_sg_stufe_aus_klemmen($klemmen['k1'], $klemmen['k2']);
 } else {
     wp_ende(400, 'WP;OK=0;GRUND=STUFE_FEHLT');
 }
 
-list($k1, $k2) = wp_sg_klemmen($stufe);
-
-/* Befehlsbremse (Bauliste C3, X-7, Nr. 19). Gilt die angeforderte Stufe schon
- * wirklich (wp_stufe_gilt(), nicht der Wunsch) und ist sie auch die zuletzt
- * angeforderte, wird nichts gesendet und nichts geschrieben: UNVERAENDERT=1.
- * Bis 0.9.26 kam dreimal dieselbe Antwort ohne diesen Hinweis, und jeder Aufruf
- * schrieb Konfiguration und Zweitschrift (gemessen, waermepumpe_agenten/code
- * Befund 3). */
-if (wp_stufe_gilt(wp_stand(), $cfg) === $stufe && (int) $cfg['sg_stufe'] === $stufe
-    && !empty($cfg['sg_angefordert'])) {
-    printf("WP;OK=1;AKTION=sgready;STUFE=%d;K1=%d;K2=%d;UNVERAENDERT=1\n", $stufe, $k1, $k2);
-    exit;
-}
-
-// Geschrieben wird nur, was sich aendert.
-if ((int) $cfg['sg_stufe'] !== $stufe || empty($cfg['sg_angefordert'])) {
-    $cfg['sg_stufe'] = $stufe;
-    // Ab jetzt darf gesetzt werden - vorher hat niemand darum gebeten.
-    $cfg['sg_angefordert'] = 1;
-    if (!wp_config_write($cfg)) {
-        wp_ende(500, 'WP;OK=0;GRUND=NICHT_GESPEICHERT');
-    }
-}
-
-// Sofort durchsetzen, nicht bis zum naechsten Cron warten: wer per PV-Ueber-
-// schuss anlaufen laesst, will nicht bis zu einer Minute Verzug. Ist derselbe
-// Zustand eben gescheitert, gilt die Wiederholregel (Bauliste C2):
-// GRUND=WIEDERHOLUNG_GEBREMST, nichts gesendet.
-list($ok, $grund, $was) = wp_sg_durchsetzen($cfg, true);
-if (!$ok) {
-    wp_ende(502, 'WP;OK=0;STUFE=' . $stufe . ';GRUND=' . $grund);
-}
-printf("WP;OK=1;AKTION=sgready;STUFE=%d;K1=%d;K2=%d%s\n", $stufe, $k1, $k2,
-       $grund === 'UNVERAENDERT' ? ';UNVERAENDERT=1' : '');
+/* Befehlsbremse X-7, Schreiben nur bei einer Aenderung, sofortiges Durchsetzen mit Wiederholregel: alles in
+ * wp_befehl_ausfuehren(), Antwort wortgleich wie bis 0.9.34. */
+list($wp_code, $wp_zeile) = wp_befehl_ausfuehren('sgready', array('stufe' => $wp_roh), 'http');
+wp_ende($wp_code, $wp_zeile);

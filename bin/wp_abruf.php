@@ -74,6 +74,20 @@ if ($modus === 'zeile') {
     exit(0);
 }
 
+/* Gruppe 4 / MQTT (0.9.35, Entwurf wp E10): der Waechter der Befehlsbruecke (gemeinsame Stammfassung). Er
+ * startet sie nur mit dem Haken "Befehle ueber MQTT annehmen", haelt sie sonst an und sendet
+ * <praefix>/status/befehle (nie retained). Er steht VOR der Sperre abruf.lock und VOR der Hersteller-Pruefung:
+ * haelt ein haengender Cloud-Abruf die Sperre, endet der naechste Lauf unten mit exit(0) - der Waechter liefe
+ * dann nicht; ebenso ohne gewaehlten Hersteller. try/catch: ein Fehler hier aendert weder den Abruf noch den
+ * Rueckgabewert. Die Bruecke haelt ihre eigene Sperre (waechter.lock); befehlsbruecke.sh schliesst geerbte
+ * Deskriptoren. */
+try {
+    wp_bruecke_waechter();
+} catch (Throwable $wp_bw) {
+    wp_log('Befehlsbruecke: Waechter abgebrochen (' . get_class($wp_bw) . ') - der Abruf ist davon nicht betroffen.',
+           'bb_waechter_' . get_class($wp_bw));
+}
+
 /* Nur ein Lauf gleichzeitig. Ein zweiter Lauf wuerde dieselbe Anfrage noch
    einmal stellen - bei Daikin kostet das ein Stueck Tagesbudget. */
 $sperre = wp_tmpdir() . '/abruf.lock';
