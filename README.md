@@ -62,6 +62,10 @@ Adresse und Vorlage müssen im Heimnetz liegen; die Sprechtoken stehen in keiner
 Prüfzeile im Reiter Test; dort zeigt die Prüfadresse das Aktionstoken nur noch maskiert (Knopf „Adresse
 kopieren“).
 
+## Neu in 0.9.36
+
+* **HTTP-Vorlage:** KOMPRESSOR, WWZWANG und EIN sind jetzt Analogeingänge mit MinVal −1, denn ein Digitaleingang liest −1 (keine Aussage) als 1. Bestehende Anlagen mit der alten Vorlage behalten ihre Digitaleingänge, bis die Vorlage neu importiert wird.
+
 ## Neu in 0.9.35
 
 Werte und Befehle über MQTT – der Weg des [LoxBerry-Plugins Musterprojekts](https://github.com/timanders22/LoxBerry-Plugins-Musterprojekt).
@@ -81,8 +85,8 @@ Der Weg über HTTP (Vorlagen, Wortzeichen, Endpunkt) wirkt weiter.
   senden −999 (Temperaturen und Spreizung) bzw. −1 (alle übrigen), STUFE −1 statt „-“, solange noch kein
   Zustand gesetzt ist; ebenso verschwundene Zustände und unbekannte Texte. BUDGET behält −1 = „kein
   Tagesbudget“. **Wer in einer bestehenden HTTP-Anlage auf „= 0“ prüft, sieht künftig −999 bzw. −1.**
-  KOMPRESSOR, WWZWANG und EIN als Digitaleingang lesen −1 als 1 – dort auf analog umstellen. Die HTTP-Vorlage
-  nimmt die Fehlwerte an (MinVal −999 bzw. −1).
+  Die HTTP-Vorlage nimmt die Fehlwerte an (MinVal −999 bzw. −1); KOMPRESSOR, WWZWANG und EIN legt sie seit
+  0.9.36 als Analogeingänge an (siehe dort).
 * **Reiter Einbindung in Loxone:** MQTT zuerst – Gateway V1/V2 mit Hakenliste (26 Datenpunkte), Namenstabelle
   mit Kopierknopf statt Werte-Vorlage, Befehle, Ausfallerkennung am Lebenszeichen `status/zaehler` (Tmc 300 s);
   die drei Musterseiten mit Virtuellen Eingängen und den Befehlen am Ausgang „LoxBerry MQTT-Gateway“, Sperre und

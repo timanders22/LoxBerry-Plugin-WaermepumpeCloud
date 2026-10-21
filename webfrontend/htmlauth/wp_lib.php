@@ -1515,14 +1515,16 @@ function wp_felder()
             // in einer anderen Bedeutung; sie gehoert nicht hierher.
             'emsesp'   => array('boiler.hpcurrpower'),
         )),
-        'KOMPRESSOR' => array(0, 0, 1, 'FELD.KOMPRESSOR', array(
+        /* Kleinigkeiten (0.9.36): KOMPRESSOR, WWZWANG und EIN sind in der HTTP-Vorlage analog (Kennung 1) - sie
+         * tragen -1 = keine Aussage, und ein Digitaleingang laese -1 als 1. MinVal -1 kommt aus wp_fehlwert(). */
+        'KOMPRESSOR' => array(1, 0, 1, 'FELD.KOMPRESSOR', array(
             'myuplink' => array('#44064', '~verdichter|compressor'),
             'onecta'   => array(),
             'melcloud' => array(),
             'vaillant' => array(),
             'emsesp'   => array('boiler.hpcompon'),
         )),
-        'WWZWANG' => array(0, 0, 1, 'FELD.WWZWANG', array(
+        'WWZWANG' => array(1, 0, 1, 'FELD.WWZWANG', array(
             'myuplink' => array(),
             'onecta'   => array('managementPoints[embeddedId=domesticHotWaterTank].powerfulMode.value'),
             'melcloud' => array('ForcedHotWaterMode'),
@@ -1531,7 +1533,7 @@ function wp_felder()
             'vaillant' => array('state.dhw.0.currentSpecialFunction'),
             'emsesp'   => array('boiler.dhw.charging', 'boiler.charging'),
         )),
-        'EIN' => array(0, 0, 1, 'FELD.EIN', array(
+        'EIN' => array(1, 0, 1, 'FELD.EIN', array(
             'myuplink' => array(),
             'onecta'   => array('managementPoints[embeddedId=climateControl].onOffMode.value'),
             'melcloud' => array('Power'),
