@@ -96,7 +96,8 @@ function wp_fassung()
      * im User-Agent, und das ist eine Auskunft. */
     return $f;
 }
-/* Gemeinsame Sprachausgabe (Abschrift von Werkzeuge/gemeinsam/sprachausgabe.php, Nr. 36 b).
+/* Gemeinsame Sprachausgabe (Abschrift von Werkzeuge/gemeinsam/sprachausgabe.php, Nr. 36 b; seit 0.9.37 Stamm 1.2.1
+ * mit weiteren Ausgabezielen, wp_mit_zielen(), Welle Mehrfach-Ziele).
  * Liegt neben dieser Datei; die Datei schuetzt sich selbst gegen doppeltes Laden. Der
  * Abrufdienst bin/wp_abruf.php erreicht sie ueber diese Bibliothek. */
 require_once __DIR__ . '/sprachausgabe.php';
@@ -5598,13 +5599,58 @@ define('WP_ANSAGE_SPERRE_S', 3600);    // hoechstens eine Ansage je Anlass in di
 /** Erlaubte Ausgabearten: alle des Moduls ausser 'audioserver' (Loxone holt hier keinen Text ab). */
 function wp_ansage_modi()
 {
-    return array('aus', 'musicserver', 'ms4h', 'custom', 'alexang', 'cc4lox');
+    /* Nachtwelle N6 (0.9.37, Pflegewelle 22): dazu Sonos4Lox und, ab Modul 1.1.4, SonoX (ungemessen, kein Sonos im
+     * Haus; das Modul prueft Installation und Zone bzw. Raum). Weitere Ausgabeziele (Tabelle, 'ziele') seit 0.9.37
+     * mit Stamm 1.2.1 - wp_mit_zielen() unten; ohne Tabelle wie 1.1.4. Die Fassungspruefung schuetzt vor einer zuerst
+     * geladenen aelteren Abschrift (Modul 1.1.4, Kopf "Wer 'sonox' anbietet"). */
+    $m = array('aus', 'musicserver', 'ms4h', 'custom', 'alexang', 'cc4lox', 'sonos4lox');
+    if (defined('ANSAGE_FASSUNG') && version_compare(ANSAGE_FASSUNG, '1.1.4', '>=')) { $m[] = 'sonox'; }
+    return $m;
 }
 
 /** Optionen fuer Formular-Baustein und Formular-Lesen. */
 function wp_ansage_opt()
 {
     return array('modi' => wp_ansage_modi());
+}
+
+/** Welle Mehrfach-Ziele (Sprachmodul 1.2.1): bietet diese Linie die Tabelle der weiteren Ausgabeziele an? Nur, wenn die
+ *  geladene Abschrift sie kann - laden zwei Abschriften im selben Prozess, gilt die zuerst geladene. */
+function wp_mit_zielen() {
+    return version_compare(ANSAGE_FASSUNG, '1.2.0', '>=') && function_exists('ansage_ziele_html')
+        && function_exists('ansage_ziele_pruefen') && function_exists('ansage_testknoepfe_html');
+}
+
+/** Welle Mehrfach-Ziele (Sprachmodul 1.2.1), X-2 mit flachen Schluesseln (name.N): die Felder der Tabelle heissen im
+ *  Formular name[N] (N = 2..6, ansage_ziel_feldnamen()). wp_ziele_x2_name() macht daraus name.N (Beanstandung und
+ *  Markierung), wp_ziele_x2_post() aus den gesammelten Eingaben wieder das POST der Tabelle (ziele_post). */
+function wp_ziele_x2_name($n) {
+    return is_string($n) ? (string) preg_replace('/^(tts_ziel_[a-z]+)\[([2-9])\]\z/', '$1.$2', $n) : $n;
+}
+function wp_ziele_x2_post(array $werte) {
+    $p = array();
+    foreach ($werte as $k => $v) {
+        if (is_string($v) && preg_match('/^(tts_ziel_[a-z]+)\.([2-9])\z/', (string) $k, $m)) { $p[$m[1]][(int) $m[2]] = $v; }
+    }
+    return isset($p['tts_ziel_art']) ? $p : null;
+}
+
+/** Welle Mehrfach-Ziele (0.9.37), X-2: die Tabelle aus dem POST (name[N], N = 2..6) flach als name.N - nur, was gesendet
+ *  wurde (ein fehlender Haken bleibt aus), und nur, wenn die geladene Abschrift die Tabelle kann. */
+function wp_ziele_x2_werte()
+{
+    $w = array();
+    if (!wp_mit_zielen()) { return $w; }
+    foreach (array('tts_ziel_art', 'tts_ziel_wo', 'tts_ziel_laut', 'tts_ziel_sprache', 'tts_ziel_ein', 'tts_ziel_loeschen') as $n) {
+        if (!isset($_POST[$n]) || !is_array($_POST[$n])) { continue; }
+        for ($i = 2; $i <= 6; $i++) {
+            if (isset($_POST[$n][$i]) && is_string($_POST[$n][$i]) && strlen($_POST[$n][$i]) <= 1024
+                && preg_match('//u', $_POST[$n][$i])) {
+                $w[$n . '.' . $i] = $_POST[$n][$i];
+            }
+        }
+    }
+    return $w;
 }
 
 /** Die Anlaesse: Name => Schluessel des Hakens in der Konfiguration. */
@@ -6225,7 +6271,21 @@ function wp_sicherung_lesen($roh, &$geheim_neu = null, &$schluessel_fehl = null)
                 continue;
             }
             $tj = (isset($jetzt['tts']) && is_array($jetzt['tts'])) ? $jetzt['tts'] : array();
-            list($tv) = ansage_vervollstaendigen($tp + $tj);
+            /* Welle Mehrfach-Ziele (0.9.37): "$tp + $tj" behielt die geltenden weiteren Ziele einer Sicherung ohne
+             * Liste schon bisher - still. Jetzt geht der Block vorher durch die Spaetliste, und der Hinweis nennt sie. */
+            $wp_tsneu = array('tts' => $tp);
+            $wp_tsjetzt = array('tts' => $tj);
+            $wp_tsspaet = array();
+            /* Welle Mehrfach-Ziele (Sprachmodul 1.2.1, Spaetliste): fehlt die Liste der weiteren Ziele in der Sicherung (Datei einer
+             * aelteren Fassung), gelten die jetzigen weiteren Ziele weiter - genannt im Hinweis. Eine Sicherung MIT leerer Liste
+             * heisst "keine weiteren Ziele" und wird so uebernommen. */
+            $wp_spaete = array();
+            if (is_array($wp_tsneu['tts']) && function_exists('ansage_sicherung_spaet')) {
+                list($wp_tsneu['tts'], $wp_spaete) = ansage_sicherung_spaet($wp_tsneu['tts'],
+                    (isset($wp_tsjetzt['tts']) && is_array($wp_tsjetzt['tts'])) ? $wp_tsjetzt['tts'] : null);
+            }
+            foreach ($wp_spaete as $wp_sn) { $wp_tsspaet[] = $wp_sn; }     // Welle Mehrfach-Ziele: tts.ziele (Spaetliste)
+            list($tv) = ansage_vervollstaendigen($wp_tsneu['tts'] + $tj);
             $neu['tts'] = ansage_sicherung_tokens_behalten($tv, $tj);
             $anzahl++;
             continue;
@@ -6283,6 +6343,9 @@ function wp_sicherung_lesen($roh, &$geheim_neu = null, &$schluessel_fehl = null)
         $hinweise[] = sprintf(wp_t('EINST.SICH_UNVOLLSTAENDIG'),
                               count($fehlend),
                               htmlspecialchars(implode(', ', $fehlend), ENT_QUOTES, 'UTF-8'));
+    }
+    if (!empty($wp_tsspaet)) {     // Welle Mehrfach-Ziele (0.9.37): Spaetliste (tts.ziele)
+        $hinweise[] = sprintf(wp_t('EINST.SICH_SPAET'), htmlspecialchars(implode(', ', $wp_tsspaet), ENT_QUOTES, 'UTF-8'));
     }
     return array($neu, $hinweise, $anzahl);
 }
@@ -6476,6 +6539,7 @@ function wp_mqtt_namen($praefix = null)
 {
     if ($praefix === null) { $praefix = wp_mqtt_praefix(); }
     $ohne = wp_mqtt_nicht_im_muster();
+    $nc = wp_mqtt_noncached();
     $aus = array();
     foreach (wp_statusfelder() as $t => $d) {
         $fw = wp_fehlwert($t);
@@ -6484,7 +6548,7 @@ function wp_mqtt_namen($praefix = null)
         $aus[] = array('thema' => $t, 'name' => wp_mqtt_gateway_name($t, $praefix), 'bedeutung' => $d[3],
                        'bereich' => (0 + $min) . ' … ' . (0 + $d[2]) . ($u !== '' ? ' ' . $u : ''),
                        'fehlwert' => $fw, 'im_muster' => !in_array($t, $ohne, true),
-                       'haken' => !in_array($t, $ohne, true));
+                       'haken' => !in_array($t, $ohne, true), 'noncached' => in_array($t, $nc, true));
     }
     $lz = wp_lebenszeichen_themen();
     $lz['status/befehle'] = 'BEFEHL.TH_STATUS';
@@ -6494,22 +6558,162 @@ function wp_mqtt_namen($praefix = null)
         $aus[] = array('thema' => $t, 'name' => wp_mqtt_gateway_name($t, $praefix), 'bedeutung' => $schl,
                        'bereich' => isset($ber[$t]) ? $ber[$t] : '', 'fehlwert' => null,
                        'im_muster' => !in_array($t, $ohne, true),
-                       'haken' => !in_array($t, $ohne, true) || $t === 'status/befehle');
+                       'haken' => !in_array($t, $ohne, true) || $t === 'status/befehle',
+                       'noncached' => in_array($t, $nc, true));
     }
     return $aus;
 }
 
+/** Noncached unter Gateway V2 (Nachtwelle N6, Nachtrag 29.10.): status/ok und status/befehle - V2 reicht einen
+ *  gleichbleibenden Wert nach einem Neustart des Miniservers sonst nicht neu weiter. EINE Quelle fuer Namenstabelle,
+ *  Hakenliste (Spalte Noncached) und Selbsttest. */
+function wp_mqtt_noncached()
+{
+    return array('status/ok', 'status/befehle');
+}
+
 /** Hakenliste fuer Gateway V2 (Entwurf wp 2.4): die 25 Zahlen der Musterseiten und status/befehle, 26 Haken.
- *  Kein Thema braucht "Noncached" oder "Zuruecksetzen nach Senden". Je Zeile array(Thema voll, Name,
- *  Sprachschluessel der Bedeutung). */
+ *  Noncached seit 0.9.37: status/ok und status/befehle (wp_mqtt_noncached()); kein Thema braucht "Zuruecksetzen
+ *  nach Senden". Je Zeile array(Thema voll, Name, Sprachschluessel der Bedeutung, noncached). */
 function wp_mqtt_hakenliste()
 {
     $p = wp_mqtt_praefix();
     $aus = array();
     foreach (wp_mqtt_namen($p) as $z) {
-        if ($z['haken']) { $aus[] = array($p . '/' . $z['thema'], $z['name'], $z['bedeutung']); }
+        if ($z['haken']) { $aus[] = array($p . '/' . $z['thema'], $z['name'], $z['bedeutung'], $z['noncached']); }
     }
     return $aus;
+}
+
+/* ---------------- Gateway V2: Selbsttest der Haken (Nachtwelle N6, 0.9.37) ---------------- */
+
+/**
+ * Die Abos des MQTT-Gateways V2 aus config/system/subscriptions.json (Subscriptions[].Id je Thema, Noncached):
+ * array(Thema => Noncached ja/nein), null = nicht lesbar. Form wie MGiSmart 1.1.28 mg_v2_abos() und Govee 0.9.30
+ * gv_mqtt_v2_haken_lage(); die Datei liest wp_v2_haken_lage().
+ */
+function wp_v2_abos($daten)
+{
+    if (!is_array($daten)) {
+        return null;
+    }
+    $liste = array();
+    foreach (array('Subscriptions', 'subscriptions') as $s) {
+        if (isset($daten[$s]) && is_array($daten[$s])) {
+            $liste = $daten[$s];
+            break;
+        }
+    }
+    $abo = array();
+    foreach ($liste as $e) {
+        if (!is_array($e)) {
+            continue;
+        }
+        $id = '';
+        foreach (array('Id', 'id', 'Topic', 'topic') as $k) {
+            if (isset($e[$k]) && is_string($e[$k])) {
+                $id = $e[$k];
+                break;
+            }
+        }
+        if ($id === '') {
+            continue;
+        }
+        $nc = false;
+        foreach (array('Noncached', 'noncached') as $k) {
+            if (isset($e[$k])) {
+                $nc = ($e[$k] === true || in_array(strtolower(trim((string) $e[$k])), array('1', 'true', 'yes', 'on'), true));
+            }
+        }
+        $abo[$id] = $nc;
+    }
+    return $abo;
+}
+
+/**
+ * Soll gegen Ist, rein (liest nichts): array(1|0, fehlt[], noncached_fehlt[], noncached_zu_viel[], angehakt, soll).
+ * Soll je Zeile array('thema' => volles Thema, 'name' => Gateway-Name, 'noncached' => bool). Noncached wird in
+ * beide Richtungen verglichen: fehlt es, reicht das Gateway einen gleichen Wert nicht weiter; steht es zu viel, geht
+ * jeder Wert erneut an den Miniserver.
+ */
+function wp_v2_haken_abgleich(array $soll, array $abo)
+{
+    $fehlt = array();
+    $nc_fehlt = array();
+    $nc_zuviel = array();
+    $da = 0;
+    foreach ($soll as $e) {
+        if (!array_key_exists($e['thema'], $abo)) {
+            $fehlt[] = $e['name'];
+            continue;
+        }
+        $da++;
+        if ($e['noncached'] && !$abo[$e['thema']]) {
+            $nc_fehlt[] = $e['name'];
+        } elseif (!$e['noncached'] && $abo[$e['thema']]) {
+            $nc_zuviel[] = $e['name'];
+        }
+    }
+    return array(($fehlt || $nc_fehlt || $nc_zuviel) ? 0 : 1, $fehlt, $nc_fehlt, $nc_zuviel, $da, count($soll));
+}
+
+/**
+ * Das Soll fuer den Selbsttest: wp_mqtt_hakenliste() - DIESELBE Funktion wie die Hakenliste im Reiter "Einbindung in Loxone"
+ * (Regeln/07), mit ihren Textthemen (die Musterseiten haben dafuer Texteingaenge) und Noncached aus wp_mqtt_noncached().
+ */
+function wp_v2_haken_soll()
+{
+    $aus = array();
+    foreach (wp_mqtt_hakenliste() as $z) {
+        $aus[] = array('thema' => $z[0], 'name' => $z[1], 'noncached' => (bool) $z[3]);
+    }
+    return $aus;
+}
+
+/**
+ * Selbsttestzeile "Gateway V2: sind alle Datenpunkte der Hakenliste angehakt?" (Nachtwelle N6, Vorschrift Punkt 4):
+ * array(1|0|2, Text ohne Markup). 1 alle Haken da und Noncached wie in der Hakenliste; 0 es fehlt ein Haken oder
+ * Noncached stimmt nicht (mit Namen); 2 trifft nicht zu (MQTT dieses Plugins aus, Gateway V1) oder nicht
+ * feststellbar (Fassung 0, keine Wurzel, subscriptions.json nicht lesbar). Liest nur.
+ */
+function wp_v2_haken_lage($cfg = null)
+{
+    if ($cfg === null) {
+        $cfg = wp_config();
+    }
+    if (empty($cfg['mqtt_ein'])) {
+        return array(2, wp_t('TEST.V2_AUS'));
+    }
+    $m = wp_mqtt_zustand();
+    $fassung = (int) $m['fassung'];
+    $home = (string) wp_paths()['home'];
+    if ($fassung === 0 || $home === '') {
+        return array(2, wp_t('TEST.V2_UNKLAR'));
+    }
+    if ($fassung < 2) {
+        return array(2, wp_t('TEST.V2_V1'));
+    }
+    $abo = wp_v2_abos(@json_decode((string) @file_get_contents($home . '/config/system/subscriptions.json'), true));
+    if ($abo === null) {
+        return array(2, wp_t('TEST.V2_UNKLAR'));
+    }
+    $liste = wp_v2_haken_soll();
+    if (!$liste) {
+        return array(2, wp_t('TEST.V2_LEER'));   // leere Hakenliste: kein Urteil (Hausform wie N7)
+    }
+    list($ok, $fehlt, $nc_fehlt, $nc_zuviel, $da, $soll) = wp_v2_haken_abgleich($liste, $abo);
+    $txt = sprintf(wp_t('TEST.V2_ZAHL'), $da, $soll);
+    if ($fehlt) {
+        $txt .= ' ' . sprintf(wp_t('TEST.V2_FEHLT'), implode(', ', array_slice($fehlt, 0, 12))
+            . (count($fehlt) > 12 ? ' …' : ''));
+    }
+    if ($nc_fehlt) {
+        $txt .= ' ' . sprintf(wp_t('TEST.V2_NC_FEHLT'), implode(', ', $nc_fehlt));
+    }
+    if ($nc_zuviel) {
+        $txt .= ' ' . sprintf(wp_t('TEST.V2_NC_ZUVIEL'), implode(', ', $nc_zuviel));
+    }
+    return array($ok, $txt);
 }
 
 /**

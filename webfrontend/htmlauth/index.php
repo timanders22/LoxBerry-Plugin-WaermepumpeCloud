@@ -746,8 +746,9 @@ if ($wp_post && isset($_POST['speichern_ansage'])) {
     $wp_acfg = wp_config();
     $wp_tmangel = array();
     $wp_tbean = array();
-    $wp_acfg['tts'] = ansage_formular_lesen($_POST, wp_tts($wp_acfg), $wp_tmangel, $wp_tbean, wp_ansage_opt(),
-                                            wp_ansage_k());
+    $wp_thinw = array();     // Welle Mehrfach-Ziele (Sprachmodul 1.2.1): Hinweise des Moduls, die das Speichern nicht verhindern
+    $wp_acfg['tts'] = ansage_formular_lesen($_POST, wp_tts($wp_acfg), $wp_tmangel, $wp_tbean, wp_ansage_opt() + array(
+                                            'ziele' => wp_mit_zielen()), wp_ansage_k(), $wp_thinw);
     foreach ($wp_tmangel as $wp_tm) { $wp_fehler[] = wp_e($wp_tm['text']); }
     foreach (wp_ansage_anlaesse() as $wp_ak) { $wp_acfg[$wp_ak] = !empty($_POST[$wp_ak]) ? 1 : 0; }
     if (count($wp_fehler) > $wp_f0) {
@@ -757,9 +758,13 @@ if ($wp_post && isset($_POST['speichern_ansage'])) {
         foreach ($wp_ax as $wp_an) {
             if (substr($wp_an, -9) === '_loeschen') { $wp_ahaken[] = $wp_an; } else { $wp_atext[] = $wp_an; }
         }
-        wp_nichts_gespeichert($wp_fehler, $wp_f0, $wp_atext, $wp_ahaken, $wp_tbean);
+        wp_nichts_gespeichert($wp_fehler, $wp_f0, $wp_atext, $wp_ahaken, array_map('wp_ziele_x2_name', $wp_tbean));     // 0.9.37: name[N] -> name.N
+        $GLOBALS['wp_eingaben'] += wp_ziele_x2_werte();     // Welle Mehrfach-Ziele (0.9.37): die Tabelle flach als name.N
     } elseif (wp_config_write($wp_acfg)) {
         $wp_meldungen[] = wp_t('EINST.GESPEICHERT');
+        $wp_thl = array();     // Welle Mehrfach-Ziele (0.9.37): Hinweise des Moduls, maskiert in die Meldungen
+        foreach ($wp_thinw as $wp_th) { $wp_thl[] = $wp_th['text']; }     // Welle Mehrfach-Ziele: erst nach dem Speichern
+        foreach ($wp_thl as $wp_th1) { $wp_meldungen[] = wp_e($wp_th1); }
         wp_log('Ansagen gespeichert (Ausgabeart ' . (string) $wp_acfg['tts']['mode'] . ').');
     } else {
         $wp_fehler[] = sprintf(wp_t('EINST.FEHLER_SPEICHERN'), wp_e($wp_p['configdir']));
@@ -770,16 +775,25 @@ if ($wp_post && isset($_POST['speichern_ansage'])) {
 
 /* ================= Testansage (Nr. 36 b): POST, Ergebnis als Einmalmeldung, dann 303 =================
  * Ins Protokoll nur die Kurzform ohne Text und Token. */
-if ($wp_post && isset($_POST['ansage_test'])) {
+/* Welle Mehrfach-Ziele (Sprachmodul 1.2.1): die Knoepfe "Testansage an Ziel n" schicken ansage_test_ziel=n - es spricht
+ * nur dieses Ziel; der bisherige Knopf spricht an alle Ziele gleichzeitig. Eine unbrauchbare Nummer spricht nichts. */
+if ($wp_post && (isset($_POST['ansage_test']) || isset($_POST['ansage_test_ziel']))) {
     $wp_tk = wp_ansage_k();
-    $wp_ar = ansage_testansage(wp_tts(), $wp_tk);
-    wp_log('Testansage: ' . ansage_kurz($wp_ar));
-    if ($wp_ar['stand'] === 1) {
-        $wp_meldungen[] = wp_e(wp_t('DURCHSAGE.M_TEST_OK'));
-    } elseif ($wp_ar['stand'] === -1) {
-        $wp_meldungen[] = sprintf(wp_e(wp_t('DURCHSAGE.M_TEST_NICHTS')), wp_e(ansage_kennung_text($wp_ar['kennung'], $wp_tk)));
+    $wp_tnur = (isset($_POST['ansage_test_ziel']) && wp_mit_zielen()) ? ansage_test_ziel($_POST) : 0;
+    if (isset($_POST['ansage_test_ziel']) && $wp_tnur === 0) {
+        $wp_tr = array('stand' => 0, 'kennung' => 'ZIEL_UNBEKANNT|-', 'art' => '-', 'http' => 0, 'zeile' => '', 'zeichen' => 0);
+    } elseif ($wp_tnur >= 1) {
+        $wp_tr = ansage_testansage(wp_tts(), $wp_tk, $wp_tnur);
     } else {
-        $wp_fehler[] = sprintf(wp_e(wp_t('DURCHSAGE.M_TEST_FEHL')), wp_e(ansage_kennung_text($wp_ar['kennung'], $wp_tk)));
+        $wp_tr = ansage_testansage(wp_tts(), $wp_tk);
+    }
+    wp_log('Testansage' . ($wp_tnur >= 1 ? ' an Ziel ' . $wp_tnur : '') . ': ' . ansage_kurz($wp_tr));
+    if ($wp_tr['stand'] === 1) {
+        $wp_meldungen[] = wp_e(wp_t('DURCHSAGE.M_TEST_OK'));
+    } elseif ($wp_tr['stand'] === -1) {
+        $wp_meldungen[] = sprintf(wp_e(wp_t('DURCHSAGE.M_TEST_NICHTS')), wp_e(ansage_kennung_text($wp_tr['kennung'], $wp_tk)));
+    } else {
+        $wp_fehler[] = sprintf(wp_e(wp_t('DURCHSAGE.M_TEST_FEHL')), wp_e(ansage_kennung_text($wp_tr['kennung'], $wp_tk)));
     }
     $wp_tab = 'tab-test';
 }
@@ -1425,9 +1439,12 @@ details > summary { cursor: pointer; font-weight: 600; color: #4f7d17; margin: 8
 </div>
 <?= ansage_formular_html(wp_tts($wp_cfg), array(
     'w' => function ($n, $g) { return wp_ein($n, $g); },
-    'm' => function ($n) { $x = wp_mark($n); return $x === '' ? '' : ' class="sm-beanstandet"' . $x; },
+    'm' => function ($n) { $x = wp_mark(wp_ziele_x2_name($n)); return $x === '' ? '' : ' class="sm-beanstandet"' . $x; },     // 0.9.37: name[N] -> name.N
     'c' => function ($n, $g) { return wp_an($n, $g); },
-    'modi' => wp_ansage_modi()), wp_ansage_k()) ?>
+    'modi' => wp_ansage_modi(),
+    /* Welle Mehrfach-Ziele (Sprachmodul 1.2.1): Tabelle der weiteren Ausgabeziele; nach einer Beanstandung traegt sie das Eingetippte. */
+    'ziele' => wp_mit_zielen(),
+    'ziele_post' => wp_ziele_x2_post($GLOBALS['wp_eingaben'])), wp_ansage_k()); ?>
 <div class="sm-knopfreihe">
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="speichern_ansage" value="1"><?= wp_e(wp_t('ALLG.SPEICHERN')) ?></button>
 </div>
@@ -1703,9 +1720,9 @@ $wp_bliste = wp_befehle_liste(); ?>
 <div class="sm-hinweis"><?= sprintf(wp_t('LOX.M_S2_V2'), '<span class="sm-mono">' . wp_e($wp_gpraefix) . '</span>') ?></div>
 <details open><summary><?= wp_e(sprintf(wp_t('LOX.M_HAKEN_AUF'), count($wp_haken))) ?></summary>
 <div class="sm-breit"><table class="sm-tbl">
-<tr><th style="width:34px;">#</th><th><?= wp_e(wp_t('LOX.M_T_THEMA')) ?></th><th><?= wp_e(wp_t('LOX.M_T_NAME')) ?></th><th><?= wp_e(wp_t('LOX.M_T_BEDEUTUNG')) ?></th></tr>
+<tr><th style="width:34px;">#</th><th><?= wp_e(wp_t('LOX.M_T_THEMA')) ?></th><th><?= wp_e(wp_t('LOX.M_T_NAME')) ?></th><th><?= wp_e(wp_t('LOX.M_T_BEDEUTUNG')) ?></th><th><?= wp_e(wp_t('LOX.M_T_NONCACHED')) ?></th></tr>
 <?php foreach ($wp_haken as $wp_hi => $wp_hz) { ?>
-<tr><td><?= (int) $wp_hi + 1 ?></td><td><span class="sm-mono"><?= wp_e($wp_hz[0]) ?></span></td><td><span class="sm-mono"><?= wp_e($wp_hz[1]) ?></span></td><td><?= wp_t($wp_hz[2]) ?></td></tr>
+<tr><td><?= (int) $wp_hi + 1 ?></td><td><span class="sm-mono"><?= wp_e($wp_hz[0]) ?></span></td><td><span class="sm-mono"><?= wp_e($wp_hz[1]) ?></span></td><td><?= wp_t($wp_hz[2]) ?></td><td><?= wp_e(wp_t($wp_hz[3] ? 'LOX.M_NC_JA' : 'LOX.M_NC_NEIN')) ?></td></tr>
 <?php } ?>
 </table></div>
 </details>
@@ -2390,6 +2407,9 @@ if (wp_ww_moeglich($wp_cfg['hersteller'])) { ?>
 <form action="index.php" method="post" style="margin:0;"><input data-role="none" type="hidden" name="activetab" value="tab-test">
   <?php echo wp_fmt(); ?>
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="ansage_test" value="1"><?= wp_e(wp_t('DURCHSAGE.K_TEST')) ?></button>
+  <?php /* Welle Mehrfach-Ziele (Sprachmodul 1.2.1): je weiteres Ziel ein Knopf "Testansage an Ziel n (Geraet (Plugin))";
+     ohne weitere Ziele nichts. */
+  if (wp_mit_zielen()) { echo ansage_testknoepfe_html(wp_tts($wp_cfg), wp_ansage_k(), array('klasse' => 'sm-btn sm-b-aktion')); } ?>
 </form>
 </div>
 

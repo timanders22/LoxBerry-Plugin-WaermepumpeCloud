@@ -43,9 +43,21 @@
  *   werden nie ausgegeben, nur der Benutzername in der Anmeldemeldung.
  * - Ereignisgetrieben (stream_select), kein Takt; zustand.json spaetestens alle 30 s.
  * Laeuft auf: LoxBerry (PHP 7.4, 8.4, 8.5); --selbsttest, --liste, --vorlage auch unter Windows.
+ *
+ * 1.0.1 (Pflegewelle 22, 25.10.2026), rein ergaenzend, Tabellenfassung bleibt 1:
+ * - Wurzel geprueft (B1): nur wo config/plugins, data/plugins und config/system/general.json liegen
+ *   (Regeln/06), sonst keine Pfade und nichts angelegt; Ordnernamen aus LBPPLUGINDIR gegen die
+ *   Ausschlussliste ('', '.', '..', '/', html, htmlauth, bin, plugins, webfrontend).
+ * - Ordner befehle/ 0700 statt 0750 (am Geraet 0750 gemessen, BLE 1.3.28 / WiFi 3.2.15).
+ * - Markenpruefung mit leerer oder ungueltiger Uhr: Marke gilt (geschlossen ausfallen, B3).
+ *   Eine Marke aus der Zukunft gilt weiter nicht (Hausregel Regeln/06).
+ *
+ * 1.0.2 (Gruppe 36, Fensterbilanz 0.12.20, 28.10.2026), nur Zeilenenden, Tabellenfassung bleibt 1:
+ * - bb_vorlage() verbindet mit CRLF wie die _Test.xml-Ausfuhren der Loxone Config (Regeln/07);
+ *   Inhalt sonst byte-gleich. Selbsttest: Schlussprobe auf CRLF, Zahl der Faelle unveraendert.
  */
 
-define('BB_FASSUNG', '1.0.0');
+define('BB_FASSUNG', '1.0.2');
 define('BB_ZUORDNUNG_FASSUNG', 1);
 define('BB_SPERRE_VORGABE', 60);
 define('BB_SPERRE_MAX', 3600);
@@ -68,17 +80,37 @@ function bb_pfade()
 {
     static $p = null;
     if ($p !== null) { return $p; }
-    $bin = __DIR__;
+    $p = bb_pfade_aus(__DIR__, (string) getenv('LBHOMEDIR'), (string) getenv('LBPPLUGINDIR'));
+    return $p;
+}
+
+/** Ordnername aus LBPPLUGINDIR, der nie ein Pluginordner ist (1.0.1). */
+function bb_ordner_ungueltig($ordner)
+{
+    return in_array((string) $ordner, array('', '.', '..', '/', 'html', 'htmlauth', 'bin', 'plugins', 'webfrontend'), true);
+}
+
+/** Wurzel ist, was config/plugins UND data/plugins UND config/system/general.json traegt (Regeln/06). */
+function bb_wurzel_ok($base)
+{
+    return $base !== '' && is_dir($base . '/config/plugins') && is_dir($base . '/data/plugins')
+        && is_file($base . '/config/system/general.json');
+}
+
+/** Pfade rechnen (ohne Zwischenspeicher, fuer den Selbsttest); array() = keine LoxBerry-Lage. */
+function bb_pfade_aus($bin, $lbhome, $lbpdir)
+{
     if (basename(dirname($bin)) === 'plugins' && basename(dirname(dirname($bin))) === 'bin') {
         $base = dirname(dirname(dirname($bin)));
         $ordner = basename($bin);
-    } elseif ((string) getenv('LBHOMEDIR') !== '' && (string) getenv('LBPPLUGINDIR') !== '') {
-        $base = rtrim((string) getenv('LBHOMEDIR'), '/');
-        $ordner = basename((string) getenv('LBPPLUGINDIR'));
+    } elseif ($lbhome !== '' && $lbpdir !== '') {
+        $base = rtrim($lbhome, '/');
+        $ordner = basename($lbpdir);
+        if (bb_ordner_ungueltig($ordner) || bb_ordner_ungueltig($lbpdir)) { return array(); }
     } else {
-        $p = array();
-        return $p;
+        return array();
     }
+    if (!bb_wurzel_ok($base)) { return array(); }
     $daten = $base . '/data/plugins/' . $ordner;
     $p = array(
         'base' => $base, 'ordner' => $ordner, 'bin' => $bin, 'sh' => $bin . '/befehlsbruecke.sh',
@@ -826,10 +858,11 @@ function bb_dienst()
     foreach (bb_dienste() as $pid) {
         if ($pid < $ich) { bb_log('WARN', 'laeuft schon (PID ' . $pid . ') - dieser Start endet.'); return 3; }
     }
-    if (!is_dir($p['daten']) && !@mkdir($p['daten'], 0750, true)) {
+    if (!is_dir($p['daten']) && !@mkdir($p['daten'], 0700, true)) {
         bb_log('ERROR', 'Datenordner nicht anlegbar - Dienst endet.');
         return 1;
     }
+    @chmod($p['daten'], 0700);   // 1.0.1: auch ein von 1.0.0 mit 0750 angelegter Ordner
     foreach (bb_abos($p['optionen']) as $w) {
         if (function_exists('posix_kill')) { posix_kill($w, 15); }
         bb_log('WARN', 'verwaistes mosquitto_sub (PID ' . $w . ') eines frueheren Laufs beendet.');
@@ -1058,13 +1091,20 @@ function bb_zustand_lesen()
     return $p ? bb_json_lesen($p['zustand']) : null;
 }
 
-function bb_marke_liegt(array $p)
+/**
+ * Upgrade-Marke: gilt, wenn sie hoechstens BB_MARKE_GILT alt ist. Unlesbar oder aus der Zukunft: gilt
+ * nicht (Hausregel Regeln/06). 1.0.1: ist die Uhr leer oder ungueltig ($jetzt nur fuer den Selbsttest),
+ * gilt eine vorhandene Marke - geschlossen ausfallen, nicht starten (B3).
+ */
+function bb_marke_liegt(array $p, $jetzt = null)
 {
     if (!is_file($p['marke'])) { return false; }
+    if ($jetzt === null) { $jetzt = time(); }
+    if (!is_int($jetzt) || $jetzt <= 0) { return true; }
     $t = trim((string) @file_get_contents($p['marke']));
     if (!preg_match('/^[0-9]{1,12}\z/', $t)) { return false; }
     $t = (int) $t;
-    return $t <= time() && time() - $t < BB_MARKE_GILT;
+    return $t <= $jetzt && $jetzt - $t < BB_MARKE_GILT;
 }
 
 /** befehlsbruecke.sh aufrufen; Rueckgabe array(rc, Ausgabe). */
@@ -1088,7 +1128,8 @@ function bb_waechter()
     if (!$p) { return array(null, 'keine LoxBerry-Installation erkannt'); }
     // Zwei Takte in derselben Sekunde (Boot): der zweite Waechterlauf geht still. Die Sperre haelt nur
     // dieser PHP-Prozess; befehlsbruecke.sh schliesst geerbte Deskriptoren, der Dienst erbt sie nicht.
-    if (!is_dir($p['daten'])) { @mkdir($p['daten'], 0750, true); }
+    if (!is_dir($p['daten'])) { @mkdir($p['daten'], 0700, true); }
+    @chmod($p['daten'], 0700);   // 1.0.1: 0700 statt 0750, auch fuer den Bestand
     $wsperre = @fopen($p['daten'] . '/waechter.lock', 'c');
     if ($wsperre === false || !flock($wsperre, LOCK_EX | LOCK_NB)) { return array(null, 'anderer Waechterlauf'); }
     $erg = bb_waechter_lauf($p);
@@ -1259,7 +1300,7 @@ function bb_vorlage(array $liste, $host, $port)
         $z[] = bb_vorlage_befehl($b['titel'], $kom, $b['loxone']['ein'], $b['loxone']['aus'], $b['loxone']['analog']);
     }
     $z[] = '</VirtualOut>';
-    return implode("\n", $z) . "\n";
+    return implode("\r\n", $z) . "\r\n";
 }
 
 function bb_vorlage_befehl($titel, $kom, $ein, $aus, $analog)
@@ -1648,11 +1689,68 @@ function bb_selbsttest()
         $xml = @simplexml_load_string($v);
         $wohl = $xml !== false && count($xml->VirtualOutCmd) === 7;
     } else {
-        $wohl = substr_count($v, '<VirtualOutCmd ') === 7 && substr($v, -14) === "</VirtualOut>\n"
+        $wohl = substr_count($v, '<VirtualOutCmd ') === 7 && substr($v, -15) === "</VirtualOut>\r\n"
             && !preg_match('/="[^"]*(<|&(?!lt;|gt;|amp;|quot;|#039;|apos;))/', $v);
     }
     $pruef($wohl, 'Vorlage wohlgeformt, 7 Befehle');
     $pruef(bb_zahl_text(-0.0001) === '0' && bb_zahl_text(2) === '2' && bb_zahl_text(0.125) === '0.125', 'Zahltext');
+    // --- 1.0.1: Wurzel, Ordnernamen, Marke (B1/B3), im Wegwerfbaum unter dem Temp-Ordner
+    $tmp = rtrim(str_replace('\\', '/', sys_get_temp_dir()), '/') . '/bb_st_' . getmypid() . '_' . mt_rand(1000, 9999);
+    $baue = function ($wurzel, $voll) {
+        @mkdir($wurzel . '/bin/plugins/abf', 0700, true);
+        if ($voll) {
+            @mkdir($wurzel . '/config/plugins', 0700, true);
+            @mkdir($wurzel . '/config/system', 0700, true);
+            @mkdir($wurzel . '/data/plugins', 0700, true);
+            @file_put_contents($wurzel . '/config/system/general.json', "{}\n");
+        }
+    };
+    $baue($tmp . '/fremd', false);
+    $baue($tmp . '/echt', true);
+    $baue($tmp . '/halb', false);
+    @mkdir($tmp . '/halb/config/plugins', 0700, true);
+    @mkdir($tmp . '/halb/data/plugins', 0700, true);   // ohne general.json
+    $pruef(bb_pfade_aus($tmp . '/fremd/bin/plugins/abf', '', '') === array(), 'fremder Baum: keine Pfade');
+    $pruef(bb_pfade_aus($tmp . '/halb/bin/plugins/abf', '', '') === array(), 'Baum ohne general.json: keine Pfade');
+    $baue($tmp . '/ohnedata', true);
+    @rmdir($tmp . '/ohnedata/data/plugins');
+    @rmdir($tmp . '/ohnedata/data');
+    $baue($tmp . '/ohneconfig', true);
+    @rmdir($tmp . '/ohneconfig/config/plugins');
+    $pruef(bb_pfade_aus($tmp . '/ohnedata/bin/plugins/abf', '', '') === array()
+        && bb_pfade_aus($tmp . '/ohneconfig/bin/plugins/abf', '', '') === array(), 'Baum ohne data/plugins bzw. config/plugins: keine Pfade');
+    $pe = bb_pfade_aus($tmp . '/echt/bin/plugins/abf', '', '');
+    $pruef(isset($pe['daten']) && $pe['daten'] === $tmp . '/echt/data/plugins/abf/befehle' && $pe['ordner'] === 'abf', 'echter Baum: Pfade');
+    $pruef(bb_pfade_aus($tmp . '/irgendwo', $tmp . '/fremd', 'abf') === array(), 'LBHOMEDIR fremd: keine Pfade');
+    $pl = bb_pfade_aus($tmp . '/irgendwo', $tmp . '/echt/', 'abf');
+    $pruef(isset($pl['base']) && $pl['base'] === $tmp . '/echt' && $pl['ordner'] === 'abf', 'LBHOMEDIR echt: Pfade');
+    $alle_ab = true;
+    foreach (array('.', '..', '/', 'html', 'htmlauth', 'bin', 'plugins', 'webfrontend') as $o) {
+        if (bb_pfade_aus($tmp . '/irgendwo', $tmp . '/echt', $o) !== array()) { $alle_ab = false; }
+    }
+    $pruef($alle_ab, 'LBPPLUGINDIR: ungueltige Ordnernamen abgewiesen');
+    $pruef(bb_ordner_ungueltig('') && !bb_ordner_ungueltig('abfahrtsassistent'), 'Ordnername leer/gueltig');
+    $pruef(!is_dir($tmp . '/fremd/data') && !is_dir($tmp . '/fremd/log'), 'fremder Baum: nichts angelegt');
+    // Marke
+    $mk = array('marke' => $tmp . '/echt/data/plugins/abf.upgrade_laeuft');
+    $pruef(!bb_marke_liegt($mk, 2000000000), 'Marke fehlt: gilt nicht');
+    @file_put_contents($mk['marke'], "1999999000\n");
+    $pruef(bb_marke_liegt($mk, 2000000000), 'Marke frisch: gilt');
+    $pruef(!bb_marke_liegt($mk, 1999998000), 'Marke aus der Zukunft: gilt nicht (Hausregel)');
+    $pruef(!bb_marke_liegt($mk, 2000000000 + 3600), 'Marke alt: gilt nicht');
+    $pruef(bb_marke_liegt($mk, 0) && bb_marke_liegt($mk, -5) && bb_marke_liegt($mk, ''), 'leere/ungueltige Uhr: Marke gilt (nicht starten)');
+    @file_put_contents($mk['marke'], "kaputt\n");
+    $pruef(!bb_marke_liegt($mk, 2000000000), 'Marke unlesbar: gilt nicht');
+    $pruef(bb_marke_liegt($mk, false), 'Marke unlesbar, Uhr ungueltig: gilt (geschlossen)');
+    // aufraeumen (nur der eigene Wegwerfbaum)
+    $weg = function ($d) use (&$weg) {
+        foreach ((array) @scandir($d) as $e) {
+            if ($e === '.' || $e === '..' || $e === false) { continue; }
+            is_dir($d . '/' . $e) ? $weg($d . '/' . $e) : @unlink($d . '/' . $e);
+        }
+        @rmdir($d);
+    };
+    if (strpos($tmp, '/bb_st_') !== false) { $weg($tmp); }
     unset($GLOBALS['bb_zuordnung']);
     return array($n, $f, $texte);
 }

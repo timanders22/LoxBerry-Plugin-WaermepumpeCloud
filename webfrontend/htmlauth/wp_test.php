@@ -428,6 +428,10 @@ function wp_pruefungen()
      * ist ein Punkt, kein Kreuz. */
     list($wp_nok, $wp_ntext) = wp_mqtt_namen_probe();
     $z[] = wp_pruefzeile($wp_nok, wp_t('TEST.F_NAMEN'), $wp_ntext);
+    /* Nachtwelle N6 (0.9.37): stehen unter MQTT-Gateway V2 die Haken der Hakenliste mit dem richtigen Noncached?
+       Liest config/system/subscriptions.json; unter V1 und bei ausgeschaltetem MQTT ein Hinweis. */
+    list($wp_v2s, $wp_v2t) = wp_v2_haken_lage($cfg);
+    $z[] = wp_pruefzeile($wp_v2s === 2 ? -1 : $wp_v2s, wp_t('TEST.F_V2_HAKEN'), wp_e($wp_v2t));
     list($wp_bok, $wp_btext) = wp_pruef_bruecke();
     $z[] = wp_pruefzeile($wp_bok, wp_t('TEST.F_BRUECKE'), $wp_btext);
     $wp_bpz = wp_bruecke_pruefzeilen();
