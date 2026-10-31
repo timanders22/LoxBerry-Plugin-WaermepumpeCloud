@@ -62,6 +62,10 @@ Adresse und Vorlage müssen im Heimnetz liegen; die Sprechtoken stehen in keiner
 Prüfzeile im Reiter Test; dort zeigt die Prüfadresse das Aktionstoken nur noch maskiert (Knopf „Adresse
 kopieren“).
 
+## Neu in 0.9.38
+
+Bilder der Einbindung erneuert: Die Bilder der Seiten „WaermepumpeCloud“ und „WaermepumpeCloud Werte“ zeigen die neu angeordneten Seiten. Sonst keine Änderung gegen 0.9.37.
+
 ## Neu in 0.9.37
 
 Pflegefassung der Nachtwelle (29.10.2026): die gemeinsamen Module auf dem Hausstand. Werte, Themen und Befehle bleiben,
