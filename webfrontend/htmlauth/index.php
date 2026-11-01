@@ -2143,6 +2143,7 @@ $wp_bs_seiten = array(
               $wp_bs_mono(wp_t('BAUSTEIN.S2_45_NAME')),
               wp_e(wp_t('BAUSTEIN.S2_45_PARAM')),
               wp_e(wp_t('BAUSTEIN.E_EINGANG')) . ' = #44'),
+        $wp_bs_vi(46, 'BETRIEBSART', 'S2_46_PARAM'),
         ),
         'schritte' => array(
             wp_e(sprintf(wp_t('BAUSTEIN.S2_SCHRITT1'), wp_t('LOX.M_S3_KURZ'))),

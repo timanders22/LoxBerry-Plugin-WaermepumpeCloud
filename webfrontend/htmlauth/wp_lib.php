@@ -1329,6 +1329,15 @@ function wp_pfad($daten, $pfad)
         }
     }
     $pfad = trim($pfad);
+    /* NEU 0.9.39: ein vorangestelltes "!" kehrt einen Ja/Nein-Wert um. myVAILLANT meldet
+     * state.system.systemOff ("System aus"), das Feld EIN fragt das Gegenteil. Umgekehrt
+     * werden nur Zahlen (groesser 0 = ja) und true/false; alles andere ist keine Aussage
+     * (null, der Reiter Test meldet das Feld dann ohne Treffer) - nie geraten. */
+    $umkehren = false;
+    if ($pfad !== '' && $pfad[0] === '!') {
+        $umkehren = true;
+        $pfad = trim(substr($pfad, 1));
+    }
     if ($pfad === '' || !is_array($daten)) { return null; }
 
     $wert = null;
@@ -1356,6 +1365,12 @@ function wp_pfad($daten, $pfad)
     // nicht gefunden - der Reiter Test meldet das Feld dann als ohne Treffer.
     if ($wert === null || is_array($wert)) { return null; }
     if (is_bool($wert)) { $wert = $wert ? 1 : 0; }
+    if ($umkehren) {
+        $t = strtoupper(trim((string) $wert));
+        if ($t === 'TRUE') { $wert = 1; } elseif ($t === 'FALSE') { $wert = 0; }
+        if (!is_numeric($wert)) { return null; }
+        $wert = ((float) $wert > 0) ? 0 : 1;
+    }
     if ($faktor !== null && is_numeric($wert)) { $wert = (float) $wert * $faktor; }
     return $wert;
 }
@@ -1538,8 +1553,23 @@ function wp_felder()
             'myuplink' => array(),
             'onecta'   => array('managementPoints[embeddedId=climateControl].onOffMode.value'),
             'melcloud' => array('Power'),
-            'vaillant' => array(),
+            // NEU 0.9.39: myVAILLANT meldet "System aus" (state.system.systemOff; am Geraet
+            // gelesen 01.11.2026: false). Das "!" kehrt es um, siehe wp_pfad().
+            'vaillant' => array('!state.system.systemOff'),
             'emsesp'   => array('boiler.heatingactivated'),
+        )),
+        /* NEU 0.9.39 (Musterprojekt/BEFUND_WP_BETRIEBSART_2026-11-01.md): die Betriebsart Heizen
+         * der ersten Zone als Zahl. Hinten angehaengt, damit die bestehenden Felder ihre
+         * Reihenfolge behalten. Der Text wird in wp_betriebsart() ueber eine feste Tabelle zur
+         * Zahl (0 aus, 1 manuell, 2 Zeitprogramm); Unbekanntes wird "-" (-1), nie geraten.
+         * Gemessen ist nur TIME_CONTROLLED; OFF und MANUAL sind die uebrigen Werte der
+         * myVAILLANT-Schnittstelle (abgeleitet, nicht gemessen). */
+        'BETRIEBSART' => array(1, 0, 2, 'FELD.BETRIEBSART', array(
+            'myuplink' => array(),
+            'onecta'   => array(),
+            'melcloud' => array(),
+            'vaillant' => array('configuration.zones.0.heating.operationModeHeating'),
+            'emsesp'   => array(),
         )),
     );
 }
@@ -1731,6 +1761,10 @@ function wp_zuordnung_lesen($text)
  * was dort nicht steht, wird "-" (keine Aussage, Entscheidung Nr. 5) - nie
  * geraten. Die Tabelle nennt nur Werte, die das Plugin selbst schreibt
  * (Onecta on/off) oder die die Feldtabelle ausdruecklich nennt (CYLINDER_BOOST).
+ *
+ * NEU 0.9.39: REGULAR ist bei myVAILLANT 0 - Warmwasser ohne Sonderfunktion, am Geraet
+ * gelesen am 01.11.2026 (state.dhw.0.currentSpecialFunction). Bis 0.9.38 stand WWZWANG
+ * bei Vaillant im Normalbetrieb deshalb immer auf "-" (-1).
  */
 function wp_digital($wert, $hersteller)
 {
@@ -1742,8 +1776,24 @@ function wp_digital($wert, $hersteller)
         'onecta'   => array('ON' => 1, 'OFF' => 0),
         'emsesp'   => array('ON' => 1, 'OFF' => 0, 'TRUE' => 1, 'FALSE' => 0),
         'melcloud' => array('TRUE' => 1, 'FALSE' => 0),
-        'vaillant' => array('CYLINDER_BOOST' => 1, 'NONE' => 0),
+        'vaillant' => array('CYLINDER_BOOST' => 1, 'NONE' => 0, 'REGULAR' => 0),
         'myuplink' => array(),
+    );
+    $h = isset($tabelle[$hersteller]) ? $tabelle[$hersteller] : array();
+    return isset($h[$t]) ? $h[$t] : '-';
+}
+
+/**
+ * Die Betriebsart Heizen (NEU 0.9.39) je Hersteller fest auf eine Zahl abbilden:
+ * 0 = aus, 1 = manuell, 2 = Zeitprogramm. Alle Werte dieser Linie sind Zahlen
+ * (wp_mqtt_namen()); was nicht in der Tabelle steht, wird "-" (keine Aussage,
+ * Entscheidung Nr. 5) - nie geraten. Bisher liefert nur myVAILLANT das Feld.
+ */
+function wp_betriebsart($wert, $hersteller)
+{
+    $t = strtoupper(trim((string) $wert));
+    $tabelle = array(
+        'vaillant' => array('OFF' => 0, 'MANUAL' => 1, 'TIME_CONTROLLED' => 2),
     );
     $h = isset($tabelle[$hersteller]) ? $tabelle[$hersteller] : array();
     return isset($h[$t]) ? $h[$t] : '-';
@@ -1768,6 +1818,7 @@ function wp_umrechnen($roh, $cfg)
         if ($treffer !== null) {
             $werte[$name] = is_numeric($treffer) ? round((float) $treffer, 2) : $treffer;
             if (isset($digital[$name])) { $werte[$name] = wp_digital($werte[$name], $cfg['hersteller']); }
+            if ($name === 'BETRIEBSART') { $werte[$name] = wp_betriebsart($werte[$name], $cfg['hersteller']); }
         }
         $wege[$name] = $weg;
     }
@@ -4164,6 +4215,7 @@ function wp_mqtt_wert_saeubern($v)
  *                       jetzt - allein durch die Uhr falsch       -> nicht
  *   SOLL, VLSOLL,       zuletzt gueltiger Sollwert bzw. Einstellung
  *   WWSOLL, HEIZKURVE   der Anlage                                -> retained
+ *   BETRIEBSART         Einstellung der Anlage (NEU 0.9.39)       -> retained
  *   KOMPRESSOR, EIN,    Zustaende, die die Anlage meldet          -> retained
  *   WWZWANG
  *   STUFE               zuletzt gesetzter SG-Ready-Sollzustand    -> retained
@@ -4189,7 +4241,7 @@ function wp_retain_tabelle()
         'OK' => 0, 'STUFE' => 1, 'ALTER' => 0, 'BUDGET' => 0, 'STOERUNG' => 0,
         'AUSSEN' => 0, 'VORLAUF' => 0, 'VLSOLL' => 1, 'HEIZKURVE' => 1,
         'RUECKLAUF' => 0, 'RAUM' => 0, 'SOLL' => 1, 'WW' => 0, 'WWSOLL' => 1,
-        'LEISTUNG' => 0, 'KOMPRESSOR' => 1, 'WWZWANG' => 1, 'EIN' => 1,
+        'LEISTUNG' => 0, 'KOMPRESSOR' => 1, 'WWZWANG' => 1, 'EIN' => 1, 'BETRIEBSART' => 1,
         'COP' => 0, 'STROM' => 0, 'WAERME' => 0,
         'SPREIZUNG' => 0, 'TAKTE' => 0, 'LAUFZEIT' => 0, 'LAUFANTEIL' => 0,
     );
@@ -4848,6 +4900,7 @@ function wp_einheiten()
         'KOMPRESSOR' => '<v>',
         'WWZWANG'    => '<v>',
         'EIN'        => '<v>',
+        'BETRIEBSART' => '<v>',
         'COP'        => '<v.2>',
         'STROM'      => '<v.1> kWh',
         'WAERME'     => '<v.1> kWh',
@@ -6532,7 +6585,8 @@ function wp_mqtt_einheit($name)
  * Die Namenstabelle (Reiter "Einbindung in Loxone", Schritt 3) - EINE Liste fuer Tabelle, Hakenliste
  * und Selbstpruefung. Reihenfolge wie wp_statusfelder(), dann das Lebenszeichen und status/befehle (sendet
  * die Befehlsbruecke). Je Zeile: thema, name, bedeutung (Sprachschluessel), bereich, fehlwert (null = keiner),
- * im_muster, haken. Alle Werte sind Zahlen (WWZWANG/EIN/KOMPRESSOR macht das Plugin zu 1/0/-1).
+ * im_muster, haken. Alle Werte sind Zahlen (WWZWANG/EIN/KOMPRESSOR macht das Plugin zu 1/0/-1,
+ * BETRIEBSART zu 0/1/2/-1).
  * $praefix: fuer die Gegenprobe; sonst der eingestellte.
  */
 function wp_mqtt_namen($praefix = null)

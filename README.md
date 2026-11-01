@@ -62,6 +62,26 @@ Adresse und Vorlage müssen im Heimnetz liegen; die Sprechtoken stehen in keiner
 Prüfzeile im Reiter Test; dort zeigt die Prüfadresse das Aktionstoken nur noch maskiert (Knopf „Adresse
 kopieren“).
 
+## Neu in 0.9.39
+
+Betriebsart Heizen und zwei myVAILLANT-Werte (Befund vom 01.11.2026 an einer aroTHERM plus mit myVAILLANT).
+
+* **Neues Feld `BETRIEBSART`:** die Betriebsart Heizen der ersten Zone als Zahl – 0 = aus, 1 = manuell,
+  2 = Zeitprogramm, −1 = keine Aussage. MQTT-Thema `waermepumpe/BETRIEBSART` (im Gateway
+  `waermepumpe_BETRIEBSART`), HTTP `WP_BETRIEBSART`. Quelle bei myVAILLANT
+  `configuration.zones.0.heating.operationModeHeating`; ein unbekannter Text ergibt −1, nichts wird geraten. Der Wert
+  geht zurückbehalten (retained) hinaus wie die Sollwerte. Die übrigen Hersteller liefern das Feld nicht. Gemessen ist
+  nur „Zeitprogramm“; „aus“ und „manuell“ sind die übrigen Werte der Schnittstelle.
+* **`WWZWANG` bei myVAILLANT:** Warmwasser ohne Sonderfunktion (`REGULAR`) ergibt jetzt 0. Bis 0.9.38 stand der Wert
+  bei Vaillant im Normalbetrieb immer auf −1.
+* **`EIN` bei myVAILLANT:** kommt jetzt aus `state.system.systemOff`, umgekehrt gelesen (System nicht aus = 1). Bis
+  0.9.38 hatte das Feld bei Vaillant keinen Pfad und stand auf −1. Für eigene Zuordnungen heißt die neue Pfadform
+  `!pfad`: sie kehrt einen Ja/Nein-Wert um.
+* **Einbindung:** Namenstabelle, Gateway-V2-Hakenliste und HTTP-Vorlage im Reiter *Einbindung in Loxone* sowie die
+  Baustein-Liste der Seite „WaermepumpeCloud Werte“ (Zeile 46) nennen das neue Feld. Wer es nutzen will, legt einen
+  Virtuellen Eingang `waermepumpe_BETRIEBSART` an und hakt ihn im Gateway V2 an. Bestehende Eingänge bleiben, wie sie
+  sind.
+
 ## Neu in 0.9.38
 
 Bilder der Einbindung erneuert: Die Bilder der Seiten „WaermepumpeCloud“ und „WaermepumpeCloud Werte“ zeigen die neu angeordneten Seiten. Sonst keine Änderung gegen 0.9.37.
@@ -1084,7 +1104,8 @@ myVAILLANT-Konto, nicht die Antwort einer Anlage. Deshalb:
 
 Pfadformen: `a.b.c`, `a[embeddedId=climateControl].b`, bei myUplink `#40004`
 für eine Parameternummer oder `~aussen|outdoor` für eine Namenssuche, jeweils
-optional mit Faktor: `#2305|0.0001`.
+optional mit Faktor: `#2305|0.0001`. Ein `!` davor kehrt einen Ja/Nein-Wert um
+(`!state.system.systemOff`, seit 0.9.39).
 
 ## Zwei Richtungen
 
