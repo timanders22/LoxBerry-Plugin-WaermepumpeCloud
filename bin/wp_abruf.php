@@ -95,8 +95,9 @@ $fh = @fopen($sperre, 'c');
 if ($fh === false) { exit(1); }
 if (!flock($fh, LOCK_EX | LOCK_NB)) { exit(0); }
 
-$cfg = wp_config();
-if ($cfg['hersteller'] === '') {
+/* bis 0.9.39 hiess dieses Feld $cfg: das LoxBerry-SDK ueberschreibt ein globales $cfg beim ersten Lesen von general.json (Ausfall MGiSmart 01.11.2026). */
+$wp_lauf_cfg = wp_config();
+if ($wp_lauf_cfg['hersteller'] === '') {
     // Noch nicht eingerichtet - das ist kein Fehler, nur nichts zu tun.
     flock($fh, LOCK_UN);
     fclose($fh);
@@ -123,8 +124,8 @@ try {
     /* Erst schalten, dann lesen - siehe oben. */
     // Die Abo-Datei fuer das MQTT-Gateway auf dem eingestellten Praefix
     // halten (nach einem Update kommt sie mit der Vorgabe aus dem Archiv).
-    wp_abo_nachziehen($cfg);
-    wp_sg_durchsetzen($cfg);
+    wp_abo_nachziehen($wp_lauf_cfg);
+    wp_sg_durchsetzen($wp_lauf_cfg);
     list($ok, $grund) = wp_abrufen($modus === 'jetzt');
     /* Das Lebenszeichen geht bei JEDEM Cron-Lauf hinaus, auch wenn kein Abruf
      * faellig war (Regeln/07, Abschnitt 3; Bauliste M2). Fluechtig. */

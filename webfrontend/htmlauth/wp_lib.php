@@ -638,7 +638,7 @@ function wp_vorgaben()
         'ansage_anmeldung' => 1,
         'ansage_ausfall'   => 1,
         'ansage_stoerung'  => 1,   // WP-Ansage-1: nur myVAILLANT (Diagnosecodes)
-        'tts'          => ansage_vorgaben('aus'),
+        'tts'          => ansage_werk_block(),
         // Endpunkt
         'aktionstoken' => '',
     );
@@ -4358,7 +4358,10 @@ function wp_mqtt_behalten_fragen(array $themen)
     /* Genau $n Bytes lesen oder null - bei Zeitablauf und Verbindungsende. */
     $lies = function ($n) use ($s) {
         $d = '';
+        /* bis 0.9.39 ohne Frist: ein Broker, der ein Paket ankuendigt und nur tropfenweise liefert, hielt den Leser fest. Schweigt er ganz, greift schon stream_set_timeout(). */
+        $lies_bis = microtime(true) + 5.0;
         while (strlen($d) < $n) {
+            if (microtime(true) >= $lies_bis) { return null; }
             $t = @fread($s, $n - strlen($d));
             if ($t === false || $t === '') {
                 $meta = stream_get_meta_data($s);
@@ -5758,6 +5761,7 @@ function wp_ansage_k()
 {
     $p = wp_paths();
     return array(
+        'werk' => ansage_werk_modus(),
         'port'   => ansage_webport($p['home'] !== '' ? $p['home'] . '/config/system/general.json' : ''),
         'kopf'   => array('User-Agent: LoxBerry Waermepumpe Cloud'),
         'ordner' => @is_dir($p['datadir']) ? $p['datadir'] : '',
@@ -5844,6 +5848,176 @@ function wp_ansage_text($anlass, $stand, $jetzt, $anzahl = 0)
     return trim(html_entity_decode(strip_tags($t), ENT_QUOTES, 'UTF-8'));
 }
 
+/* ---------------- Sprachansagen: Regeln aus dem Stamm (0.9.40, Welle S2, Stamm sprachausgabe.php 1.3.2) ----------------
+ *
+ * Nachtruhe, Sperre und Schalter "Ansagen aus" stehen im Stamm. Ab Werk EIN: ansage_werk_block() in den Vorgaben, also nur fuer einen
+ * nie gespeicherten Block; ein gespeicherter bleibt, auch 'aus'. Ein Minutenlauf und ein Dienst sprechen nie selbst: Sie legen den Anlass
+ * in <Daten>/ansage_warte.json, ein abgekoppelter Sender (php -r, eigene Sperre) spricht und wartet auf die Lautsprecher.
+ */
+
+/** So alt darf ein wartender Anlass werden (nach einem Update oder Hang wird nichts Aufgestautes angesagt). */
+if (!defined('WP_ANSAGE_HOECHSTALTER')) { define('WP_ANSAGE_HOECHSTALTER', 600); }
+
+/** Die Regeln: gespeichert und gueltig, sonst aus einer alten Einstellung dieser Linie, sonst die Vorgabe (mit Nachtruhe). */
+function wp_ansage_regeln($cfg = null)
+{
+    if ($cfg === null) { $cfg = wp_config(); }
+    $g = '';
+    if (isset($cfg['ansage_regeln'])) {
+        $r = ansage_regeln_wert($cfg['ansage_regeln'], $g);
+        return $r === null ? ansage_regeln_vorgaben() : $r;
+    }
+    $r = ansage_regeln_vorgaben();
+    $p = ansage_regeln_wert($r, $g);
+    return $p === null ? ansage_regeln_vorgaben() : $p;
+}
+
+/** Die Warteliste unter einer Dateisperre aendern: $fn(Liste) -> array(neue Liste, Ergebnis). */
+function wp_ansage_warte($fn)
+{
+    $d = wp_paths()['datadir'];
+    if (!is_dir($d)) { @mkdir($d, 0775, true); }
+    $f = $d . '/ansage_warte.json';
+    $h = @fopen($f, 'c+');
+    if ($h === false) { return null; }
+    if (!flock($h, LOCK_EX)) { fclose($h); return null; }
+    $alt = json_decode((string) stream_get_contents($h), true);
+    list($neu, $erg) = call_user_func($fn, is_array($alt) ? $alt : array());
+    rewind($h);
+    ftruncate($h, 0);
+    fwrite($h, (string) json_encode($neu));
+    fflush($h);
+    flock($h, LOCK_UN);
+    fclose($h);
+    @chmod($f, 0600);
+    return $erg;
+}
+
+/**
+ * Anlaesse hinlegen und den Sender starten; wartet auf nichts. $l: Eintraege fuer ansage_regel_sprechen() (schluessel, text, dringend,
+ * sperre_min, nur_nach). Die Schale schliesst vor dem exec jede Deskriptor-Nummer ueber 2, sonst erbte der Sender die Sperren des Rufers.
+ */
+function wp_ansage_legen(array $l, $jetzt = null)
+{
+    if (!$l) { return 'nichts'; }
+    $jetzt = $jetzt === null ? time() : (int) $jetzt;
+    wp_ansage_warte(function ($alt) use ($l, $jetzt) {
+        foreach ($l as $e) { $alt[] = $e + array('zeit' => $jetzt); }
+        return array(array_slice($alt, -50), null);
+    });
+    $php = (defined('PHP_BINARY') && PHP_BINARY !== '' && is_executable(PHP_BINARY) && stripos(basename(PHP_BINARY), 'php') === 0 && stripos(basename(PHP_BINARY), 'fpm') === false) ? PHP_BINARY : 'php';
+    $befehl = 'for f in /proc/$$/fd/*; do n=${f##*/}; [ "$n" -gt 2 ] 2>/dev/null && eval "exec $n>&-"; done; '
+            . 'exec ' . escapeshellarg($php) . ' -r ' . escapeshellarg('chdir(dirname($argv[1])); $_SERVER["SCRIPT_FILENAME"] = $_SERVER["PHP_SELF"] = $argv[1]; require $argv[1]; wp_ansage_senden();') . ' -- ' . escapeshellarg(__FILE__);
+    $aus = array();
+    $rc = 1;
+    @exec('bash -c ' . escapeshellarg($befehl) . ' </dev/null >/dev/null 2>&1 &', $aus, $rc);
+    return $rc === 0 ? 'gestartet' : 'kein_start';
+}
+
+/** Das Sprechtoken aus Alexa-NG und Chromecast4lox uebernehmen (Stamm 1.3.1). Schreibt NUR bei einer Aenderung, nennt nie das Token. */
+function wp_ansage_token_pflegen($cfg = null)
+{
+    if ($cfg === null) { $cfg = wp_config(); }
+    list($neu, $her2, $g) = ansage_token_abgleich(wp_tts($cfg), isset($cfg['ansage_token_herkunft']) ? $cfg['ansage_token_herkunft'] : array(), wp_ansage_k());
+    if (!$g) { return false; }
+    $cfg = wp_config();
+    $cfg['tts'] = $neu;
+    $cfg['ansage_token_herkunft'] = $her2;
+    if (!wp_config_write($cfg)) { return false; }
+    wp_log('Ansage: Sprechtoken uebernommen (' . implode(', ', $g) . ').');
+    return true;
+}
+
+/** Der Block fuer Testansage und Pruefzeile: uebernommene Token aufgeloest. Nur im Speicher. */
+function wp_ansage_vor_ort($cfg = null)
+{
+    if ($cfg === null) { $cfg = wp_config(); }
+    return ansage_token_fuer_lauf(wp_tts($cfg), isset($cfg['ansage_token_herkunft']) ? $cfg['ansage_token_herkunft'] : array(), wp_ansage_k());
+}
+
+/** Der Block fuer die Pruefzeile: nur die eingerichteten Ziele; ist keines eingerichtet, sagt die Zeile "aus" statt eines Kreuzes. */
+function wp_ansage_pruefblock($cfg = null)
+{
+    if ($cfg === null) { $cfg = wp_config(); }
+    $t = wp_tts($cfg);
+    if ($t['mode'] === 'aus') { return $t; }
+    list($b) = ansage_ziele_bereit(wp_ansage_vor_ort($cfg), wp_ansage_k());
+    if ($b === null) { $t['mode'] = 'aus'; return $t; }
+    return $b;
+}
+
+/** Die Lage im Reiter Test: Ziele, Nachtruhe, Schalter. Nur im geoeffneten Reiter (der Schalter fragt den Broker). */
+function wp_ansage_lage_html($cfg = null)
+{
+    if ($cfg === null) { $cfg = wp_config(); }
+    $k = wp_ansage_k();
+    $o = array();
+    foreach (ansage_regel_lage(wp_tts($cfg), wp_ansage_regeln($cfg), $k, true) as $z) {
+        $o[] = '<div class="sm-hilfe">' . htmlspecialchars((string) $z[1], ENT_QUOTES, 'UTF-8') . '</div>';
+    }
+    return implode("\n", $o) . "\n";
+}
+
+/** Die Felder der Regeln fuer die Einmalmeldung (X-2). */
+function wp_ansage_regel_felder(array $anlaesse = array())
+{
+    return ansage_regeln_x2_felder($anlaesse);
+}
+
+/**
+ * Im Vorgang sprechen, wo der Rufer das Ergebnis braucht (Antwort an Loxone, Befehl): Regeln aus dem Stamm mit "dringend, ohne Sperre" - es zaehlt nur der Schalter.
+ * Schalter gesetzt: stand -1, Kennung SCHALTER. Nichts bereit oder Original-Audioserver: wie bisher ansage_sprechen(), damit die Antwort sagt, was fehlt.
+ */
+function wp_ansage_direkt($text, array $e = array(), $tts = null)
+{
+    $conf = wp_config();
+    $k = wp_ansage_k();
+    $t = $tts === null ? wp_tts($conf) : $tts;
+    $a = ansage_regel_sprechen(array($e + array('schluessel' => 'direkt', 'text' => (string) $text, 'dringend' => true, 'sperre_min' => 0)), $t, wp_ansage_regeln($conf), $k);
+    if ($a['r'] !== null) { return $a['r']; }
+    if ($a['regel'] === 'SCHALTER') {
+        return array('stand' => -1, 'kennung' => 'SCHALTER', 'art' => isset($t['mode']) ? (string) $t['mode'] : '-', 'http' => 0, 'zeile' => '', 'zeichen' => 0);
+    }
+    return ansage_sprechen((string) $text, $t, $k);
+}
+
+/**
+ * Der Sender: eigene Sperre, nimmt die Warteliste und spricht nach den Regeln. "aus" und "kein Ziel eingerichtet" hinterlassen keine Zeile;
+ * ein gescheitertes Ziel genau eine je Aenderung (ab Werk EIN darf kein Protokoll vollaufen). Text und Token stehen nie im Protokoll.
+ */
+function wp_ansage_senden($jetzt = null)
+{
+    $d = wp_paths()['datadir'];
+    if (!is_dir($d)) { @mkdir($d, 0775, true); }
+    $fh = @fopen($d . '/ansage_senden.lock', 'c');
+    if ($fh === false || !flock($fh, LOCK_EX | LOCK_NB)) { return 'laeuft'; }
+    $erg = 'nichts';
+    $l = wp_ansage_warte(function ($alt) { return array(array(), $alt); });
+    $jetzt = $jetzt === null ? time() : (int) $jetzt;
+    $frisch = array();
+    foreach (is_array($l) ? $l : array() as $e) {
+        if (is_array($e) && isset($e['zeit']) && $jetzt - (int) $e['zeit'] <= WP_ANSAGE_HOECHSTALTER) { $frisch[] = $e; }
+    }
+    if ($frisch) {
+        $conf = wp_config();
+        wp_ansage_token_pflegen($conf);
+        $conf = wp_config();
+        $a = ansage_regel_sprechen($frisch, wp_tts($conf), wp_ansage_regeln($conf), wp_ansage_k());
+        $erg = $a['regel'] !== '' ? $a['regel'] : 'gesprochen';
+        if ($a['r'] !== null) {
+            $merk = $d . '/ansage_lage.txt';
+            $lage = $a['r']['stand'] === 1 ? 'gesprochen' : ansage_kurz($a['r']);
+            if ($a['r']['stand'] === 1 || (string) @file_get_contents($merk) !== $lage) { wp_log('Ansage: ' . ansage_regel_kurz($a)); }
+            @file_put_contents($merk, $lage);
+        } elseif ($a['regel'] !== 'AUS' && $a['regel'] !== 'KEIN_ZIEL') {
+            wp_log('Ansage entfaellt: ' . ansage_regel_kurz($a));
+        }
+    }
+    flock($fh, LOCK_UN);
+    fclose($fh);
+    return $erg;
+}
+
 /**
  * Aus bin/wp_abruf.php nach dem Abruf (unter der Abrufsperre). $grund ist die
  * Rueckgabe von wp_abrufen(). Rueckgabe array(versucht, gescheitert).
@@ -5878,12 +6052,6 @@ function wp_ansage_takt($grund, $jetzt = null)
         $neu[$an] = $ist ? 1 : 0;
         if (!$ist || $war) { continue; }            // nur der Beginn
         if (empty($cfg[$schl])) { continue; }       // abgewaehlt (der Zustand wird trotzdem gemerkt)
-        $t = isset($zuletzt[$an]) ? (int) $zuletzt[$an] : 0;
-        if ($t > 0 && ($jetzt - $t) < WP_ANSAGE_SPERRE_S && ($jetzt - $t) >= -300) {
-            wp_log('Ansage: Anlass ' . $an . ' nicht angesagt - die letzte Ansage dieses Anlasses ist juenger als '
-                 . (int) (WP_ANSAGE_SPERRE_S / 60) . ' Minuten (Wiederholsperre).');
-            continue;
-        }
         $faellig[] = $an;
         $zuletzt[$an] = $jetzt;
     }
@@ -5904,24 +6072,16 @@ function wp_ansage_takt($grund, $jetzt = null)
                'ansage_merker');
         return array(0, 0);
     }
+    /* 0.9.40: Sperre und Nachtruhe stehen im Stamm, gesprochen wird in einem eigenen Vorgang. Die Stoerung spricht auch nachts. */
     $n = 0;
-    $fehl = 0;
-    if ($faellig) {
-        $tts = wp_tts($cfg);
-        $k = wp_ansage_k();
-        foreach ($faellig as $an) {
-            $r = ansage_sprechen(wp_ansage_text($an, $stand, $jetzt, (int) $diag), $tts, $k);
-            $n++;
-            if ($r['stand'] === 1) {
-                wp_log('Ansage: Anlass ' . $an . ' angesagt (' . ansage_kurz($r) . ').');
-            } else {
-                $fehl++;
-                wp_log('Ansage: Anlass ' . $an . ' nicht angesagt (' . ansage_kurz($r) . '): '
-                     . ansage_kennung_text($r['kennung'], $k) . '. Es wird nicht wiederholt.');
-            }
-        }
+    wp_ansage_token_pflegen($cfg);
+    $legen = array();
+    foreach ($faellig as $an) {
+        $legen[] = array('schluessel' => (string) $an, 'text' => wp_ansage_text($an, $stand, $jetzt, (int) $diag), 'dringend' => $an === 'stoerung');
+        $n++;
     }
-    return array($n, $fehl);
+    wp_ansage_legen($legen, $jetzt);
+    return array($n, 0);
 }
 
 /** Die Zeile im Reiter Test: Ausgabeart (Modul), dazu die Anlaesse und die letzte Ansage eines Anlasses. */
@@ -5929,7 +6089,7 @@ function wp_pruefe_ansage($offen)
 {
     $cfg = wp_config();
     $k = wp_ansage_k();
-    list($st, $text) = ansage_pruefzeile(wp_tts($cfg), (bool) $offen, $k);
+    list($st, $text) = ansage_pruefzeile(wp_ansage_pruefblock(), (bool) $offen, $k);
     if ($st !== -2) {
         $teile = array();
         $namen = array('anmeldung' => wp_t('DURCHSAGE.N_ANMELDUNG'), 'ausfall' => wp_t('DURCHSAGE.N_AUSFALL'),
@@ -6223,6 +6383,7 @@ function wp_sicherung_bauen()
     foreach (wp_config() as $k => $w) { $aus[$k] = $w; }
     /* Nr. 36 b: die Sprechtoken der Sprachausgabe gehen nie in eine Sicherung. */
     if (isset($aus['tts']) && is_array($aus['tts'])) { $aus['tts'] = ansage_sicherung_bereinigen($aus['tts']); }
+    unset($aus['ansage_token_herkunft']);     // 0.9.40
     $g = wp_geheim();
     foreach (wp_geheim_schluessel() as $k) {
         $aus['geheim_' . $k] = isset($g[$k]) ? (string) $g[$k] : '';
@@ -6294,6 +6455,15 @@ function wp_sicherung_lesen($roh, &$geheim_neu = null, &$schluessel_fehl = null)
                 continue;
             }
             $geheim_neu[$gk] = trim((string) $w) === '' ? '' : (string) $w;
+            $anzahl++;
+            continue;
+        }
+        if ($k === 'ansage_token_herkunft') { continue; }     // S2: nie aus einer Datei
+        if ($k === 'ansage_regeln') {     // S2: ungueltig = abgewiesen, gueltig = uebernommen
+            $s2_g = '';
+            $s2_r = ansage_regeln_wert($w, $s2_g);
+            if ($s2_r === null) { $mangel[] = wp_t('DURCHSAGE.SICH_WERT'); $schluessel_fehl[] = 'ansage_regeln'; continue; }
+            $neu['ansage_regeln'] = $s2_r;
             $anzahl++;
             continue;
         }

@@ -16,4 +16,11 @@
 # Die regulaere Ausgabe bleibt still - sonst schreibt der Cron jede Minute.
 # Die FEHLERausgabe landet neben dem Protokoll und ist im Reiter Logdateien
 # zu sehen.
-/usr/bin/php REPLACELBPBINDIR/wp_abruf.php >/dev/null 2>>REPLACELBPLOGDIR/cron.err
+mkdir -p "REPLACELBPLOGDIR" 2>/dev/null
+ERR="REPLACELBPLOGDIR/cron.err"
+touch "$ERR" 2>/dev/null
+# 0.9.40 (Nachzug 01.11.2026, Bauart Renault NG 2.1.23): ist die Fehlerdatei nicht schreibbar, braeche die
+# Umlenkung den Befehl ab, BEVOR er startet - bis 0.9.39 kein Lauf und keine Spur. Dann geht die Fehlerausgabe
+# nach /dev/null, und der Lauf findet statt.
+[ -f "$ERR" ] && [ -w "$ERR" ] || ERR=/dev/null
+/usr/bin/php REPLACELBPBINDIR/wp_abruf.php >/dev/null 2>>"$ERR"

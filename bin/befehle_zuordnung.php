@@ -47,7 +47,8 @@ return array(
         return wp_befehle_einstellungen();
     },
     'protokoll' => function ($stufe, $text) {
-        wp_log('Befehlsbruecke ' . ($stufe === 'INFO' ? '' : $stufe . ': ') . $text);
+        // 0.9.40: bb_log() setzt "Befehlsbruecke: " schon vor den Text - bis 0.9.39 stand es doppelt (Nachzug 01.11.2026, wie MGiSmart 1.1.30).
+        wp_log(($stufe === 'INFO' ? '' : $stufe . ': ') . $text);
     },
     'befehle' => array(
         'sgready'  => array('art' => 'auswahl', 'werte' => array('1', '2', '3', '4'), 'eingreifend' => true,

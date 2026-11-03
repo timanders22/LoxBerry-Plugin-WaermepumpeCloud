@@ -748,13 +748,16 @@ if ($wp_post && isset($_POST['speichern_ansage'])) {
     $wp_tbean = array();
     $wp_thinw = array();     // Welle Mehrfach-Ziele (Sprachmodul 1.2.1): Hinweise des Moduls, die das Speichern nicht verhindern
     $wp_acfg['tts'] = ansage_formular_lesen($_POST, wp_tts($wp_acfg), $wp_tmangel, $wp_tbean, wp_ansage_opt() + array(
-                                            'ziele' => wp_mit_zielen()), wp_ansage_k(), $wp_thinw);
+                                            'ziele' => wp_mit_zielen(), 'token_vor_ort' => true, 'aus_gewinnt' => true), wp_ansage_k(), $wp_thinw);
+    list($wp_acfg['ansage_regeln']) = ansage_regeln_formular($_POST, wp_ansage_regeln(wp_config()), array(), $wp_tmangel, $wp_tbean, wp_ansage_k());     // S2: Wann gesprochen wird (Stamm)
     foreach ($wp_tmangel as $wp_tm) { $wp_fehler[] = wp_e($wp_tm['text']); }
     foreach (wp_ansage_anlaesse() as $wp_ak) { $wp_acfg[$wp_ak] = !empty($_POST[$wp_ak]) ? 1 : 0; }
     if (count($wp_fehler) > $wp_f0) {
         $wp_ax = ansage_x2_felder(wp_ansage_opt());
         $wp_atext = array();
         $wp_ahaken = array_values(wp_ansage_anlaesse());
+        $wp_ahaken[] = 'ansage_ruhe_ein';
+        foreach (array('ansage_ruhe_von', 'ansage_ruhe_bis', 'ansage_sperre_min') as $wp_an) { $wp_ax[] = $wp_an; }
         foreach ($wp_ax as $wp_an) {
             if (substr($wp_an, -9) === '_loeschen') { $wp_ahaken[] = $wp_an; } else { $wp_atext[] = $wp_an; }
         }
@@ -783,9 +786,9 @@ if ($wp_post && (isset($_POST['ansage_test']) || isset($_POST['ansage_test_ziel'
     if (isset($_POST['ansage_test_ziel']) && $wp_tnur === 0) {
         $wp_tr = array('stand' => 0, 'kennung' => 'ZIEL_UNBEKANNT|-', 'art' => '-', 'http' => 0, 'zeile' => '', 'zeichen' => 0);
     } elseif ($wp_tnur >= 1) {
-        $wp_tr = ansage_testansage(wp_tts(), $wp_tk, $wp_tnur);
+        $wp_tr = ansage_testansage(wp_ansage_vor_ort(), $wp_tk, $wp_tnur);
     } else {
-        $wp_tr = ansage_testansage(wp_tts(), $wp_tk);
+        $wp_tr = ansage_testansage(wp_ansage_vor_ort(), $wp_tk);
     }
     wp_log('Testansage' . ($wp_tnur >= 1 ? ' an Ziel ' . $wp_tnur : '') . ': ' . ansage_kurz($wp_tr));
     if ($wp_tr['stand'] === 1) {
@@ -1445,6 +1448,11 @@ details > summary { cursor: pointer; font-weight: 600; color: #4f7d17; margin: 8
     /* Welle Mehrfach-Ziele (Sprachmodul 1.2.1): Tabelle der weiteren Ausgabeziele; nach einer Beanstandung traegt sie das Eingetippte. */
     'ziele' => wp_mit_zielen(),
     'ziele_post' => wp_ziele_x2_post($GLOBALS['wp_eingaben'])), wp_ansage_k()); ?>
+<?= ansage_regeln_html(wp_ansage_regeln($wp_cfg), array(), array(), array(
+    'w' => function ($n, $g) { return wp_ein($n, $g); },
+    'm' => function ($n) { $x = wp_mark($n); return $x === '' ? '' : ' class="sm-beanstandet"' . $x; },
+    'c' => function ($n, $g) { return wp_an($n, $g); },
+    'token_vor_ort' => true), wp_ansage_k()) ?>
 <div class="sm-knopfreihe">
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="speichern_ansage" value="1"><?= wp_e(wp_t('ALLG.SPEICHERN')) ?></button>
 </div>

@@ -85,9 +85,10 @@ function wp_ende($code, $text)
 
 /* NUR LESEN. Der unangemeldete Bereich legt kein Token an und schreibt
  * ueberhaupt nichts - siehe die Begruendung an wp_config(). */
-$cfg = wp_config(false);
+/* bis 0.9.39 hiess dieses Feld $cfg: das LoxBerry-SDK ueberschreibt ein globales $cfg beim ersten Lesen von general.json (Ausfall MGiSmart 01.11.2026). */
+$wp_lauf_cfg = wp_config(false);
 
-$soll = (string) $cfg['aktionstoken'];
+$soll = (string) $wp_lauf_cfg['aktionstoken'];
 $ist  = isset($_GET['token']) && !is_array($_GET['token']) ? (string) $_GET['token'] : '';
 
 /* ---------------- Selbsttest ----------------
@@ -104,7 +105,9 @@ $ist  = isset($_GET['token']) && !is_array($_GET['token']) ? (string) $_GET['tok
  * Antworten sind woertlich die des Hausstandards - sie werden von aussen
  * ausgewertet und sind deshalb kein Ort fuer eigene Formulierungen.
  */
-if (isset($_GET['selftest'])) {
+/* 0.9.40 (Nachzug 01.11.2026, wie Renault NG 2.1.23): !empty statt isset - bis 0.9.39 galt auch ?selftest=0 und ?selftest= als Selbsttest,
+ * und eine Adresse mit diesem Anhang tat nie etwas anderes. */
+if (!empty($_GET['selftest'])) {
     if ($soll === '') {
         wp_ende(403, 'SELFTEST;OK=0;ERR=KEIN_TOKEN_EINGERICHTET');
     }
@@ -162,7 +165,7 @@ if (($aktion === 'status' || $aktion === 'werte') && (int) $wp_s['zeit'] <= 0) {
 
 /* ---------------- status ---------------- */
 if ($aktion === 'status') {
-    echo wp_zeile($wp_s, $cfg) . "\n";
+    echo wp_zeile($wp_s, $wp_lauf_cfg) . "\n";
     exit;
 }
 
@@ -173,13 +176,13 @@ if ($aktion === 'werte') {
     /* OK und STUFE aus derselben Quelle wie Statuszeile und MQTT (Bauliste C4,
      * C5): OK=0 ab dem Dreifachen des Takts, STUFE die wirklich gesetzte oder
      * "-". Bis 0.9.26 stand hier die angeforderte Stufe. "alter" bleibt. */
-    $wp_a = wp_ausgabewerte($s, $cfg);
+    $wp_a = wp_ausgabewerte($s, $wp_lauf_cfg);
     echo json_encode(array(
         'ok'     => (int) $wp_a['OK'],
         'zeit'   => (int) $s['zeit'],
         'alter'  => $s['zeit'] > 0 ? time() - (int) $s['zeit'] : -1,
         'stufe'  => $wp_a['STUFE'],
-        'budget' => wp_budget_rest($cfg['hersteller']),
+        'budget' => wp_budget_rest($wp_lauf_cfg['hersteller']),
         'werte'  => $s['werte'],
     ), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) . "\n";
     exit;
@@ -205,7 +208,7 @@ if ($aktion === 'ww_boost') {
 
 /* ---------------- sgready ---------------- */
 /* SGREADY_AUS kommt VOR den Fehlern der Stufe (wie bis 0.9.34) - die Funktion prueft es fuer den MQTT-Weg ebenso. */
-if (empty($cfg['sg_ein'])) {
+if (empty($wp_lauf_cfg['sg_ein'])) {
     wp_ende(403, 'WP;OK=0;GRUND=SGREADY_AUS');
 }
 
