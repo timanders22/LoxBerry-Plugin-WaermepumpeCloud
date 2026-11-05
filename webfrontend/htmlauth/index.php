@@ -193,6 +193,7 @@ $wp_geh = wp_geheim();
 /* ================= Vorlage herunterladen ================= */
 if ($wp_post && isset($_POST['download'])) {
     $v = ($_POST['download'] === 'xml_out') ? wp_vorlage_aus() : wp_vorlage_ein();
+    while (ob_get_level() > 0) { @ob_end_clean(); }
     header('Content-Type: application/x-download');
     // Die Anfuehrungszeichen um den Dateinamen sind Pflicht - ohne sie bricht
     // jeder Name, der ein Leerzeichen enthaelt.
@@ -208,6 +209,7 @@ if ($wp_post && isset($_POST['download'])) {
 if ($wp_post && isset($_POST['vorlage_bb'])) {
     $wp_bv = wp_befehle_vorlage();
     if (is_array($wp_bv)) {
+        while (ob_get_level() > 0) { @ob_end_clean(); }
         header('Content-Type: application/x-download');
         header('Content-Disposition: attachment; filename="' . $wp_bv[0] . '"');
         header('Content-Length: ' . strlen($wp_bv[1]));
@@ -850,6 +852,7 @@ if ($wp_post && isset($_POST['wp_sichern'])) {
     $wp_js = json_encode($wp_sich,
         JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     if ($wp_js !== false) {
+        while (ob_get_level() > 0) { @ob_end_clean(); }
         header('Content-Type: application/json; charset=utf-8');
         header('Content-Disposition: attachment; filename="waermepumpecloud_einstellungen_'
                . date('Ymd_His') . '.json"');
