@@ -752,6 +752,8 @@ if ($wp_post && isset($_POST['speichern_ansage'])) {
     $wp_acfg['tts'] = ansage_formular_lesen($_POST, wp_tts($wp_acfg), $wp_tmangel, $wp_tbean, wp_ansage_opt() + array(
                                             'ziele' => wp_mit_zielen(), 'token_vor_ort' => true, 'aus_gewinnt' => true), wp_ansage_k(), $wp_thinw);
     list($wp_acfg['ansage_regeln']) = ansage_regeln_formular($_POST, wp_ansage_regeln(wp_config()), array(), $wp_tmangel, $wp_tbean, wp_ansage_k());     // S2: Wann gesprochen wird (Stamm)
+    // 0.9.43: ein eingetipptes oder geloeschtes Sprechtoken ist nicht mehr vom Nachbarn; bis 0.9.42 ueberschrieb es der naechste Abgleich.
+    $wp_acfg['ansage_token_herkunft'] = ansage_token_herkunft_formular($_POST, isset($wp_acfg['ansage_token_herkunft']) ? $wp_acfg['ansage_token_herkunft'] : array());
     foreach ($wp_tmangel as $wp_tm) { $wp_fehler[] = wp_e($wp_tm['text']); }
     foreach (wp_ansage_anlaesse() as $wp_ak) { $wp_acfg[$wp_ak] = !empty($_POST[$wp_ak]) ? 1 : 0; }
     if (count($wp_fehler) > $wp_f0) {
@@ -759,7 +761,9 @@ if ($wp_post && isset($_POST['speichern_ansage'])) {
         $wp_atext = array();
         $wp_ahaken = array_values(wp_ansage_anlaesse());
         $wp_ahaken[] = 'ansage_ruhe_ein';
-        foreach (array('ansage_ruhe_von', 'ansage_ruhe_bis', 'ansage_sperre_min') as $wp_an) { $wp_ax[] = $wp_an; }
+        $wp_ahaken[] = 'ansage_tafel_ein';     // 0.9.43: Tafel und HomePod dazu
+        $wp_ahaken[] = 'ansage_homepod_ein';
+        foreach (array('ansage_ruhe_von', 'ansage_ruhe_bis', 'ansage_sperre_min', 'ansage_tafel_namen', 'ansage_homepod_geraet') as $wp_an) { $wp_ax[] = $wp_an; }
         foreach ($wp_ax as $wp_an) {
             if (substr($wp_an, -9) === '_loeschen') { $wp_ahaken[] = $wp_an; } else { $wp_atext[] = $wp_an; }
         }
