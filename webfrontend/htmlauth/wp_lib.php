@@ -3247,7 +3247,8 @@ function wp_va_ww_boost($cfg, $ein)
  *
  * Die Adressen:
  *
- *   GET  /api/<geraet>/info        alle Werte, ausfuehrlich
+ *   GET  /api/<geraet>/values      alle Werte, Kurznamen (gelesen wird hier)
+ *   GET  /api/<geraet>/info        alle Werte, ausfuehrlich (Rueckfall)
  *   GET  /api/<geraet>/commands    was sich schreiben laesst
  *   GET  /api/<geraet>/entities    alle vorhandenen Groessen
  *   POST /api/<geraet>/<groesse>   schreiben, Rumpf {"value": ...}
@@ -3330,7 +3331,18 @@ function wp_ems_holen($cfg, $pfad)
 {
     $basis = wp_ems_basis($cfg);
     if ($basis === '') { return array(null, 'KEINE_ADRESSE'); }
-    $a = wp_http('GET', $basis . '/api/' . ltrim($pfad, '/'), array(), null, 15);
+    /* 429 heisst bei EMS-ESP 3.8 "gerade beschaeftigt", nicht "Kontingent
+     * erschoepft": kommen Abfragen an VERSCHIEDENE Geraete dicht
+     * hintereinander, weist das Gateway einzelne davon ab (gemessen von
+     * Markus-Ende an 3.8.6, PR #2, Geraetesuche: mixer und ventilation 429,
+     * die Nachbarn 200). Eine Sekunde
+     * spaeter geht dieselbe Abfrage durch - also bis zu zweimal nachfassen,
+     * statt "nichts da" zu melden. */
+    for ($versuch = 0; ; $versuch++) {
+        $a = wp_http('GET', $basis . '/api/' . ltrim($pfad, '/'), array(), null, 15);
+        if ($a['code'] !== 429 || $versuch >= 2) { break; }
+        sleep(1);
+    }
     if ($a['fehler'] !== '') { return array(null, 'NICHT_ERREICHBAR'); }
     if ($a['code'] === 404) { return array(null, 'NICHT_VORHANDEN'); }
     if ($a['code'] < 200 || $a['code'] >= 300) { return array(null, 'HTTP_' . $a['code']); }
@@ -3345,6 +3357,79 @@ function wp_ems_holen($cfg, $pfad)
         return array(null, 'KEIN_JSON');
     }
     return array($d, '');
+}
+
+/**
+ * Die Werte eines Geraets mit Kurznamen. Rueckgabe: array(Feld|null, Grund).
+ *
+ * Zuerst /values, weil es die Kurznamen und die Unterzweige (hc1, dhw)
+ * liefert. Kennt die Firmware /values nicht (404), wird /info gelesen.
+ *
+ * WARUM NICHT EINFACH /info: bis 0.9.44 las der Regelabruf nur /info. Ab
+ * EMS-ESP 3.8 stehen dort ausgeschriebene Schluessel wie
+ * "outside temperature (outdoortemp)", und am thermostat fehlt der Zweig
+ * hc1 - kein einziger Pfad aus wp_felder() griff mehr (gemessen von
+ * Markus-Ende an 3.8.6, PR #2: 0 von 12, mit /values 11 von 12). Fuer den
+ * Rueckfall auf /info werden ausgeschriebene Schluessel auf ihren Kurznamen
+ * in Klammern zurueckgefuehrt. An Firmware bis 3.7 ist der Rueckfall nicht
+ * gemessen, und er greift nur bei 404.
+ *
+ * Die Geraetesuche (wp_ems_geraete) nimmt diesen Weg bewusst NICHT: sie
+ * bleibt bei /values, sonst kaeme fuer jedes fehlende Geraet eine zweite
+ * Abfrage hinzu - gerade die dichte Folge, die das Gateway mit 429 abweist.
+ */
+function wp_ems_werte($cfg, $geraet)
+{
+    list($d, $grund) = wp_ems_holen($cfg, $geraet . '/values');
+    if ($d === null && $grund === 'NICHT_VORHANDEN') {
+        list($d, $grund) = wp_ems_holen($cfg, $geraet . '/info');
+    }
+    return array(is_array($d) ? wp_ems_kurznamen($d) : null, $grund);
+}
+
+/**
+ * "outside temperature (outdoortemp)" -> "outdoortemp", rekursiv. Schluessel
+ * ohne Klammer bleiben, wie sie sind.
+ *
+ * Gekuerzt wird nur, wenn der Kurzname noch frei ist - frei im Original UND
+ * im schon Gebauten. Sonst bleibt der Schluessel ungekuerzt stehen:
+ *
+ *   - Steht der Kurzname schon im Original, gewinnt er.
+ *   - Tragen zwei Langnamen denselben Kern (etwa ein flaches thermostat/info
+ *     mit "hc1 ... (seltemp)" und "hc2 ... (seltemp)"), bekommt der ERSTE den
+ *     Kurznamen, der zweite behaelt seinen Langnamen. In der Fassung aus
+ *     PR #2 haette der zweite den ersten still ueberschrieben.
+ *
+ * Warum ungekuerzt lassen und nicht melden: eine Meldung braeuchte einen
+ * Rueckkanal durch wp_ems_werte() und wp_ems_lesen() bis zum Reiter Test,
+ * fuer einen Fall, den an einem Geraet noch niemand gemessen hat. Der
+ * ungekuerzte Schluessel geht dagegen nicht verloren, aendert keinen anderen
+ * Wert und steht sichtbar in der Rohantwort (Reiter Test, Knopf
+ * "Rohantwort zeigen") - das ist die Meldung. Ein Feld aus wp_felder()
+ * greift auf ihn nicht zu.
+ */
+function wp_ems_kurznamen($d)
+{
+    $out = array();
+    foreach ($d as $k => $v) {
+        if (is_array($v)) { $v = wp_ems_kurznamen($v); }
+        if (is_string($k) && preg_match('/\(([A-Za-z0-9_]+)\)\s*$/', $k, $m)
+            && !array_key_exists($m[1], $d) && !array_key_exists($m[1], $out)) {
+            $out[$m[1]] = $v;
+            continue;
+        }
+        $out[$k] = $v;
+    }
+    return $out;
+}
+
+/** Die Firmwarefassung aus system/info. Bis 3.7 stand sie oben als "version",
+ *  ab 3.8 unter "system". '?' wenn keine von beiden da ist. */
+function wp_ems_fassung($info)
+{
+    if (isset($info['system']['version'])) { return (string) $info['system']['version']; }
+    if (isset($info['version']) && !is_array($info['version'])) { return (string) $info['version']; }
+    return '?';
 }
 
 /**
@@ -3367,12 +3452,12 @@ function wp_ems_lesen($cfg)
     if ($basis === '') { return array('ok' => 0, 'fehler' => 'KEINE_ADRESSE', 'roh' => null); }
 
     $roh = array();
-    list($b, $grund) = wp_ems_holen($cfg, 'boiler/info');
+    list($b, $grund) = wp_ems_werte($cfg, 'boiler');
     if ($b === null) { return array('ok' => 0, 'fehler' => $grund, 'roh' => null); }
     $roh['boiler'] = $b;
 
     if (!empty($cfg['ems_thermostat'])) {
-        list($t, $tg) = wp_ems_holen($cfg, 'thermostat/info');
+        list($t, $tg) = wp_ems_werte($cfg, 'thermostat');
         if (is_array($t)) {
             $hc = 'hc' . (int) $cfg['ems_hc'];
             if (isset($t[$hc]) && is_array($t[$hc])) { $t['hc'] = $t[$hc]; }
@@ -3394,6 +3479,11 @@ function wp_ems_lesen($cfg)
  * Plugin braucht - also wird gefragt, wer antwortet. Sieben GET auf ein
  * Geraet im eigenen Netz sind guenstiger als eine Auswertung von
  * system/info, deren Aufbau sich zwischen den Fassungen geaendert hat.
+ *
+ * Gefragt wird nur /values, ohne Rueckfall auf /info (anders als
+ * wp_ems_werte): ein fehlendes Geraet kostete sonst zwei Abfragen statt
+ * einer, und eine dichte Folge weist EMS-ESP 3.8 mit 429 ab. Ein 429
+ * fasst wp_ems_holen() auch hier nach.
  */
 function wp_ems_geraete()
 {
