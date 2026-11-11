@@ -1043,6 +1043,97 @@ function wp_config_write($cfg)
     return true;
 }
 
+/** Leere Objekte des Rohtextes ($o, json_decode ohne true) im Feld $a wieder als Objekt fuehren (11.11.2026, Muster
+ *  bw_json_leere_objekte() aus Bewaesserung 0.9.56), damit json_encode() sie als {} und nicht als [] schreibt - oben,
+ *  verschachtelt und unter fremden Schluesseln. Nur fuer wp_config_vervollstaendigen(); das Speichern im Formular
+ *  bleibt, wie es ist. */
+function wp_json_leere_objekte($a, $o)
+{
+    if (!is_array($a)) { return $a; }
+    if (is_object($o)) {
+        if (!get_object_vars($o) && $a === array()) { return new stdClass(); }
+        foreach ($a as $k => $v) {
+            $ks = (string) $k;
+            if (is_array($v) && property_exists($o, $ks)) { $a[$k] = wp_json_leere_objekte($v, $o->$ks); }
+        }
+    } elseif (is_array($o)) {
+        foreach ($a as $k => $v) {
+            if (is_array($v) && array_key_exists($k, $o)) { $a[$k] = wp_json_leere_objekte($v, $o[$k]); }
+        }
+    }
+    return $a;
+}
+
+/**
+ * Fehlende Einstellungen EINMAL mit ihrer Vorgabe in waermepumpe.json schreiben
+ * (seit 0.9.47; Regeln/05, Bauform Docker NG 1.3.7; Entscheidung des
+ * Hausherrn vom 11.11.2026).
+ *
+ * Bis 0.9.46 ergaenzte wp_config() fehlende Schluessel nur im Speicher
+ * (array_merge mit wp_vorgaben()); in die Datei kamen sie erst beim naechsten
+ * Speichern im Formular - oder nie, solange niemand speicherte. Aufgerufen
+ * vom Minutentakt (bin/wp_abruf.php), nach der Wurzelpruefung und VOR dem
+ * ersten Lesen der Konfiguration.
+ *
+ *  - nur mit LoxBerry-Wurzel und nicht waehrend einer Aktualisierung (Marke
+ *    data/plugins/<ordner>.upgrade_laeuft aus preupgrade.sh; eine unlesbare
+ *    oder vorausdatierte Marke gilt, nur eine nachweislich aeltere als eine
+ *    Stunde nicht - geschlossen ausfallen);
+ *  - nur an einer heilen Datei: vorhanden, lesbar, ein JSON-Objekt mit einem
+ *    Aktionstoken in der Form, die wp_config() annimmt. Eine fehlende, leere,
+ *    kaputte oder tokenlose Datei ist Sache der Selbstheilung bzw. der
+ *    Tokenanlage in wp_config();
+ *  - geschrieben werden die WERTE AUS DER DATEI plus die fehlenden Vorgaben,
+ *    nicht die normierten Werte aus wp_config() - sonst ersetzte das
+ *    Vervollstaendigen still einen Wert, den die Lesefunktion nur in ihre
+ *    Schranken stellt. Fremde Schluessel bleiben stehen;
+ *  - eine Lese-Regel fuer Bestandsdateien hat wp_config() nicht (ein
+ *    fehlender Schluessel gilt als Vorgabe), also wird die Vorgabe
+ *    eingetragen; die Zugangsdaten bleiben in geheim.json;
+ *  - geschrieben wird nur, wenn etwas fehlt, und ueber wp_config_write()
+ *    (0600, Zweitschrift wie beim Speichern im Formular, das ebenfalls jeden
+ *    Schluessel aus wp_vorgaben() schreibt). Eine Protokollzeile mit den
+ *    Namen, nie mit Werten.
+ *
+ * Rueckgabe: die ergaenzten Schluessel; leer, wenn nichts geschrieben wurde.
+ */
+function wp_config_vervollstaendigen()
+{
+    $p = wp_paths();
+    if ($p['home'] === '') { return array(); }
+    $marke = $p['home'] . '/data/plugins/' . $p['plugin'] . '.upgrade_laeuft';
+    clearstatcache(true, $marke);
+    if (file_exists($marke)) {
+        $t = trim((string) @file_get_contents($marke));
+        $alt = preg_match('/^[0-9]{1,12}\z/', $t) === 1 && (int) $t <= time() && time() - (int) $t >= 3600;
+        if (!$alt) { return array(); }
+    }
+    clearstatcache(true, $p['config']);
+    if (!is_file($p['config']) || !is_readable($p['config'])) { return array(); }
+    $roh = @file_get_contents($p['config']);
+    if (!is_string($roh) || substr(ltrim($roh), 0, 1) !== '{') { return array(); }
+    $datei = json_decode($roh, true);
+    if (!is_array($datei) || !isset($datei['aktionstoken'])
+        || !preg_match('/^[A-Za-z0-9]{24,}$/', (string) $datei['aktionstoken'])) {
+        return array();
+    }
+    // Ein leeres Objekt der Datei ({}) bliebe nach json_decode(..., true) ein leeres Feld und kaeme beim Schreiben
+    // als [] zurueck - die leeren Objekte des Rohtextes bleiben Objekte (11.11.2026).
+    $datei = wp_json_leere_objekte($datei, json_decode($roh));
+    $fehlend = array();
+    foreach (wp_vorgaben() as $k => $w) {
+        if (!array_key_exists($k, $datei)) {
+            $datei[$k] = $w;
+            $fehlend[] = (string) $k;
+        }
+    }
+    if (!$fehlend) { return array(); }
+    if (!wp_config_write($datei)) { return array(); }
+    wp_log('Konfiguration vervollstaendigt: ' . count($fehlend) . ' fehlende Einstellung(en) mit der Vorgabe '
+         . 'eingetragen (' . implode(', ', $fehlend) . ').');
+    return $fehlend;
+}
+
 /**
  * Zugangsdaten - EIGENE Datei mit 0600.
  *

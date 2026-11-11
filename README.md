@@ -62,6 +62,12 @@ Adresse und Vorlage müssen im Heimnetz liegen; die Sprechtoken stehen in keiner
 Prüfzeile im Reiter Test; dort zeigt die Prüfadresse das Aktionstoken nur noch maskiert (Knopf „Adresse
 kopieren“).
 
+## Neu in 0.9.47
+
+- **Konfiguration wird vervollständigt:** Fehlen in `waermepumpe.json` Einstellungen, die eine neuere Fassung mitbringt, trägt der Minutenlauf (`bin/wp_abruf.php`) sie jetzt einmal mit ihrer Vorgabe in die Datei ein; die Zweitschrift zieht mit. Das Protokoll nennt die ergänzten Namen in einer Zeile, nie die Werte. Bisher ergänzte das Plugin fehlende Einstellungen nur beim Lesen; in die Datei kamen sie erst beim nächsten Speichern im Formular. Die Vorgaben sind die Werte, die das Plugin bisher ohnehin angenommen hat; am Verhalten ändert sich nichts.
+- Geschrieben werden die Werte, die in der Datei stehen, plus die fehlenden Vorgaben; Werte, die das Plugin beim Lesen nur begrenzt, bleiben so in der Datei, wie sie dort stehen. Unbekannte Schlüssel bleiben stehen, geschrieben wird nur, wenn etwas fehlt. Eine fehlende, leere oder beschädigte Datei und eine Datei ohne gültiges Aktionstoken werden nicht angefasst, ebenso wenig während einer Aktualisierung. Die Zugangsdaten bleiben in `geheim.json`. Gemessen ist das im Prüfstand unter PHP 7.4 und 8.4 auf dem Arbeitsrechner, an einer Datei in der Gestalt der Fassung 0.9.20 (sieben fehlende Einstellungen), nicht am Gerät.
+- Leere Objekte (`{}`) in der Datei bleiben beim Vervollständigen erhalten, auch verschachtelte und solche unter unbekannten Schlüsseln; sie werden dabei nicht zu leeren Listen (`[]`).
+
 ## Neu in 0.9.46
 
 - Gemeinsames Sprachmodul 1.4.3: Als LoxBerry-Wurzel aus `LBHOMEDIR` gilt für die Sprachausgabe nur noch ein Ordner mit `config/plugins`, `data/plugins` und `config/system/general.json`; bis 1.4.2 genügte `config/system`, und ein Prüfstand oder Rest mit diesem Ordner wurde wie ein LoxBerry gelesen. Auf einem LoxBerry ändert sich nichts.

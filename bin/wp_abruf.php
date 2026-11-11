@@ -74,6 +74,17 @@ if ($modus === 'zeile') {
     exit(0);
 }
 
+/* 0.9.47 (Regeln/05): fehlende Einstellungen einmal mit ihrer Vorgabe in waermepumpe.json eintragen - nach der
+ * Wurzelpruefung, VOR dem ersten Lesen der Konfiguration (Waechter der Befehlsbruecke, wp_config() unten), nicht
+ * waehrend einer Aktualisierung (Marke, siehe wp_config_vervollstaendigen()). Schreibt nur, wenn etwas fehlt.
+ * try/catch: ein Fehler hier haelt den Abruf nicht auf. */
+try {
+    wp_config_vervollstaendigen();
+} catch (Throwable $wp_vv) {
+    wp_log('Konfiguration vervollstaendigen abgebrochen (' . get_class($wp_vv) . ') - der Abruf ist davon nicht '
+         . 'betroffen.', 'vv_' . get_class($wp_vv));
+}
+
 /* Gruppe 4 / MQTT (0.9.35, Entwurf wp E10): der Waechter der Befehlsbruecke (gemeinsame Stammfassung). Er
  * startet sie nur mit dem Haken "Befehle ueber MQTT annehmen", haelt sie sonst an und sendet
  * <praefix>/status/befehle (nie retained). Er steht VOR der Sperre abruf.lock und VOR der Hersteller-Pruefung:
