@@ -101,6 +101,10 @@ function wp_fassung()
  * Liegt neben dieser Datei; die Datei schuetzt sich selbst gegen doppeltes Laden. Der
  * Abrufdienst bin/wp_abruf.php erreicht sie ueber diese Bibliothek. */
 require_once __DIR__ . '/sprachausgabe.php';
+/* 0.9.48: Gemeinsames Sicherungsmodul (Abschrift von Werkzeuge/gemeinsam/sicherung.php, Auftrag des Hausherrn
+ * 18.11.2026 "Ja, umbauen"; Regeln/05). Einstellungen sichern und zurueckspielen laufen darueber, die Beschreibung
+ * dieser Linie steht in wp_sicherung_beschreibung(). Liegt neben dieser Datei und schuetzt sich gegen doppeltes Laden. */
+require_once __DIR__ . '/sicherung.php';
 define('WP_STUFEN', 4);          // SG Ready kennt genau vier Zustaende
 define('WP_SPERRE_MAX', 120);    // Minuten, danach faellt die Sperre von selbst
 define('WP_ZUORDNUNG_MAX', 4000);
@@ -639,6 +643,11 @@ function wp_vorgaben()
         'ansage_ausfall'   => 1,
         'ansage_stoerung'  => 1,   // WP-Ansage-1: nur myVAILLANT (Diagnosecodes)
         'tts'          => ansage_werk_block(),
+        /* 0.9.48 (Frage 18 der Nacht 18.11.2026, Entscheidung des Hausherrn 18.11.2026): die beiden Schluessel, die
+         * die gemeinsame Sprachausgabe in waermepumpe.json schreibt, stehen hier wie bei Spotpreis-Octopus und
+         * -Tibber. Leer heisst bei ansage_regeln "die Vorgaben des Stamms" (wp_ansage_regeln()). */
+        'ansage_regeln' => array(),
+        'ansage_token_herkunft' => array(),     // Vermerk, nie in einer Sicherung
         // Endpunkt
         'aktionstoken' => '',
     );
@@ -6533,43 +6542,259 @@ function wp_geheim_pruefen($k, $w)
     return '';
 }
 
-/** Die Schluessel der Zugangsdaten, wie sie in der Sicherungsdatei stehen:
- *  mit Vorsilbe, damit sie nie mit einer Einstellung zusammenfallen. */
+/** Die Schluessel der Zugangsdaten (geheim.json). In der Sicherungsdatei stehen sie seit 0.9.20 flach mit der
+ *  Vorsilbe geheim_, damit sie nie mit einer Einstellung zusammenfallen - seit 0.9.48 als flacher Teil 'geheim' des
+ *  gemeinsamen Sicherungsmoduls ('teile_flach', wp_sicherung_beschreibung()). */
 function wp_geheim_schluessel()
 {
     return array('client_id', 'client_secret', 'benutzer', 'passwort',
                  'refresh_token', 'redirect_uri', 'va_refresh', 'ems_token');
 }
 
-/**
- * Die Sicherungsdatei - Einstellungen UND Zugangsdaten (NEU 0.9.20).
+/* ==================================================================
+ * Einstellungen sichern und zurueckspielen - gemeinsames Sicherungsmodul
+ * ==================================================================
  *
- * Hausstandard seit 03.09.2026 (Regeln/05, Entscheidung des Hausherrn): die
- * Sicherung ist fuer den Umzug auf einen zweiten LoxBerry da und traegt den
- * Aktionstoken und alle Zugangsdaten - ohne sie ist sie nach dem
- * Zurueckspielen wertlos. Bis 0.9.19 liess dieses Plugin die Zugangsdaten
- * bewusst weg; das war eine Entscheidung vom 02.09.2026, die der Hausstandard
- * am Tag danach anders getroffen hat. Der Formulartoken gehoert weiterhin
- * nicht hinein.
+ * Seit 0.9.48 (Auftrag des Hausherrn 18.11.2026, "Ja, umbauen"; Regeln/05):
+ * Kopf, Lesen, Pruefen, Zurueckspielen, Haken und Meldungen macht das
+ * gemeinsame Sicherungsmodul (Abschrift sicherung.php neben dieser Datei), in
+ * allen Plugins dieser Reihe gleich. Diese Linie uebergibt nur ihre
+ * Beschreibung (wp_sicherung_beschreibung()). Bis 0.9.47 standen hier eigene
+ * Funktionen wp_sicherung_bauen()/wp_sicherung_lesen() ohne Kennzeichen, die
+ * jeden fehlenden Schluessel still behielten und eine Datei ohne Kopf
+ * annahmen.
+ *
+ * Die Sicherung traegt das Aktionstoken und die Zugangsdaten der
+ * Herstellercloud (Hausstandard seit 03.09.2026: ohne sie ist sie nach dem
+ * Zurueckspielen wertlos); der Formulartoken, die Sprechtoken der
+ * Sprachausgabe und der Vermerk ansage_token_herkunft gehoeren nicht hinein.
  */
-function wp_sicherung_bauen()
+
+/** Die Zugangsdaten fuer die Sicherungsdatei und als geltender Stand des Teils 'geheim': genau die Felder aus
+ *  wp_geheim_schluessel(), je als Zeichenkette (wie bis 0.9.47 in wp_sicherung_bauen()). */
+function wp_sicherung_geheim_felder()
 {
-    $aus = array(
-        '_hinweis' => 'Sicherung des LoxBerry-Plugins Waermepumpe Cloud. Enthaelt das '
-                    . 'Aktionstoken und die Zugangsdaten der Herstellercloud - wie ein Passwort behandeln. '
-                    . 'Die Sprechtoken der Sprachausgabe sind nie enthalten.',
-        '_stand'   => date('Y-m-d H:i'),
-        '_fassung' => wp_fassung(),
-    );
-    foreach (wp_config() as $k => $w) { $aus[$k] = $w; }
-    /* Nr. 36 b: die Sprechtoken der Sprachausgabe gehen nie in eine Sicherung. */
-    if (isset($aus['tts']) && is_array($aus['tts'])) { $aus['tts'] = ansage_sicherung_bereinigen($aus['tts']); }
-    unset($aus['ansage_token_herkunft']);     // 0.9.40
     $g = wp_geheim();
+    $aus = array();
     foreach (wp_geheim_schluessel() as $k) {
-        $aus['geheim_' . $k] = isset($g[$k]) ? (string) $g[$k] : '';
+        $aus[$k] = (isset($g[$k]) && is_scalar($g[$k])) ? (string) $g[$k] : '';
     }
     return $aus;
+}
+
+/** Der Teil 'geheim' einer Sicherung: je Feld dieselbe Pruefung wie bis 0.9.47 (wp_wert_taugt(),
+ *  wp_geheim_pruefen()). Ein Feld, das die Datei nicht traegt, hat das Modul schon mit dem geltenden Wert
+ *  gefuellt ('fehlt' => 'behalten'); ein leeres Feld laesst den geltenden Wert stehen (Regel 3 des Moduls).
+ *  Rueckgabe fuer das Modul: array(Felder|null, Beanstandungen[]). Namen in den Meldungen wie in der Datei. */
+function wp_sicherung_geheim_lesen($w)
+{
+    $aus = array();
+    $mangel = array();
+    foreach (wp_geheim_schluessel() as $f) {
+        $v = (is_array($w) && array_key_exists($f, $w)) ? $w[$f] : '';
+        $grund = wp_wert_taugt($v) ? wp_geheim_pruefen($f, $v) : wp_t('EINST.SICH_G_FORM');
+        if ($grund !== '') {
+            $mangel[] = sprintf(wp_t('EINST.SICH_WERT_GRUND'), wp_e('geheim_' . $f), $grund);
+            continue;
+        }
+        $aus[$f] = trim((string) $v) === '' ? '' : (string) $v;
+    }
+    return $mangel ? array(null, $mangel) : array($aus, array());
+}
+
+/** Ein einzelner Wert einer Einstellung aus der Sicherung - dieselbe Pruefung wie bis 0.9.47: erst die Form
+ *  (wp_wert_taugt()), dann der Inhalt wie im Formular (wp_einstellung_pruefen()). 'takt' und 'land' haengen an
+ *  anderen Einstellungen (Hersteller, Schreibbudget, Marke) und werden in wp_sicherung_quer() mit dem ganzen neuen
+ *  Stand geprueft. Rueckgabe '' = gut, sonst der Satz (Name maskiert, nie der Wert). */
+function wp_sicherung_wert_grund($k, $w)
+{
+    if (!wp_wert_taugt($w, $k === 'zuordnung')) {
+        return sprintf(wp_t('EINST.SICH_WERT'), wp_e($k));
+    }
+    if ($k === 'aktionstoken') {
+        /* Ein leeres Token laesst das geltende stehen (Regel 3 des Moduls, wie bis 0.9.47). Ein Token in falscher
+         * Form wird seit 0.9.48 beanstandet - bis 0.9.47 blieb dann still das geltende. */
+        return preg_match('/^[A-Za-z0-9]{24,}\z/', (string) $w)
+            ? '' : sprintf(wp_t('EINST.SICH_WERT_GRUND'), wp_e($k), wp_t('EINST.SICH_G_TOKEN'));
+    }
+    if ($k === 'takt' || $k === 'land') { return ''; }
+    $grund = wp_einstellung_pruefen($k, $w, array(), array());
+    return $grund === '' ? '' : sprintf(wp_t('EINST.SICH_WERT_GRUND'), wp_e($k), $grund);
+}
+
+/** Quer ueber die Einstellungen (Rueckruf 'quer'): Takt gegen Hersteller und Schreibbudget, Land gegen die Marke -
+ *  mit dem ganzen neuen Stand, wie bis 0.9.47 mit der ganzen Datei und dem geltenden Stand dahinter. Nur, wenn sonst
+ *  nichts beanstandet ist. Rueckgabe fuer das Modul: Liste von array(Name, Satz). */
+function wp_sicherung_quer($neu, $r)
+{
+    if (!empty($r['beanstandet']) || !is_array($neu)) { return array(); }
+    $aus = array();
+    foreach (array('land', 'takt') as $k) {
+        if (!array_key_exists($k, $neu)) { continue; }
+        $grund = wp_einstellung_pruefen($k, $neu[$k], $neu, $neu);
+        if ($grund !== '') { $aus[] = array($k, sprintf(wp_t('EINST.SICH_WERT_GRUND'), wp_e($k), $grund)); }
+    }
+    return $aus;
+}
+
+/**
+ * Die Beschreibung dieser Linie fuer das gemeinsame Sicherungsmodul (seit 0.9.48).
+ *
+ *  - Kennzeichen: der Name des Repositorys. Bis 0.9.47 trug der Kopf kein
+ *    _plugin; eine solche Sicherung erkennt wp_sicherung_alt_erkennen().
+ *  - Vorgaben: wp_vorgaben(); darin seit dem 18.11.2026 auch die beiden
+ *    Schluessel, die die gemeinsame Sprachausgabe in waermepumpe.json schreibt
+ *    (ansage_regeln seit 0.9.40, der Vermerk ansage_token_herkunft), wie bei
+ *    Spotpreis-Octopus und -Tibber - Regeln/05: was ein gemeinsames Modul in
+ *    die Konfiguration schreibt, steht in den Vorgaben der Linie. Bis dahin
+ *    ergaenzte erst diese Beschreibung sie.
+ *  - Pflicht sind die 33 Einstellungen, die jede Sicherung seit 0.9.20 traegt
+ *    (gemessen 18.11.2026 an wp_vorgaben() der Archive 0.9.20 bis 0.9.47).
+ *    Die spaeter hinzugekommenen behalten ihren geltenden Wert, wenn sie
+ *    fehlen (Regel 6): anhebung_max (0.9.26), tts und die drei Ansage-Anlaesse
+ *    (0.9.27), befehle_mqtt_ein/befehle_mqtt_steuern (0.9.35), ansage_regeln
+ *    (0.9.40, nur nach dem Speichern der Ansage-Regeln in der Datei).
+ *  - Uebergang wie bis 0.9.47: einer Sicherung bis 0.9.34 fehlen die beiden
+ *    Haken der Befehlsbruecke; damals gab es keine Bruecke, sie ergibt "aus"
+ *    (wp_sicherung_vorbehandeln()), und die Meldung nennt sie.
+ *  - Zugangsdaten: der flache Teil 'geheim' (geheim_<feld> in der Datei),
+ *    gespeichert nach geheim.json; jedes Feld darf fehlen und behaelt dann
+ *    seinen Wert (Sicherungen ohne einzelne Felder hat es nie gegeben, eine
+ *    Sicherung ohne jedes Feld - vor 0.9.20 - hat keinen Kopf und wird
+ *    abgewiesen).
+ *  - tts: Unterschluessel des Sprachmoduls samt Sprechtoken (eine Datei, die
+ *    eines traegt, wird abgewiesen) und die Liste der weiteren Ziele.
+ */
+function wp_sicherung_beschreibung()
+{
+    $p = wp_paths();
+    $vorgaben = wp_vorgaben();
+    $schluessel = array();
+    foreach (array_keys($vorgaben) as $k) {
+        /* tts und ansage_regeln bekommen unten ihren Block; der Vermerk ansage_token_herkunft kommt nie aus einer
+         * Datei ('nie_aus_datei') und braucht keinen Knoten. */
+        if ($k === 'tts' || $k === 'ansage_regeln' || $k === 'ansage_token_herkunft') { continue; }
+        $schluessel[$k] = array(
+            'pruefen' => function ($w) use ($k) { return wp_sicherung_wert_grund($k, $w); },
+            'wandeln' => function ($w) use ($k) { return $k === 'aktionstoken' ? (string) $w : wp_einstellung_wert($k, $w); },
+        );
+    }
+    $tts = array_merge(array_keys(ansage_vorgaben()), ansage_geheim());
+    $tts_knoten = array();
+    if (wp_mit_zielen()) {
+        $tts[] = 'ziele';
+        $tts_knoten['ziele'] = sicherung_liste(array('art', 'wo', 'laut', 'sprache', 'ein'));
+    }
+    $schluessel['tts'] = sicherung_block($tts, $tts_knoten) + array(
+        'sichern' => 'ansage_sicherung_bereinigen',
+        /* Nr. 36 b: eine Sicherung dieses Plugins traegt nie ein Sprechtoken - traegt die Datei eines (auch als Liste
+         * oder null), stammt sie nicht aus "Einstellungen sichern" und wird abgewiesen; die geltenden bleiben.
+         * Ausgabeart, Adresse und Vorlage werden wie im Formular geprueft (Heimnetz). Der Block der Datei kommt als
+         * 4. Argument (Modul 1.2.0), vor Regel 2 und 3. */
+        'pruefen' => function ($w, $k = '', $neu = null, $roh = null) {
+            $tm = ansage_sicherung_mangel($roh);
+            if ($tm) { return sprintf(wp_t('DURCHSAGE.SICH_TOKEN'), wp_e(implode(', ', $tm))); }
+            $g = '';
+            if (ansage_wert_pruefen($w, $g, wp_ansage_modi()) === null) {
+                return sprintf(wp_t('DURCHSAGE.SICH_WERT'), wp_e(ansage_kennung_text($g, wp_ansage_k())));
+            }
+            return '';
+        },
+        'wandeln' => function ($w) { $g = ''; return ansage_wert_pruefen($w, $g, wp_ansage_modi()); },
+    );
+    /* S2 (0.9.40): ungueltig = abgewiesen, gueltig = in der Form von ansage_regeln_wert() uebernommen. */
+    $schluessel['ansage_regeln'] = sicherung_block(array_keys(ansage_regeln_vorgaben())) + array(
+        'pruefen' => function ($w) { $g = ''; return ansage_regeln_wert($w, $g) === null ? wp_t('DURCHSAGE.SICH_WERT') : ''; },
+        'wandeln' => function ($w) { $g = ''; return ansage_regeln_wert($w, $g); },
+    );
+    foreach (array('anhebung_max', 'tts', 'ansage_anmeldung', 'ansage_ausfall', 'ansage_stoerung',
+                   'befehle_mqtt_ein', 'befehle_mqtt_steuern', 'ansage_regeln') as $k) {
+        $schluessel[$k]['fehlt'] = 'behalten';
+    }
+    $geheim_knoten = array();
+    foreach (wp_geheim_schluessel() as $f) { $geheim_knoten[$f] = array('fehlt' => 'behalten'); }
+    $schluessel['geheim'] = sicherung_block(wp_geheim_schluessel(), $geheim_knoten);
+    return array(
+        'kennzeichen' => 'LoxBerry-Plugin-WaermepumpeCloud',
+        // derselbe Satz wie bis 0.9.47 - daran erkennt wp_sicherung_alt_erkennen() die aelteren Sicherungen
+        'hinweis' => 'Sicherung des LoxBerry-Plugins Waermepumpe Cloud. Enthaelt das '
+                   . 'Aktionstoken und die Zugangsdaten der Herstellercloud - wie ein Passwort behandeln. '
+                   . 'Die Sprechtoken der Sprachausgabe sind nie enthalten.',
+        /* Die Fassung im Kopf kommt aus der Plugin-Datenbank bzw. plugin.cfg (sicherung_fassung_lesen()). */
+        'home' => isset($p['home']) ? (string) $p['home'] : '',
+        'ordner' => isset($p['plugin']) ? (string) $p['plugin'] : '',
+        'plugin_cfg' => dirname(dirname(__DIR__)) . '/plugin.cfg',
+        'vorgaben' => $vorgaben,
+        'schluessel' => $schluessel,
+        'nie_aus_datei' => array('ansage_token_herkunft'),
+        'teile' => array('geheim' => 'wp_sicherung_geheim_lesen'),
+        'teile_flach' => array('geheim' => 'geheim_'),
+        'teile_jetzt' => array('geheim' => 'wp_sicherung_geheim_felder'),
+        'vorbehandeln' => 'wp_sicherung_vorbehandeln',
+        'quer' => 'wp_sicherung_quer',
+        'uebersetzer' => 'wp_sicherung_alt_erkennen',
+        'jetzt' => function () { return wp_config(); },
+        't' => 'wp_t',
+        'e' => 'wp_e',
+    );
+}
+
+/** Uebergang (Rueckruf 'vorbehandeln'), wie bis 0.9.47: einer Sicherung bis 0.9.34 fehlen die beiden Haken der
+ *  Befehlsbruecke - damals gab es keine Bruecke, sie ergibt "aus" (0), nicht den geltenden Wert. Das Modul nennt
+ *  die beiden dann mit K_FEHLT_UEBERGANG. */
+function wp_sicherung_vorbehandeln($bereit, $jetzt, $daten)
+{
+    foreach (array('befehle_mqtt_ein', 'befehle_mqtt_steuern') as $k) {
+        if (is_array($daten) && !array_key_exists($k, $daten)) { $bereit[$k] = 0; }
+    }
+    return $bereit;
+}
+
+/**
+ * Eine Sicherung dieser Linie aus der Zeit vor dem Kennzeichen _plugin
+ * (0.9.20 bis 0.9.47) traegt den Kopf _hinweis, den nur der Sichern-Knopf
+ * dieser Linie schreibt: "Sicherung des LoxBerry-Plugins Waermepumpe Cloud.
+ * Enthaelt ..." - in allen 28 Fassungen derselbe Anfang, fest im Code (nicht
+ * aus der Sprachdatei), gemessen 18.11.2026 an den Archiven 0.9.20 bis 0.9.47.
+ * Daran wird sie erkannt. 0.9.15 bis 0.9.19 schrieben gar keinen Kopf
+ * (json_encode(wp_config()) im Knopf); eine solche Datei ist nicht sicher von
+ * einer fremden zu unterscheiden und wird abgewiesen (Regeln/05, Regel 1).
+ */
+function wp_sicherung_alt_erkennen($d)
+{
+    return (is_array($d) && isset($d['_hinweis']) && is_string($d['_hinweis'])
+            && strpos($d['_hinweis'], 'Sicherung des LoxBerry-Plugins Waermepumpe Cloud.') === 0) ? $d : null;
+}
+
+/** Vor dem Speichern (Rueckruf 'vorbereiten'), wie bis 0.9.47: tts - fehlt die Liste der weiteren Ziele in der
+ *  Sicherung (aeltere Fassung), gelten die jetzigen weiter ($spaet nennt sie); dann mit dem geltenden Block
+ *  vervollstaendigt, und die geltenden Sprechtoken bleiben. Fehlt der ganze Block, hat das Modul den geltenden
+ *  schon behalten. */
+function wp_sicherung_vorbereiten(array $neu, $jetzt, array $r, &$spaet)
+{
+    $spaet = array();
+    if (in_array('tts', $r['fehlt_behalten'], true) || !isset($neu['tts']) || !is_array($neu['tts'])) { return $neu; }
+    $tj = (is_array($jetzt) && isset($jetzt['tts']) && is_array($jetzt['tts'])) ? $jetzt['tts'] : array();
+    /* Aus dem geltenden Block nur, was die Beschreibung kennt: ein unbekannter Unterschluessel der geltenden
+     * Konfiguration faellt beim Zurueckspielen weg und wird genannt (Modul 1.2.4, Entscheidung des Hausherrn
+     * 15.11.2026); bis 0.9.47 blieb er still stehen. */
+    $tk = array_merge(array_keys(ansage_vorgaben()), ansage_geheim(), array('ziele'));
+    $tj = array_intersect_key($tj, array_flip($tk));
+    $t = $neu['tts'];
+    if (function_exists('ansage_sicherung_spaet')) {
+        list($t, $spaet) = ansage_sicherung_spaet($t, $tj);
+    }
+    list($tv) = ansage_vervollstaendigen($t + $tj);
+    $neu['tts'] = ansage_sicherung_tokens_behalten($tv, $tj);
+    return $neu;
+}
+
+/** Die Sicherungsdatei als Feld (Kopf und Inhalt baut das Modul; die Zugangsdaten als Teil 'geheim'). Wuerde das
+ *  eigene Zurueckspielen sie abweisen, nennt der Kopf _warnung die Namen (nie Werte). */
+function wp_sicherung_bauen()
+{
+    return sicherung_bauen(wp_sicherung_beschreibung(), wp_config(),
+                           array('geheim' => wp_sicherung_geheim_felder()));
 }
 
 /**
@@ -6590,181 +6815,15 @@ function wp_anmeldungen_verwerfen()
     if (function_exists('wp_va_browser_datei') && is_file(wp_va_browser_datei())) { @unlink(wp_va_browser_datei()); }
 }
 
-function wp_sicherung_lesen($roh, &$geheim_neu = null, &$schluessel_fehl = null)
-{
-    $mangel = array();
-    $hinweise = array();
-    $geheim_neu = array();
-    $schluessel_fehl = array();
-    $daten = json_decode((string) $roh, true);
-    if (!is_array($daten)) {
-        return array(null, array(wp_t('EINST.SICH_KEIN_JSON')), 0);
-    }
-
-    /* DIE GRUNDLAGE IST DER JETZIGE STAND, NICHT DIE WERKSEINSTELLUNG.
-     *
-     * Bis 0.9.16 stand hier $neu = wp_vorgaben(). Damit setzte eine Datei,
-     * die nur zwei Schluessel trug, die uebrigen 31 stillschweigend auf Werk
-     * zurueck - einschliesslich des AKTIONSTOKENS. Der jetzige Stand als
-     * Grundlage loest das: ein Schluessel, den die Datei nicht nennt, behaelt
-     * seinen Wert, und nichts faellt still auf Werk zurueck. Was gefehlt hat,
-     * wird trotzdem GENANNT.
-     *
-     * SEIT DEM DURCHGANGSBAU 02.10.2026 (Bauliste C10) wird jeder Wert geprueft
-     * wie im Formular (wp_einstellung_pruefen(), wp_geheim_pruefen()). Eine
-     * einzige Beanstandung, und es wird NICHTS geaendert. Ein leeres oder zu
-     * kurzes Aktionstoken ist keine Beanstandung: das geltende bleibt, und das
-     * wird gesagt - bis 0.9.26 wurde es still neu gewuerfelt und jede Adresse
-     * im Miniserver stand auf 403 (gemessen, waermepumpe_agenten/code Befund 9). */
-    $neu = wp_config();
-    $jetzt = $neu;
-    $bekannt = array_keys(wp_vorgaben());
-    $anzahl = 0;
-    $fehlend = array();
-    foreach ($daten as $k => $w) {
-        /* Der lesbare Kopf wird UEBERGANGEN, nicht beanstandet. */
-        if ((string) $k !== '' && $k[0] === '_') { continue; }
-        /* Zugangsdaten: mit Vorsilbe, dieselbe Form- und Wertpruefung. */
-        if (strpos((string) $k, 'geheim_') === 0
-            && in_array(substr((string) $k, 7), wp_geheim_schluessel(), true)) {
-            $gk = substr((string) $k, 7);
-            $grund = wp_wert_taugt($w) ? wp_geheim_pruefen($gk, $w) : wp_t('EINST.SICH_G_FORM');
-            if ($grund !== '') {
-                $mangel[] = sprintf(wp_t('EINST.SICH_WERT_GRUND'),
-                                    htmlspecialchars((string) $k, ENT_QUOTES, 'UTF-8'), $grund);
-                $schluessel_fehl[] = (string) $k;
-                continue;
-            }
-            $geheim_neu[$gk] = trim((string) $w) === '' ? '' : (string) $w;
-            $anzahl++;
-            continue;
-        }
-        if ($k === 'ansage_token_herkunft') { continue; }     // S2: nie aus einer Datei
-        if ($k === 'ansage_regeln') {     // S2: ungueltig = abgewiesen, gueltig = uebernommen
-            $s2_g = '';
-            $s2_r = ansage_regeln_wert($w, $s2_g);
-            if ($s2_r === null) { $mangel[] = wp_t('DURCHSAGE.SICH_WERT'); $schluessel_fehl[] = 'ansage_regeln'; continue; }
-            $neu['ansage_regeln'] = $s2_r;
-            $anzahl++;
-            continue;
-        }
-        if (!in_array($k, $bekannt, true)) {
-            $mangel[] = sprintf(wp_t('EINST.SICH_FREMD'),
-                                 htmlspecialchars((string) $k, ENT_QUOTES, 'UTF-8'));
-            $schluessel_fehl[] = (string) $k;
-            continue;
-        }
-        if ($k === 'tts') {
-            /* Nr. 36 b (Stufe 2): eine Sicherung dieses Plugins traegt nie ein Sprechtoken - traegt
-             * die Datei eines (auch als Liste oder null), stammt sie nicht aus "Einstellungen sichern"
-             * und wird abgewiesen. Die geltenden Sprechtoken bleiben. Ausgabeart, Adresse und Vorlage
-             * werden wie im Formular geprueft (Heimnetz, Entwurf F1). */
-            $tm = ansage_sicherung_mangel($w);
-            if ($tm) {
-                $mangel[] = sprintf(wp_t('DURCHSAGE.SICH_TOKEN'),
-                                    htmlspecialchars(implode(', ', $tm), ENT_QUOTES, 'UTF-8'));
-                $schluessel_fehl[] = 'tts';
-                continue;
-            }
-            $tg = '';
-            $tp = ansage_wert_pruefen($w, $tg, wp_ansage_modi());
-            if ($tp === null) {
-                $mangel[] = sprintf(wp_t('DURCHSAGE.SICH_WERT'),
-                    htmlspecialchars(ansage_kennung_text($tg, wp_ansage_k()), ENT_QUOTES, 'UTF-8'));
-                $schluessel_fehl[] = 'tts';
-                continue;
-            }
-            $tj = (isset($jetzt['tts']) && is_array($jetzt['tts'])) ? $jetzt['tts'] : array();
-            /* Welle Mehrfach-Ziele (0.9.37): "$tp + $tj" behielt die geltenden weiteren Ziele einer Sicherung ohne
-             * Liste schon bisher - still. Jetzt geht der Block vorher durch die Spaetliste, und der Hinweis nennt sie. */
-            $wp_tsneu = array('tts' => $tp);
-            $wp_tsjetzt = array('tts' => $tj);
-            $wp_tsspaet = array();
-            /* Welle Mehrfach-Ziele (Sprachmodul 1.2.1, Spaetliste): fehlt die Liste der weiteren Ziele in der Sicherung (Datei einer
-             * aelteren Fassung), gelten die jetzigen weiteren Ziele weiter - genannt im Hinweis. Eine Sicherung MIT leerer Liste
-             * heisst "keine weiteren Ziele" und wird so uebernommen. */
-            $wp_spaete = array();
-            if (is_array($wp_tsneu['tts']) && function_exists('ansage_sicherung_spaet')) {
-                list($wp_tsneu['tts'], $wp_spaete) = ansage_sicherung_spaet($wp_tsneu['tts'],
-                    (isset($wp_tsjetzt['tts']) && is_array($wp_tsjetzt['tts'])) ? $wp_tsjetzt['tts'] : null);
-            }
-            foreach ($wp_spaete as $wp_sn) { $wp_tsspaet[] = $wp_sn; }     // Welle Mehrfach-Ziele: tts.ziele (Spaetliste)
-            list($tv) = ansage_vervollstaendigen($wp_tsneu['tts'] + $tj);
-            $neu['tts'] = ansage_sicherung_tokens_behalten($tv, $tj);
-            $anzahl++;
-            continue;
-        }
-        if (!wp_wert_taugt($w, $k === 'zuordnung')) {
-            $mangel[] = sprintf(wp_t('EINST.SICH_WERT'),
-                                 htmlspecialchars((string) $k, ENT_QUOTES, 'UTF-8'));
-            $schluessel_fehl[] = (string) $k;
-            continue;
-        }
-        if ($k === 'aktionstoken') {
-            if (!preg_match('/^[A-Za-z0-9]{24,}\z/', (string) $w)) {
-                $hinweise[] = wp_t('EINST.SICH_TOKEN_BLEIBT');
-                continue;
-            }
-            $neu[$k] = (string) $w;
-            $anzahl++;
-            continue;
-        }
-        $grund = wp_einstellung_pruefen($k, $w, $daten, $jetzt);
-        if ($grund !== '') {
-            $mangel[] = sprintf(wp_t('EINST.SICH_WERT_GRUND'),
-                                htmlspecialchars((string) $k, ENT_QUOTES, 'UTF-8'), $grund);
-            $schluessel_fehl[] = (string) $k;
-            continue;
-        }
-        $neu[$k] = wp_einstellung_wert($k, $w);
-        $anzahl++;
-    }
-    foreach ($bekannt as $k) {
-        if (!array_key_exists($k, $daten)) { $fehlend[] = $k; }
-    }
-    /* Gruppe 4 / MQTT (0.9.35, Entwurf wp 3.3): eine Sicherung bis 0.9.34 kennt die beiden Haken der
-     * Befehlsbruecke nicht - damals gab es keine Bruecke. Sie ergibt deshalb "aus" (0), nicht den laufenden
-     * Wert; dass sie fehlten, sagt der Hinweis unten wie bei jedem fehlenden Schluessel. */
-    foreach (array('befehle_mqtt_ein', 'befehle_mqtt_steuern') as $wp_bk) {
-        if (!array_key_exists($wp_bk, $daten)) { $neu[$wp_bk] = 0; }
-    }
-    if ($anzahl === 0) {
-        $mangel[] = wp_t('EINST.SICH_LEER');
-    }
-    if ($mangel) {
-        return array(null, array_merge($mangel, $hinweise), $anzahl);
-    }
-    if (!$geheim_neu) {
-        /* Eine Sicherung aus 0.9.19 oder frueher traegt keine Zugangsdaten.
-         * Sie bleibt zurueckspielbar - die jetzigen Zugangsdaten bleiben dann
-         * stehen, und das wird gesagt. */
-        $hinweise[] = wp_t('EINST.SICH_OHNE_ZUGANG');
-    }
-    if ($fehlend) {
-        /* Kein Grund zur Ablehnung - die Datei kann aus einer aelteren
-         * Fassung stammen, und der jetzige Wert bleibt ja stehen. Aber gesagt
-         * wird es. */
-        $hinweise[] = sprintf(wp_t('EINST.SICH_UNVOLLSTAENDIG'),
-                              count($fehlend),
-                              htmlspecialchars(implode(', ', $fehlend), ENT_QUOTES, 'UTF-8'));
-    }
-    if (!empty($wp_tsspaet)) {     // Welle Mehrfach-Ziele (0.9.37): Spaetliste (tts.ziele)
-        $hinweise[] = sprintf(wp_t('EINST.SICH_SPAET'), htmlspecialchars(implode(', ', $wp_tsspaet), ENT_QUOTES, 'UTF-8'));
-    }
-    return array($neu, $hinweise, $anzahl);
-}
-
 /**
- * Welche Werte der EIGENEN Sicherung liessen sich nicht zurueckspielen?
- * (X-3, Bauliste O5) Rueckgabe: Liste der Schluesselnamen - nie Werte.
+ * Welche Einstellungen der EIGENEN Sicherung liessen sich nicht zurueckspielen?
+ * (X-3, Bauliste O5) Dieselbe Pruefung wie beim Zurueckspielen - seit 0.9.48
+ * die des gemeinsamen Sicherungsmoduls (sicherung_selbstpruefung()).
+ * Rueckgabe: Liste der Namen - nie Werte.
  */
 function wp_nicht_zurueckspielbar()
 {
-    $g = array();
-    $fehl = array();
-    wp_sicherung_lesen(json_encode(wp_sicherung_bauen(),
-        JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES), $g, $fehl);
-    return array_values(array_unique($fehl));
+    return sicherung_selbstpruefung(wp_sicherung_beschreibung(), wp_sicherung_bauen(), wp_config());
 }
 
 

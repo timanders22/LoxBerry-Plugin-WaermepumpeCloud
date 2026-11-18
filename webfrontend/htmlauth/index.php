@@ -838,24 +838,15 @@ $wp_info  = wp_hersteller_info($wp_cfg['hersteller']);
 
 /* ---------------- Einstellungen sichern ----------------
  *
- * Ausgegeben wird die VOLLE Konfiguration - samt Aktionstoken. Ohne ihn
- * stuenden nach dem Zurueckspielen alle Felder richtig, und das Plugin
- * kaeme trotzdem nicht an die Anlage; die Datei waere wertlos. Damit
- * traegt sie ein Geheimnis, und der Hinweis am Knopf sagt das. */
+ * Ausgegeben wird die VOLLE Konfiguration - samt Aktionstoken und den
+ * Zugangsdaten der Herstellercloud. Ohne sie waere die Datei nach dem
+ * Zurueckspielen wertlos. Damit traegt sie Geheimnisse, und der Hinweis am
+ * Knopf sagt das. Seit 0.9.48 baut das gemeinsame Sicherungsmodul Kopf und
+ * Inhalt (wp_sicherung_bauen()); wuerde das eigene Zurueckspielen die Datei
+ * abweisen, nennt der Kopf _warnung die Namen (X-3, nie Werte). */
 if ($wp_post && isset($_POST['wp_sichern'])) {
-    /* X-3 (Bauliste O5): die eigene Ausgabe wird durch die Pruefung des
-     * Zurueckspielens geschickt; was dort abgewiesen wuerde, nennt ein Kopf
-     * _warnung (nur Namen, nie Werte) - und die Seite sagt es schon vor dem
-     * Klick (Hinweis neben dem Knopf). */
-    $wp_sich = wp_sicherung_bauen();
-    $wp_warn = wp_nicht_zurueckspielbar();
-    if ($wp_warn) {
-        $wp_sich = array_merge(array('_warnung' => 'Diese Werte liessen sich so nicht zurueckspielen: '
-                                                   . implode(', ', $wp_warn)), $wp_sich);
-    }
-    $wp_js = json_encode($wp_sich,
-        JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-    if ($wp_js !== false) {
+    $wp_js = sicherung_json(wp_sicherung_bauen());
+    if ($wp_js !== '') {
         while (ob_get_level() > 0) { @ob_end_clean(); }
         header('Content-Type: application/json; charset=utf-8');
         header('Content-Disposition: attachment; filename="waermepumpecloud_einstellungen_'
@@ -868,43 +859,73 @@ if ($wp_post && isset($_POST['wp_sichern'])) {
 
 /* ---------------- Einstellungen zurueckspielen ----------------
  *
- * is_uploaded_file() ZUERST: ohne diese Pruefung liesse sich jede Datei des
- * Servers unterschieben. Dann die Groessengrenze - eine Sicherung dieses
- * Plugins ist wenige Kilobyte gross; alles darueber wird gar nicht gelesen. */
+ * 0.9.48: den Eingang prueft das gemeinsame Sicherungsmodul (sicherung_eingang()) - in jeder Linie gleich: zuerst
+ * der Haken zurueck_ok (ohne ihn wird nichts gelesen und nichts geaendert), dann is_uploaded_file() (sonst liesse
+ * sich jede Datei des Servers unterschieben) und die Groessengrenze des Moduls; erst danach wird die Datei gelesen.
+ * Lesen, Pruefen und Speichern macht sicherung_zurueckspielen(): Unbekanntes wird verworfen und genannt, ein leerer
+ * Wert laesst den bisherigen stehen, und bei einer Beanstandung wird GAR NICHTS geaendert (alle Beanstandungen). */
 if ($wp_post && isset($_POST['wp_zurueck'])) {
-    if (!isset($_FILES['wp_sicherung']) || !is_array($_FILES['wp_sicherung'])
-        || !isset($_FILES['wp_sicherung']['tmp_name'])
-        || !@is_uploaded_file($_FILES['wp_sicherung']['tmp_name'])) {
-        $wp_fehler[] = wp_t('EINST.SICH_KEINE_DATEI');
-    } elseif ((int) $_FILES['wp_sicherung']['size'] > 262144) {
-        $wp_fehler[] = wp_t('EINST.SICH_ZU_GROSS');
+    list($wp_roh, $wp_ab) = sicherung_eingang(wp_sicherung_beschreibung(), $_POST, $_FILES, 'wp_sicherung');
+    if ($wp_ab !== null) {
+        $wp_sm = sicherung_meldungen(wp_sicherung_beschreibung(), $wp_ab);
+        foreach ($wp_sm['fehler'] as $wp_x) { $wp_fehler[] = $wp_x; }
     } else {
-        $wp_geheim_neu = array();
-        list($wp_neu, $wp_mangel, $wp_n) = wp_sicherung_lesen(
-            (string) @file_get_contents($_FILES['wp_sicherung']['tmp_name']), $wp_geheim_neu);
-        if ($wp_neu === null) {
-            /* ALLE Beanstandungen, nicht nur die erste - und geaendert wird
-             * nichts. */
-            $wp_fehler[] = wp_t('EINST.SICH_ABGELEHNT') . ' '
-                            . implode(' ', $wp_mangel);
-        } elseif (wp_config_write($wp_neu)
-                  && (!$wp_geheim_neu || wp_geheim_write(array_merge(wp_geheim(), $wp_geheim_neu)))) {
-            if ($wp_geheim_neu) { wp_anmeldungen_verwerfen(); }
-            $wp_meldungen[] = sprintf(wp_t('EINST.SICH_UEBERNOMMEN'), $wp_n);
-            /* Regeln/05, Punkt 7: sagen, was mit dem Dienst geschah. Dieses
-             * Plugin hat keinen Dauerlaeufer - der Minutentakt liest beim
-             * naechsten Lauf. */
-            $wp_meldungen[] = wp_t('EINST.SICH_DIENST');
+        $wp_b = wp_sicherung_beschreibung();
+        $wp_spaet = array();
+        $wp_geheim_anders = false;
+        /* tts: Spaetliste der weiteren Ziele, mit dem geltenden Block vervollstaendigt, die geltenden Sprechtoken
+         * bleiben (wie bis 0.9.47). */
+        $wp_b['vorbereiten'] = function ($neu, $vorher, $r) use (&$wp_spaet) {
+            return wp_sicherung_vorbereiten($neu, $vorher, $r, $wp_spaet);
+        };
+        /* Gespeichert wird genau der Stand, den das Modul liefert (Entscheidung des Hausherrn 15.11.2026), die
+         * Zweitschrift zieht wp_config_write() mit. Die Zugangsdaten gehen nach geheim.json (samt Zweitschrift),
+         * nur wenn die Sicherung sie traegt; Felder, die sie nicht traegt, hat das Modul mit dem geltenden Wert
+         * gefuellt. Seit dem 18.11.2026 (Frage 19 der Nacht, Entscheidung des Hausherrn 18.11.2026; Bauart Govee,
+         * gv_sicherung_speichern()) zuerst geheim.json, dann waermepumpe.json; scheitert die Konfiguration, wird
+         * geheim.json auf den Stand davor zurueckgeschrieben, damit "nichts gespeichert" stimmt. Bis dahin kam die
+         * Konfiguration zuerst, und scheiterte danach geheim.json, war sie schon geaendert. */
+        $wp_b['speichern'] = function ($neu, $vorher, $r) use (&$wp_geheim_anders) {
+            $wp_galt = null;
+            if (isset($r['teile']['geheim']) && is_array($r['teile']['geheim'])) {
+                $wp_galt = wp_geheim();
+                $wp_gv = wp_sicherung_geheim_felder();
+                if (!wp_geheim_write(array_merge($wp_galt, $r['teile']['geheim']))) { return false; }
+                $wp_geheim_anders = ($wp_gv !== wp_sicherung_geheim_felder());
+            }
+            if (!wp_config_write($neu)) {
+                if ($wp_galt !== null) {
+                    wp_geheim_write($wp_galt);
+                    $wp_geheim_anders = false;
+                }
+                return false;
+            }
+            return true;
+        };
+        $wp_b['zweitschrift'] = function () {
+            $p = wp_paths();
+            return array(array($p['config'], $p['sicherung']), array($p['geheim'], $p['sicherung_geheim']));
+        };
+        /* Regeln/05, Punkt 7: sagen, was mit dem Dienst geschah. Dieses Plugin hat keinen Dauerlaeufer - der
+         * Minutentakt liest beim naechsten Lauf. Geaenderte Zugangsdaten verwerfen die zwischengespeicherten
+         * Anmeldungen (sonst liefe der Abruf bis zu deren Ablauf mit dem alten Konto), die Abo-Datei des Gateways
+         * folgt dem zurueckgespielten Thema. */
+        $wp_b['nachziehen'] = function ($neu) use (&$wp_geheim_anders) {
+            if ($wp_geheim_anders) { wp_anmeldungen_verwerfen(); }
+            wp_abo_nachziehen(wp_config());
+            return array(wp_t('EINST.SICH_DIENST'));
+        };
+        $wp_b['log'] = function ($z) { wp_log($z); };
+        $wp_r = sicherung_zurueckspielen($wp_b, $wp_roh);
+        $wp_sm = sicherung_meldungen($wp_b, $wp_r);
+        foreach ($wp_sm['fehler'] as $wp_x) { $wp_fehler[] = $wp_x; }
+        foreach ($wp_sm['hinweise'] as $wp_x) { $wp_meldungen[] = $wp_x; }
+        if ($wp_r['gespeichert'] && $wp_spaet) {     // Welle Mehrfach-Ziele (0.9.37): Spaetliste (tts.ziele)
+            $wp_meldungen[] = sprintf(wp_t('EINST.SICH_SPAET'), wp_e(implode(', ', $wp_spaet)));
+        }
+        if ($wp_r['gespeichert']) {
             $wp_cfg = wp_config();
             $wp_geh = wp_geheim();
-            wp_abo_nachziehen($wp_cfg);
-            /* Angenommen UND trotzdem etwas zu sagen: eine Datei aus einer
-             * aelteren Fassung kennt nicht jeden Schluessel. Die fehlenden
-             * behalten ihren jetzigen Wert - das ist richtig so, aber es
-             * gehoert genannt. Sonst zaehlt jemand 30 statt 33 und sucht. */
-            foreach ($wp_mangel as $wp_m) { $wp_meldungen[] = $wp_m; }
-        } else {
-            $wp_fehler[] = wp_t('EINST.SICH_SCHREIBFEHLER');
         }
     }
 }
@@ -1486,6 +1507,7 @@ details > summary { cursor: pointer; font-weight: 600; color: #4f7d17; margin: 8
     <?php echo wp_fmt(); ?>
     <input data-role="none" type="hidden" name="activetab" value="tab-settings">
     <input data-role="none" type="file" name="wp_sicherung" accept=".json">
+    <?= sicherung_haken_zeile(wp_sicherung_beschreibung()) ?>
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="wp_zurueck" value="1"><?= wp_t('EINST.K_ZURUECK') ?></button>
   </form>
 </div>
