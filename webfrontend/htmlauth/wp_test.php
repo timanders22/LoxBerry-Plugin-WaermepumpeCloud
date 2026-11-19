@@ -651,6 +651,12 @@ function wp_pruefungen()
             . '" onclick="return wpAdresseKopieren(this);">' . wp_e(wp_t('TEST.K_ADRESSE_KOPIEREN')) . '</button>');
     }
 
+    /* Gemeinsames Uhrmodul (Frage 95): Systemuhr gegen die Kopfzeile Date der Cloud - nur melden (i = nicht gezaehlt). */
+    list($uhr_s, $uhr_t) = uhr_pruefzeile(array('ordner' => wp_paths()['datadir'], 'dienst' => 'Cloud', 't' => 'wp_t'));
+    $uhr_z = wp_pruefzeile($uhr_s === 1 ? 1 : -1, htmlspecialchars(uhr_frage(array('t' => 'wp_t')), ENT_QUOTES, 'UTF-8'), htmlspecialchars($uhr_t, ENT_QUOTES, 'UTF-8'));
+    $uhr_z[3] = $uhr_s;
+    $z[] = $uhr_z;
+
     return $z;
 }
 

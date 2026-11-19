@@ -105,6 +105,7 @@ require_once __DIR__ . '/sprachausgabe.php';
  * 18.11.2026 "Ja, umbauen"; Regeln/05). Einstellungen sichern und zurueckspielen laufen darueber, die Beschreibung
  * dieser Linie steht in wp_sicherung_beschreibung(). Liegt neben dieser Datei und schuetzt sich gegen doppeltes Laden. */
 require_once __DIR__ . '/sicherung.php';
+require_once __DIR__ . '/uhrabgleich.php';   // gemeinsames Uhrmodul (Frage 95), Abschrift von Werkzeuge/gemeinsam/uhrabgleich.php
 define('WP_STUFEN', 4);          // SG Ready kennt genau vier Zustaende
 define('WP_SPERRE_MAX', 120);    // Minuten, danach faellt die Sperre von selbst
 define('WP_ZUORDNUNG_MAX', 4000);
@@ -1258,11 +1259,14 @@ function wp_http($methode, $url, $kopf = array(), $koerper = null, $zeit = 20)
         curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, min(10, $zeit));
         curl_setopt($ch, CURLOPT_FOLLOWLOCATION, false);
         if ($koerper !== null) { curl_setopt($ch, CURLOPT_POSTFIELDS, $koerper); }
+        $uhr_datum = 0;   // Uhrmodul (Frage 95)
+        curl_setopt($ch, CURLOPT_HEADERFUNCTION, uhr_kopf_rueckruf($uhr_datum));
         $text = curl_exec($ch);
         $code = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
         $fehler = curl_error($ch);
         if (PHP_VERSION_ID < 80000) { curl_close($ch); }
         return array('code' => $code, 'text' => (string) $text, 'fehler' => $fehler);
+        uhr_merken(wp_paths()['datadir'], $uhr_datum, (int) round(1000 * (float) curl_getinfo($ch, CURLINFO_TOTAL_TIME)), (string) parse_url($url, PHP_URL_HOST));
     }
 
     /* follow_location AUSDRUECKLICH aus - der curl-Zweig oben setzt

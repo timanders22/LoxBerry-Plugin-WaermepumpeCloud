@@ -2334,8 +2334,8 @@ foreach ($wp_pr as $wp_z) {
 <table class="sm-tbl">
 <tr><th style="width:34px;"></th><th style="width:34%;"><?= wp_e(wp_t('TEST.T_FRAGE')) ?></th><th><?= wp_e(wp_t('TEST.T_ANTWORT')) ?></th></tr>
 <?php foreach ($wp_pr as $wp_z) { ?>
-<tr><td style="text-align:center;"><?= $wp_z[0] === 1 ? '<span class="sm-an">&#10004;</span>'
-        : ($wp_z[0] === 0 ? '<span class="sm-aus">&#10008;</span>' : '<b>i</b>') ?></td>
+<tr><td style="text-align:center;"><?= isset($wp_z[3]) ? uhr_zeichen($wp_z[3]) : ($wp_z[0] === 1 ? '<span class="sm-an">&#10004;</span>'
+        : ($wp_z[0] === 0 ? '<span class="sm-aus">&#10008;</span>' : '<b>i</b>')) ?></td>
     <td><?= $wp_z[1] ?></td><td><?= $wp_z[2] ?></td></tr>
 <?php } ?>
 </table>
