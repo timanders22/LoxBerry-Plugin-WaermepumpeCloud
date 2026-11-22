@@ -62,6 +62,12 @@ Adresse und Vorlage müssen im Heimnetz liegen; die Sprechtoken stehen in keiner
 Prüfzeile im Reiter Test; dort zeigt die Prüfadresse das Aktionstoken nur noch maskiert (Knopf „Adresse
 kopieren“).
 
+## Neu in 0.9.52
+
+- Gemeinsames Sprachmodul 1.5.0 (Entscheidung des Hausherrn 22.11.2026): Die Nachtruhe der Ansagen kann an Nicht-Schultagen (Samstag, Sonntag, Feiertage, Ferien) später enden. Neues Feld „Nachtruhe an Nicht-Schultagen bis“ bei „Wann gesprochen wird“, ab Werk leer: Dann gilt die Zeit, die im Plugin Ferien und Feiertage eingestellt ist (MQTT-Thema `haus/ansage/nachtruhe_frei_bis`); ohne sie endet die Nachtruhe wie an Schultagen. Ob heute ein Schultag ist, sagt `haus/kalender/heute/frei` (nur bei `haus/kalender/datum` = heute); ohne diese Aussage zählen nur Samstag und Sonntag. Dringende Ansagen übergehen die Nachtruhe wie bisher. Ohne Vorgabe und ohne eigene Zeit ändert sich nichts.
+- Reiter Test: neue Zeile zum Ende der Nachtruhe an Nicht-Schultagen (Quelle der Zeit, Art des heutigen Tages).
+- Nach einer Beanstandung zeigt das Formular auch das neue Feld mit dem eingegebenen Wert wieder an.
+
 ## Neu in 0.9.51
 
 - Die Kopfzeile zeigt jetzt die installierte Fassung, einheitlich in allen Plugins.

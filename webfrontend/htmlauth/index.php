@@ -763,7 +763,7 @@ if ($wp_post && isset($_POST['speichern_ansage'])) {
         $wp_ahaken[] = 'ansage_ruhe_ein';
         $wp_ahaken[] = 'ansage_tafel_ein';     // 0.9.43: Tafel und HomePod dazu
         $wp_ahaken[] = 'ansage_homepod_ein';
-        foreach (array('ansage_ruhe_von', 'ansage_ruhe_bis', 'ansage_sperre_min', 'ansage_tafel_namen', 'ansage_homepod_geraet') as $wp_an) { $wp_ax[] = $wp_an; }
+        foreach (array('ansage_ruhe_von', 'ansage_ruhe_bis', 'ansage_ruhe_bis_frei' /* 0.9.52, Stamm 1.5.0 */, 'ansage_sperre_min', 'ansage_tafel_namen', 'ansage_homepod_geraet') as $wp_an) { $wp_ax[] = $wp_an; }
         foreach ($wp_ax as $wp_an) {
             if (substr($wp_an, -9) === '_loeschen') { $wp_ahaken[] = $wp_an; } else { $wp_atext[] = $wp_an; }
         }
