@@ -97,6 +97,15 @@ function wp_pruefungen()
     }
 
     /* ---- Hersteller gewaehlt? ---- */
+    // 0.9.53: faellt das Themen-Praefix auf einen gemeinsamen Bereich unter haus/ (Regeln/07)?
+    $wp_hb = wp_pruef_praefix_haus($cfg);
+    $z[] = wp_pruefzeile($wp_hb[0], wp_e(wp_t('HAUSBEREICH.F_TEST')), $wp_hb[1]);
+    /* 0.9.53: Lade-Beanstandungen (Regeln/05, Sicherungsmodul 1.3.0) - rot, solange ein gespeicherter Wert beim Laden
+     * nicht so gilt, wie er gespeichert ist; vor dem Hersteller, denn ohne ihn endet die Pruefung hier. */
+    $wp_lb = wp_sicherung_beschreibung();
+    $wp_la = wp_lade_beanstandungen($cfg);
+    $z[] = wp_pruefzeile($wp_la ? 0 : 1, wp_e(sicherung_t('K_LADE_FRAGE', $wp_lb)),
+        $wp_la ? implode('<br>', sicherung_lade_saetze($wp_lb, $wp_la)) : wp_e(sicherung_t('K_LADE_KEINE', $wp_lb)));
     $info = wp_hersteller_info($cfg['hersteller']);
     if (!$info) {
         $z[] = wp_pruefzeile(0, wp_t('TEST.F_HERSTELLER'), wp_t('TEST.A_HERSTELLER_KEINER'));

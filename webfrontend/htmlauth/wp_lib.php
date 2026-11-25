@@ -101,10 +101,12 @@ function wp_fassung()
  * Liegt neben dieser Datei; die Datei schuetzt sich selbst gegen doppeltes Laden. Der
  * Abrufdienst bin/wp_abruf.php erreicht sie ueber diese Bibliothek. */
 require_once __DIR__ . '/sprachausgabe.php';
+require_once __DIR__ . '/meldung.php';     // Statusmeldungen an SignalBot (seit 0.9.53)
 /* 0.9.48: Gemeinsames Sicherungsmodul (Abschrift von Werkzeuge/gemeinsam/sicherung.php, Auftrag des Hausherrn
  * 18.11.2026 "Ja, umbauen"; Regeln/05). Einstellungen sichern und zurueckspielen laufen darueber, die Beschreibung
  * dieser Linie steht in wp_sicherung_beschreibung(). Liegt neben dieser Datei und schuetzt sich gegen doppeltes Laden. */
 require_once __DIR__ . '/sicherung.php';
+require_once __DIR__ . '/haus_bereiche.php';     // gemeinsame Bereiche unter haus/ (seit 0.9.53, Regeln/07)
 require_once __DIR__ . '/uhrabgleich.php';   // gemeinsames Uhrmodul (Frage 95), Abschrift von Werkzeuge/gemeinsam/uhrabgleich.php
 define('WP_STUFEN', 4);          // SG Ready kennt genau vier Zustaende
 define('WP_SPERRE_MAX', 120);    // Minuten, danach faellt die Sperre von selbst
@@ -643,6 +645,7 @@ function wp_vorgaben()
         'ansage_anmeldung' => 1,
         'ansage_ausfall'   => 1,
         'ansage_stoerung'  => 1,   // WP-Ansage-1: nur myVAILLANT (Diagnosecodes)
+        'meldung'          => meld_vorgaben(wp_meld_anlaesse(), wp_meld_haken_vorgabe()),   // 0.9.53: Meldungen an SignalBot, ab Werk aus
         'tts'          => ansage_werk_block(),
         /* 0.9.48 (Frage 18 der Nacht 18.11.2026, Entscheidung des Hausherrn 18.11.2026): die beiden Schluessel, die
          * die gemeinsame Sprachausgabe in waermepumpe.json schreibt, stehen hier wie bei Spotpreis-Octopus und
@@ -854,6 +857,8 @@ function wp_config($token_anlegen = true)
         wp_rechte_nachziehen($p['sicherung']);
         wp_rechte_nachziehen($p['sicherung_geheim']);
     }
+    /* 0.9.53 (Lade-Beanstandungen, Regeln/05): ob die Datei ein Aktionstoken TRAEGT, vor dem Ergaenzen der Vorgaben. */
+    $wp_token_da = array_key_exists('aktionstoken', $cfg);
     $cfg = array_merge(wp_vorgaben(), $cfg);
 
     $h = wp_hersteller();
@@ -934,13 +939,19 @@ function wp_config($token_anlegen = true)
      * Fehlt das Token, bleibt es leer - und der Endpunkt weist ab. Das ist der
      * richtige Zustand: solange niemand die Oberflaeche geoeffnet hat, gibt es
      * auch keine Adresse, die in Loxone stehen koennte. */
-    if (!preg_match('/^[A-Za-z0-9]{24,}$/', (string) $cfg['aktionstoken'])) {
+    /* 0.9.53 (Lade-Beanstandungen, Regeln/05): ein vorhandenes Token wird nie ersetzt - auch ein formwidriges nicht
+     * (gemeldet, wp_lade_beanstandungen()); ein neues entsteht nur, wenn der Schluessel fehlt. Bis 0.9.52 wuerfelte die
+     * Oberflaeche ein neues, sobald das gespeicherte nicht ^[A-Za-z0-9]{24,}$ traf, und schrieb die ganze normierte
+     * Konfiguration zurueck (Bauart SignalBot, dort gemessen 24.11.2026). */
+    if (!$wp_token_da) {
         if ($token_anlegen) {
             $cfg['aktionstoken'] = wp_token();
             wp_config_write($cfg);
         } else {
             $cfg['aktionstoken'] = '';
         }
+    } else {
+        $cfg['aktionstoken'] = is_scalar($cfg['aktionstoken']) ? (string) $cfg['aktionstoken'] : '';
     }
     return $cfg;
 }
@@ -1016,9 +1027,13 @@ function wp_json_schreiben($pfad, $daten)
     return true;
 }
 
-function wp_config_write($cfg)
+function wp_config_write($cfg, $lade_behalten = true)
 {
     $p = wp_paths();
+    /* 0.9.53 (Lade-Beanstandungen, Regeln/05, Entscheidung des Hausherrn "Dateiwert behalten"): ein beim Laden
+     * beanstandetes Feld, das der neue Stand nicht geaendert hat, behaelt seinen gespeicherten Wert. Nicht beim
+     * Zurueckspielen und nicht beim Knopf "Angezeigte Werte uebernehmen" ($lade_behalten = false). */
+    if ($lade_behalten && is_array($cfg)) { $cfg = wp_lade_behalten($cfg); }
     /* Erst fragen, dann anlegen. Das @ unterdrueckt nur die Ausgabe, nicht
      * das Ereignis: unter PHP 7.4 sah jeder eingehaengte Fehleraufnehmer bei
      * jedem Speichern "mkdir(): File exists" (gemessen 17.09.2026 mit
@@ -1123,8 +1138,7 @@ function wp_config_vervollstaendigen()
     $roh = @file_get_contents($p['config']);
     if (!is_string($roh) || substr(ltrim($roh), 0, 1) !== '{') { return array(); }
     $datei = json_decode($roh, true);
-    if (!is_array($datei) || !isset($datei['aktionstoken'])
-        || !preg_match('/^[A-Za-z0-9]{24,}$/', (string) $datei['aktionstoken'])) {
+    if (!is_array($datei) || !wp_lade_merkwort($datei)) {
         return array();
     }
     // Ein leeres Objekt der Datei ({}) bliebe nach json_decode(..., true) ein leeres Feld und kaeme beim Schreiben
@@ -1218,6 +1232,66 @@ function wp_geheim_write($g)
         wp_json_schreiben($p['sicherung_geheim'], $g);
     }
     return true;
+}
+
+/* ==================================================================
+ * Lade-Beanstandungen (0.9.53; Regeln/05, Sicherungsmodul 1.3.0)
+ *
+ * wp_config() bringt eine von Hand verbogene Datei fuer den Betrieb in ihre Grenzen. Das bleibt - aber jede solche
+ * Ersetzung wird gemeldet (Reiter Test rot, Seite gelb, einmal ins Protokoll) und nie in die Datei zurueckgeschrieben.
+ * Gefunden wird sie vom Modul an den ROHEN Dateiwerten, mit denselben Regeln wie beim Zurueckspielen.
+ * ================================================================== */
+
+/** Traegt die Datei ein Aktionstoken (einen nicht leeren Text)? Das Merkwort fuer das Vervollstaendigen. */
+function wp_lade_merkwort($d)
+{
+    return is_array($d) && isset($d['aktionstoken']) && is_string($d['aktionstoken']) && $d['aktionstoken'] !== '';
+}
+
+/** Die rohen Werte der Konfigurationsdatei (ohne jede Normierung), null = keine lesbare Datei. Schreibt nichts. */
+function wp_lade_roh()
+{
+    $p = wp_paths();
+    clearstatcache(true, $p['config']);
+    $roh = is_file($p['config']) ? trim((string) @file_get_contents($p['config'])) : '';
+    $d = ($roh !== '' && $roh[0] === '{') ? json_decode($roh, true) : null;
+    return is_array($d) ? $d : null;
+}
+
+/** Die Lade-Beanstandungen: rohe Dateiwerte gegen den verwendeten Stand ($cfg, sonst wp_config(false)). */
+function wp_lade_beanstandungen($cfg = null)
+{
+    $d = wp_lade_roh();
+    if ($d === null) { return array(); }
+    return sicherung_lade_beanstandungen(wp_sicherung_beschreibung(), $d, is_array($cfg) ? $cfg : wp_config(false));
+}
+
+/** Vor dem Schreiben: jedes beanstandete Feld, das $cfg nicht geaendert hat, bekommt seinen Dateiwert zurueck. */
+function wp_lade_behalten(array $cfg)
+{
+    $d = wp_lade_roh();
+    if ($d === null) { return $cfg; }
+    $v = wp_config(false);
+    list($cfg, ) = sicherung_lade_behalten($cfg, $d, $v, sicherung_lade_beanstandungen(wp_sicherung_beschreibung(), $d, $v));
+    return $cfg;
+}
+
+/** Abruf (bin/wp_abruf.php): fehlende Einstellungen eintragen, dann die Lade-Beanstandungen einmal melden. */
+function wp_dienst_pflege()
+{
+    $r = wp_config_vervollstaendigen();
+    wp_lade_melden(wp_lade_beanstandungen());     // Kennung D
+    return $r;
+}
+
+/** Einmal je Aenderung ins Protokoll (nur Namen und Gruende, nie Werte). */
+function wp_lade_melden(array $beanst)
+{
+    $t = wp_tmpdir();
+    if ($t === '' || !is_dir($t)) { return; }
+    if (sicherung_lade_melden_faellig($beanst, $t . '/lade_beanstandungen.merk')) {
+        wp_log(sicherung_lade_protokollzeile($beanst));
+    }
 }
 
 function wp_token($laenge = 32)
@@ -4721,6 +4795,7 @@ function wp_mqtt_senden($werte)
     if (empty($cfg['mqtt_ein'])) { return false; }
     $m = wp_mqtt_zustand();
     if (!$m['gefunden'] || !$m['udpport']) { return false; }
+    wp_praefix_haus_melden($cfg);   // 0.9.53: Praefix im gemeinsamen Bereich? melden, nicht anhalten
     $sock = @fsockopen('udp://127.0.0.1', (int) $m['udpport'], $en, $es, 2);
     if (!$sock) { return false; }
     /* Altwerte der Vorfassungen: fuer jedes Thema, das heute fluechtig geht
@@ -6196,6 +6271,8 @@ function wp_ansage_senden($jetzt = null)
         $conf = wp_config();
         wp_ansage_token_pflegen($conf);
         $conf = wp_config();
+        wp_meld_senden($frisch, $conf);     // 0.9.53: dieselben Anlaesse an SignalBot (eigene Haken)
+        $frisch = wp_meld_nur_ansage($frisch, $conf);     // die Ansage nur mit ihrem eigenen Haken
         $a = ansage_regel_sprechen($frisch, wp_tts($conf), wp_ansage_regeln($conf), wp_ansage_k());
         $erg = $a['regel'] !== '' ? $a['regel'] : 'gesprochen';
         if ($a['r'] !== null) {
@@ -6216,12 +6293,19 @@ function wp_ansage_senden($jetzt = null)
  * Aus bin/wp_abruf.php nach dem Abruf (unter der Abrufsperre). $grund ist die
  * Rueckgabe von wp_abrufen(). Rueckgabe array(versucht, gescheitert).
  */
+/** 0.9.53: Diagnosecodes (eine eigene Cloud-Anfrage) nur, wenn die Stoerung angesagt (Ausgabeart und Haken) ODER an
+ *  SignalBot gemeldet werden soll - ab Werk und bei abgewaehltem Anlass geht weiter keine Anfrage hinaus. */
+function wp_meld_diagnose_noetig($cfg)
+{
+    return (wp_ansage_an($cfg) && !empty($cfg['ansage_stoerung'])) || meld_anlass_an(wp_meld_block($cfg), 'stoerung');
+}
+
 function wp_ansage_takt($grund, $jetzt = null)
 {
     $jetzt = $jetzt === null ? time() : (int) $jetzt;
     $cfg = wp_config();
     $datei = wp_ansage_datei();
-    if (!wp_ansage_an($cfg)) {
+    if (!wp_ansage_an($cfg) && !wp_meld_aktiv($cfg)) {     // 0.9.53: auch fuer die Meldung an SignalBot
         /* Aus: nichts sagen, nichts merken - ab Werk entsteht keine Datei. */
         if (is_file($datei)) { @unlink($datei); }
         return array(0, 0);
@@ -6234,7 +6318,7 @@ function wp_ansage_takt($grund, $jetzt = null)
     /* WP-Ansage-1: Diagnosecodes nur nach einem in DIESEM Lauf gelungenen Abruf (also im Abruftakt), nur bei
      * myVAILLANT und nur mit Haken - ab Werk und bei abgewaehltem Anlass geht keine zusaetzliche Anfrage hinaus. */
     $diag = null;
-    if ($cfg['hersteller'] === 'vaillant' && (string) $grund === '' && !empty($cfg['ansage_stoerung'])) {
+    if ($cfg['hersteller'] === 'vaillant' && (string) $grund === '' && wp_meld_diagnose_noetig($cfg)) {     // 0.9.53
         list($diag) = wp_va_diagnose($cfg);
     }
     $lage = wp_ansage_lage($cfg, $stand, (string) $grund, $jetzt, $diag);
@@ -6245,7 +6329,7 @@ function wp_ansage_takt($grund, $jetzt = null)
         $ist = $lage[$an] === null ? $war : (bool) $lage[$an];
         $neu[$an] = $ist ? 1 : 0;
         if (!$ist || $war) { continue; }            // nur der Beginn
-        if (empty($cfg[$schl])) { continue; }       // abgewaehlt (der Zustand wird trotzdem gemerkt)
+        if (!wp_meld_will($an, $cfg)) { continue; }       // abgewaehlt, Ansage und Meldung (der Zustand wird trotzdem gemerkt; 0.9.53)
         $faellig[] = $an;
         $zuletzt[$an] = $jetzt;
     }
@@ -6464,6 +6548,10 @@ function wp_einstellung_pruefen($k, $w, $alle, $jetzt)
     $wert = function ($n) use ($alle, $jetzt) {
         return array_key_exists($n, $alle) && !is_array($alle[$n]) ? $alle[$n] : $jetzt[$n];
     };
+    if ($k === 'meldung') {     // 0.9.53: Block der Meldungen an SignalBot (gemeinsames Modul meldung.php)
+        $f = meld_block_pruefen($w, wp_meld_anlaesse());
+        return $f ? wp_e(meld_beanstandung_text($f[0], wp_meld_k())) : '';
+    }
     $s = trim((string) $w);
     switch ($k) {
         case 'hersteller':
@@ -6623,6 +6711,10 @@ function wp_sicherung_wert_grund($k, $w)
     }
     if ($k === 'takt' || $k === 'land') { return ''; }
     $grund = wp_einstellung_pruefen($k, $w, array(), array());
+    /* 0.9.53: kein Praefix auf einem gemeinsamen Bereich unter haus/ (Regeln/07) - wie im Formular. */
+    if ($grund === '' && $k === 'mqtt_topic' && is_string($w) && hb_bereich($w) !== '') {
+        $grund = wp_e(sprintf(wp_t('HAUSBEREICH.SICH_W'), hb_bereich($w)));
+    }
     return $grund === '' ? '' : sprintf(wp_t('EINST.SICH_WERT_GRUND'), wp_e($k), $grund);
 }
 
@@ -6715,6 +6807,7 @@ function wp_sicherung_beschreibung()
                    'befehle_mqtt_ein', 'befehle_mqtt_steuern', 'ansage_regeln') as $k) {
         $schluessel[$k]['fehlt'] = 'behalten';
     }
+    $schluessel['meldung'] = meld_sicherung_knoten(wp_meld_anlaesse(), wp_meld_k());     // 0.9.53
     $geheim_knoten = array();
     foreach (wp_geheim_schluessel() as $f) { $geheim_knoten[$f] = array('fehlt' => 'behalten'); }
     $schluessel['geheim'] = sicherung_block(wp_geheim_schluessel(), $geheim_knoten);
@@ -6731,6 +6824,8 @@ function wp_sicherung_beschreibung()
         'vorgaben' => $vorgaben,
         'schluessel' => $schluessel,
         'nie_aus_datei' => array('ansage_token_herkunft'),
+        /* 0.9.53: nie mit Wert in den Lade-Beanstandungen (Modul 1.3.0) - die Sprechtoken. */
+        'geheim' => array_map(function ($n) { return 'tts.' . $n; }, ansage_geheim()),
         'teile' => array('geheim' => 'wp_sicherung_geheim_lesen'),
         'teile_flach' => array('geheim' => 'geheim_'),
         'teile_jetzt' => array('geheim' => 'wp_sicherung_geheim_felder'),
@@ -7460,4 +7555,158 @@ function wp_bruecke_pruefzeilen()
     bb_pruefen();
     $aus = (string) ob_get_clean();
     return array_values(array_filter(explode("\n", $aus), 'strlen'));
+}
+
+/**
+ * 0.9.53 (Entscheidung des Hausherrn 23.11.2026 "Nur gemeinsame Bereiche", Regeln/07): Zeile im Reiter Test -
+ * faellt das gespeicherte Themen-Praefix auf einen gemeinsamen Bereich unter haus/? Speichern und Zurueckspielen
+ * weisen ein solches Praefix ab; ein schon gespeichertes bleibt in Betrieb und ist hier rot, grau bei ausgeschaltetem MQTT.
+ * Liste und Pruefung aus dem gemeinsamen Modul haus_bereiche.php. Rueckgabe array(stand, html).
+ */
+function wp_pruef_praefix_haus($cfg)
+{
+    $p = (trim((string) $cfg['mqtt_topic'], '/') !== '' ? trim((string) $cfg['mqtt_topic'], '/') : 'waermepumpe');
+    $b = hb_bereich($p);
+    if ($b !== '') {
+        if (!(!empty($cfg['mqtt_ein']))) {
+            return array(-1, sprintf(wp_t('HAUSBEREICH.A_AUS'), wp_e($p), wp_e($b)));
+        }
+        return array(0, sprintf(wp_t('HAUSBEREICH.A_NEIN'), wp_e($p), wp_e($b)));
+    }
+    return array(1, sprintf(wp_t('HAUSBEREICH.A_JA'), wp_e($p)));
+}
+
+/**
+ * 0.9.53: einmal je Aenderung eine Protokollzeile, solange das Praefix auf einen gemeinsamen Bereich faellt; der
+ * Versand bleibt, wie er ist. Gemerkt in praefix_haus_gemeldet.txt im Datenordner. Rueckgabe der Bereich oder ''.
+ */
+function wp_praefix_haus_melden($cfg, $merk = null)
+{
+    $p = (trim((string) $cfg['mqtt_topic'], '/') !== '' ? trim((string) $cfg['mqtt_topic'], '/') : 'waermepumpe');
+    if ($merk === null) {
+        $merk = wp_paths()['datadir'] . '/praefix_haus_gemeldet.txt';
+    }
+    $b = hb_melden_faellig($p, $merk);
+    if ($b !== '') {
+        wp_log(hb_logtext($p, $b));
+    }
+    return $b;
+}
+
+if (!function_exists('wp_meld_block')) {
+
+/* ---------------- Statusmeldungen an SignalBot (0.9.53, gemeinsames Modul meldung.php) ----------------
+ *
+ * Auftrag des Hausherrn 23.11.2026, Entscheidungen 23./24.11.2026: dieselben Anlaesse wie die Ansage, eigener Haken je
+ * Anlass, ab Werk aus; Sperre, Bremse und Versand im Modul. Die Erkennung laeuft auch ohne Ausgabeart, wenn eine Meldung
+ * eingeschaltet ist (wp_meld_aktiv()), und legt einen Anlass hin, wenn Ansage ODER Meldung ihn will
+ * (wp_meld_will()); der Sender trennt die Wege wieder (wp_meld_nur_ansage()).
+ */
+
+/** Die meldbaren Anlaesse: Name => Beschriftung (dieselben wie die Ansage). */
+function wp_meld_anlaesse()
+{
+    return array('anmeldung' => wp_t('DURCHSAGE.N_ANMELDUNG'), 'ausfall' => wp_t('DURCHSAGE.N_AUSFALL'), 'stoerung' => wp_t('DURCHSAGE.N_STOERUNG'));
+}
+
+/** Die ab-Werk-Haken der Ansage dieser Linie: so stehen auch die Haken der Meldung, solange der Block nie gespeichert ist. */
+function wp_meld_haken_vorgabe()
+{
+    return array('anmeldung' => 1, 'ausfall' => 1, 'stoerung' => 1);
+}
+
+/** Ist der Haken dieses Anlasses fuer die ANSAGE gesetzt? */
+function wp_ansage_anlass_sprache($a, $cfg = null)
+{
+    if ($cfg === null) { $cfg = wp_config(false); }
+    $anl = wp_ansage_anlaesse(); return isset($anl[$a]) && is_array($cfg) && !empty($cfg[$anl[$a]]);
+}
+
+/** Der wirksame Block 'meldung' fuer den Betrieb (ungueltig gespeichert gilt als aus und wird im Formular genannt). */
+function wp_meld_block($cfg = null)
+{
+    if ($cfg === null) { $cfg = wp_config(false); }
+    list($b) = meld_block(is_array($cfg) && array_key_exists('meldung', $cfg) ? $cfg['meldung'] : null, wp_meld_anlaesse(), wp_meld_haken_vorgabe());
+    return $b;
+}
+
+/** Die Beanstandungen eines gespeicherten Blocks (leer = gueltig). */
+function wp_meld_bean($cfg = null)
+{
+    if ($cfg === null) { $cfg = wp_config(false); }
+    list(, $f) = meld_block(is_array($cfg) && array_key_exists('meldung', $cfg) ? $cfg['meldung'] : null, wp_meld_anlaesse(), wp_meld_haken_vorgabe());
+    return $f;
+}
+
+/** Ist irgendein Anlass zur Meldung eingeschaltet? Dann laeuft die Erkennung auch ohne Ausgabeart. */
+function wp_meld_aktiv($cfg = null)
+{
+    return meld_irgendein_an(wp_meld_block($cfg));
+}
+
+/** Will die Ansage ODER die Meldung diesen Anlass? */
+function wp_meld_will($a, $cfg = null)
+{
+    if ($cfg === null) { $cfg = wp_config(false); }
+    return wp_ansage_anlass_sprache($a, $cfg) || meld_anlass_an(wp_meld_block($cfg), (string) $a);
+}
+
+/** Der Kontext des Moduls: Datenordner (data/plugins/<ordner>, daraus der Absender) und Texte - wie bei der Ansage. */
+function wp_meld_k()
+{
+    return wp_ansage_k();
+}
+
+/** Fuer die Ansage nur Eintraege, deren Ansage-Haken gesetzt ist; ein Eintrag ohne bekannten Anlass bleibt wie bisher. */
+function wp_meld_nur_ansage(array $l, $cfg = null)
+{
+    if ($cfg === null) { $cfg = wp_config(false); }
+    $anl = wp_meld_anlaesse();
+    $aus = array();
+    foreach ($l as $e) {
+        if (is_array($e) && array_key_exists(meld_anlass_von($e), $anl) && !wp_ansage_anlass_sprache(meld_anlass_von($e), $cfg)) { continue; }
+        $aus[] = $e;
+    }
+    return $aus;
+}
+
+/** Die Eintraege an SignalBot melden. Protokoll: eine Zeile, wenn gesendet oder gescheitert (nie der Text). */
+function wp_meld_senden(array $l, $cfg = null)
+{
+    if ($cfg === null) { $cfg = wp_config(false); }
+    $b = wp_meld_block($cfg);
+    if (empty($b['ein']) || !$l) { return null; }
+    $a = meld_regel_senden($l, $b, wp_meld_k());
+    if ($a['regel'] === '' || in_array($a['regel'], array('BREMSE', 'STAND', 'ORDNER'), true)) {
+        wp_log(meld_regel_kurz($a));
+    }
+    return $a;
+}
+
+/** Der Knopf "Testmeldung senden": array(angenommen, Satz). Geht an Haken, Sperre und Bremse vorbei. */
+function wp_meld_test()
+{
+    $r = meld_testmeldung(wp_meld_k());
+    wp_log('Testmeldung an SignalBot: ' . ($r[0] ? 'angenommen' : 'nicht angenommen'));
+    return $r;
+}
+
+/** Der Block im Einstellungsformular (unter den Ansage-Regeln, im selben Formular), mit Lage und Knopf. */
+function wp_meld_form_html($cfg = null)
+{
+    if ($cfg === null) { $cfg = wp_config(false); }
+    $e = function ($s) { return htmlspecialchars((string) $s, ENT_QUOTES, 'UTF-8'); };
+    $k = wp_meld_k();
+    $o = array();
+    /* 0.9.53: unsichtbarer Doppel des Speicherknopfs VOR dem Knopf Testmeldung - die Eingabetaste in einem Textfeld
+     * loest den ersten Absendeknopf des Formulars aus; sie soll speichern wie bisher, nicht die Testmeldung senden. */
+    $o[] = '<button data-role="none" type="submit" name="speichern_ansage" value="1" tabindex="-1" aria-hidden="true" style="position:absolute;left:-10000px;top:auto;width:1px;height:1px;overflow:hidden"></button>';
+    $o[] = '<h3>' . $e(meld_t('TITEL', $k)) . '</h3>';
+    $o[] = meld_formular_html(wp_meld_block($cfg), wp_meld_anlaesse(), array(), $k);
+    list(, $lage) = meld_pruefzeile(wp_meld_block($cfg), wp_meld_bean($cfg), $k);
+    $o[] = '<div class="sm-hilfe">' . $e(meld_t('F_TEST', $k) . ' ' . $lage) . '</div>';
+    $o[] = '<div class="sm-knopfreihe"><button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="meld_test" value="1">'
+         . $e(meld_t('K_TEST', $k)) . '</button></div>';
+    return implode("\n", $o) . "\n";
+}
 }

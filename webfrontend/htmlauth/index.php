@@ -610,6 +610,12 @@ if ($wp_post && isset($_POST['save_mqtt'])) {
         $wp_fehler[] = wp_t('EINST.FEHLER_TOPIC');
     } elseif (!preg_match('#^[A-Za-z0-9_\-]+(/[A-Za-z0-9_\-]+)*$#', $wp_mt)) {
         $wp_fehler[] = sprintf(wp_t('EINST.FEHLER_TOPIC_ZEICHEN'), wp_e($wp_mt));
+    } elseif (hb_bereich($wp_mt) !== '' && $wp_mt !== (string) wp_config(false)['mqtt_topic']) {   // nur NEUE Eingaben: ein schon gespeichertes Praefix sperrt das Speichern
+        // des Reiters nicht (Regeln/07; Bauart Einspeisebremse 0.9.25)
+        /* 0.9.53 (Entscheidung des Hausherrn 23.11.2026 "Nur gemeinsame Bereiche", Regeln/07): kein Praefix auf einem
+         * gemeinsamen Bereich unter haus/ - nur hier und beim Zurueckspielen, nicht in der Pruefung beim Lesen der
+         * Konfiguration: ein schon gespeichertes bleibt in Betrieb, der Reiter Test meldet es. */
+        $wp_fehler[] = sprintf(wp_t('HAUSBEREICH.FEHLER'), wp_e($wp_mt), wp_e(hb_bereich($wp_mt)));
     } else {
         $wp_mcfg['mqtt_topic'] = $wp_mt;
     }
@@ -752,6 +758,8 @@ if ($wp_post && isset($_POST['speichern_ansage'])) {
     $wp_acfg['tts'] = ansage_formular_lesen($_POST, wp_tts($wp_acfg), $wp_tmangel, $wp_tbean, wp_ansage_opt() + array(
                                             'ziele' => wp_mit_zielen(), 'token_vor_ort' => true, 'aus_gewinnt' => true), wp_ansage_k(), $wp_thinw);
     list($wp_acfg['ansage_regeln']) = ansage_regeln_formular($_POST, wp_ansage_regeln(wp_config()), array(), $wp_tmangel, $wp_tbean, wp_ansage_k());     // S2: Wann gesprochen wird (Stamm)
+    // 0.9.53: der Block 'Meldungen an SignalBot' (eine Beanstandung haelt das Speichern an, wie die Ansage)
+    $wp_acfg['meldung'] = meld_formular_lesen($_POST, isset($wp_acfg['meldung']) ? $wp_acfg['meldung'] : null, wp_meld_anlaesse(), $wp_tmangel, $wp_tbean, wp_meld_k(), wp_meld_haken_vorgabe());
     // 0.9.43: ein eingetipptes oder geloeschtes Sprechtoken ist nicht mehr vom Nachbarn; bis 0.9.42 ueberschrieb es der naechste Abgleich.
     $wp_acfg['ansage_token_herkunft'] = ansage_token_herkunft_formular($_POST, isset($wp_acfg['ansage_token_herkunft']) ? $wp_acfg['ansage_token_herkunft'] : array());
     foreach ($wp_tmangel as $wp_tm) { $wp_fehler[] = wp_e($wp_tm['text']); }
@@ -786,6 +794,12 @@ if ($wp_post && isset($_POST['speichern_ansage'])) {
  * Ins Protokoll nur die Kurzform ohne Text und Token. */
 /* Welle Mehrfach-Ziele (Sprachmodul 1.2.1): die Knoepfe "Testansage an Ziel n" schicken ansage_test_ziel=n - es spricht
  * nur dieses Ziel; der bisherige Knopf spricht an alle Ziele gleichzeitig. Eine unbrauchbare Nummer spricht nichts. */
+/* 0.9.53: Testmeldung an SignalBot (Knopf unter den Ansage-Regeln). */
+if ($wp_post && isset($_POST['meld_test'])) {
+    list($meld_ok, $meld_satz) = wp_meld_test();
+    if ($meld_ok) { $wp_meldungen[] = wp_e($meld_satz); } else { $wp_fehler[] = wp_e($meld_satz); }
+    $wp_tab = 'tab-test';
+}
 if ($wp_post && (isset($_POST['ansage_test']) || isset($_POST['ansage_test_ziel']))) {
     $wp_tk = wp_ansage_k();
     $wp_tnur = (isset($_POST['ansage_test_ziel']) && wp_mit_zielen()) ? ansage_test_ziel($_POST) : 0;
@@ -893,7 +907,7 @@ if ($wp_post && isset($_POST['wp_zurueck'])) {
                 if (!wp_geheim_write(array_merge($wp_galt, $r['teile']['geheim']))) { return false; }
                 $wp_geheim_anders = ($wp_gv !== wp_sicherung_geheim_felder());
             }
-            if (!wp_config_write($neu)) {
+            if (!wp_config_write($neu, false)) {     // 0.9.53: Werte einer Sicherung sind ausdruecklich (Regeln/05)
                 if ($wp_galt !== null) {
                     wp_geheim_write($wp_galt);
                     $wp_geheim_anders = false;
@@ -926,6 +940,31 @@ if ($wp_post && isset($_POST['wp_zurueck'])) {
         if ($wp_r['gespeichert']) {
             $wp_cfg = wp_config();
             $wp_geh = wp_geheim();
+        }
+    }
+}
+
+/* ---------------- Lade-Beanstandungen: angezeigte Werte uebernehmen (0.9.53) ----------------
+ * Nur mit gesetztem Haken (Entscheidung des Hausherrn 24.11.2026, "Haken im gelben Kasten"); ohne ihn bleibt die Datei
+ * byte-gleich. Geschrieben ohne "Dateiwert behalten". */
+if ($wp_post && sicherung_lade_eingang($_POST) !== '') {
+    $wp_lb = wp_sicherung_beschreibung();
+    if (sicherung_lade_eingang($_POST) !== 'ja') {
+        $wp_fehler[] = wp_e(sicherung_t('K_LADE_HAKEN_FEHLT', $wp_lb));
+    } else {
+        $wp_ld = wp_lade_roh();
+        $wp_lv = wp_config(false);
+        $wp_un = array();
+        if ($wp_ld !== null) {
+            list($wp_lneu, $wp_un) = sicherung_lade_uebernehmen_stand($wp_ld, $wp_lv, sicherung_lade_beanstandungen($wp_lb, $wp_ld, $wp_lv));
+            if ($wp_un && !wp_config_write($wp_lneu, false)) {
+                $wp_fehler[] = sprintf(wp_t('EINST.FEHLER_SPEICHERN'), wp_e(wp_paths()['config']));
+                $wp_un = array();
+            }
+        }
+        if ($wp_un) {
+            wp_log('Lade-Beanstandungen: angezeigte Werte uebernommen: ' . implode(', ', array_map('sicherung_name', $wp_un)));
+            $wp_meldungen[] = sprintf(sicherung_t('K_LADE_UEBERNOMMEN', $wp_lb), wp_e(implode(', ', $wp_un)));
         }
     }
 }
@@ -1077,6 +1116,12 @@ details > summary { cursor: pointer; font-weight: 600; color: #4f7d17; margin: 8
 <div class="sm-fehler"><ul style="margin:0;padding-left:18px;">
 <?php foreach ($wp_fehler as $wp_f) { ?><li><?= $wp_f ?></li><?php } ?></ul></div>
 <?php } ?>
+<?php /* 0.9.53: Lade-Beanstandungen (Regeln/05) - gelber Kasten; einmal je Aenderung ins Protokoll. */
+$wp_lade = wp_lade_beanstandungen();
+wp_lade_melden($wp_lade); ?>
+
+<?= sicherung_lade_kasten(wp_sicherung_beschreibung(), isset($wp_lade) ? $wp_lade : wp_lade_beanstandungen(),
+        wp_fmt() . '<input data-role="none" type="hidden" name="activetab" value="' . wp_e($wp_tab) . '">') ?>
 
 <?php /* Kopf (Entscheidung Nr. 43, seit 0.9.28): Statusuebersicht ueber den
    Reitern, immer sichtbar. Bis 0.9.27 standen Hersteller, Alter der Daten,
@@ -1482,6 +1527,7 @@ details > summary { cursor: pointer; font-weight: 600; color: #4f7d17; margin: 8
     'm' => function ($n) { $x = wp_mark($n); return $x === '' ? '' : ' class="sm-beanstandet"' . $x; },
     'c' => function ($n, $g) { return wp_an($n, $g); },
     'token_vor_ort' => true), wp_ansage_k()) ?>
+<?= wp_meld_form_html($wp_cfg) ?>
 <div class="sm-knopfreihe">
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="speichern_ansage" value="1"><?= wp_e(wp_t('ALLG.SPEICHERN')) ?></button>
 </div>

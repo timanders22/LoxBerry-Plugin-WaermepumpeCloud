@@ -79,7 +79,7 @@ if ($modus === 'zeile') {
  * waehrend einer Aktualisierung (Marke, siehe wp_config_vervollstaendigen()). Schreibt nur, wenn etwas fehlt.
  * try/catch: ein Fehler hier haelt den Abruf nicht auf. */
 try {
-    wp_config_vervollstaendigen();
+    wp_dienst_pflege();     // 0.9.53: vervollstaendigen und Lade-Beanstandungen einmal melden (Regeln/05)
 } catch (Throwable $wp_vv) {
     wp_log('Konfiguration vervollstaendigen abgebrochen (' . get_class($wp_vv) . ') - der Abruf ist davon nicht '
          . 'betroffen.', 'vv_' . get_class($wp_vv));
